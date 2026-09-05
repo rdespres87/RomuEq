@@ -1,5 +1,5 @@
 * @OWNER
-/crates/romuq-dsp/ @OWNER
-/crates/romuq-engine/ @OWNER
+/crates/romueq-dsp/ @OWNER
+/crates/romueq-engine/ @OWNER
 /.github/ @OWNER
 /docs/ @OWNER

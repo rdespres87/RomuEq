@@ -12,7 +12,7 @@
 
 ## Real-time safety
 
-If this PR touches `romuq-dsp` or `romuq-engine`:
+If this PR touches `romueq-dsp` or `romueq-engine`:
 
 - [ ] No allocation in the hot path
 - [ ] No blocking lock
