@@ -18,7 +18,7 @@ jobs:
     name: Format
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - run: rustup show
       - run: cargo fmt --all -- --check
 
@@ -26,7 +26,7 @@ jobs:
     name: Clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - run: rustup show
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
@@ -34,7 +34,7 @@ jobs:
     name: Tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - run: rustup show
       - run: cargo test --workspace --all-features
 
@@ -54,6 +54,6 @@ jobs:
             os: macos-14
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - run: rustup target add ${{ matrix.target }}
       - run: cargo build --workspace --all-targets --target ${{ matrix.target }}

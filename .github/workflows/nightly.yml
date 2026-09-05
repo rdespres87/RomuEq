@@ -12,7 +12,7 @@ jobs:
   full:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - run: rustup show
       - run: cargo test --workspace --all-features
       - run: cargo build --workspace --all-targets
