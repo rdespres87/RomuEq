@@ -1,0 +1,13 @@
+[package]
+name = "romueq-integration-tests"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+romueq-common.workspace = true
+romueq-dsp.workspace = true
+romueq-engine.workspace = true
+romueq-analysis.workspace = true

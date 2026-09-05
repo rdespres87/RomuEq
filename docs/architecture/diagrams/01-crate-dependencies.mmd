@@ -1,0 +1,26 @@
+flowchart TD
+ COMMON["romueq-common"]
+ DSP["romueq-dsp"]
+ ENGINE["romueq-engine"]
+ ANALYSIS["romueq-analysis"]
+ GUI["romueq-gui"]
+ PLUGIN["romueq-plugin"]
+ STANDALONE["romueq-standalone"]
+ CLI["romueq-cli"]
+ TESTS["romueq-integration-tests"]
+ DSP --> COMMON
+ ENGINE --> COMMON
+ ENGINE --> DSP
+ ANALYSIS --> COMMON
+ GUI --> COMMON
+ PLUGIN --> COMMON
+ PLUGIN --> ENGINE
+ PLUGIN --> GUI
+ STANDALONE --> ENGINE
+ STANDALONE --> GUI
+ CLI --> COMMON
+ CLI --> ENGINE
+ TESTS --> COMMON
+ TESTS --> DSP
+ TESTS --> ENGINE
+ TESTS --> ANALYSIS

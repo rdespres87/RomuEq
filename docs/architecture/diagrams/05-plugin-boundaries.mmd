@@ -1,0 +1,22 @@
+flowchart LR
+ subgraph External["External Host Contracts"]
+  CLAP["CLAP"]
+  VST3["VST3"]
+  FUTURE["Future AU / Other"]
+ end
+ subgraph RomuEq["RomuEq"]
+  ADAPTER["Plugin Adapter Layer"]
+  PLUGIN["Shared Plugin Abstraction"]
+  ENGINE["Engine"]
+  DSP["DSP"]
+  STATE["Versioned State"]
+  GUI["GUI"]
+ end
+ CLAP --> ADAPTER
+ VST3 --> ADAPTER
+ FUTURE -. later .-> ADAPTER
+ ADAPTER --> PLUGIN
+ PLUGIN --> ENGINE
+ ENGINE --> DSP
+ PLUGIN --> STATE
+ PLUGIN --> GUI

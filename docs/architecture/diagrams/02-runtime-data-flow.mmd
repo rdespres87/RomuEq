@@ -1,0 +1,10 @@
+flowchart LR
+ HOST["DAW / Host"] --> ADAPTER["CLAP / VST3 Adapter"]
+ ADAPTER --> PARAM["RT Parameter Transport"]
+ PARAM --> ENGINE["RomuEq Engine"]
+ AUDIOIN["Audio Input"] --> DSP["8-Band DSP"]
+ ENGINE --> DSP
+ DSP --> AUDIOOUT["Audio Output"]
+ DSP -. telemetry .-> ANALYSIS["Non-RT Analysis"]
+ ANALYSIS -. analysis data .-> GUI["GUI"]
+ GUI --> PARAM
