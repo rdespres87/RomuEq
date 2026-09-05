@@ -1,0 +1,11 @@
+sequenceDiagram
+ participant GUI as GUI / Control
+ participant HOST as Host Automation
+ participant Q as Bounded Parameter Transport
+ participant ENG as RomuEq Engine
+ participant DSP as DSP
+ GUI->>Q: ParameterCommand
+ HOST->>Q: Automation event + sample offset
+ Q->>ENG: Consume bounded events
+ ENG->>DSP: Apply parameter at required offset
+ DSP-->>ENG: Process audio

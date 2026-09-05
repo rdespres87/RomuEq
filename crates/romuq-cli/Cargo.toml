@@ -1,0 +1,11 @@
+[package]
+name = "romuq-cli"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+romuq-common.workspace = true
+romuq-engine.workspace = true

@@ -1,0 +1,29 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/romuq-common",
+    "crates/romuq-dsp",
+    "crates/romuq-engine",
+    "crates/romuq-analysis",
+    "crates/romuq-gui",
+    "crates/romuq-plugin",
+    "crates/romuq-standalone",
+    "crates/romuq-cli",
+    "crates/romuq-integration-tests",
+]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.88"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/OWNER/romuq"
+homepage = "https://github.com/OWNER/romuq"
+readme = "README.md"
+
+[workspace.dependencies]
+romuq-common = { path = "crates/romuq-common" }
+romuq-dsp = { path = "crates/romuq-dsp" }
+romuq-engine = { path = "crates/romuq-engine" }
+romuq-analysis = { path = "crates/romuq-analysis" }
+romuq-gui = { path = "crates/romuq-gui" }
+romuq-plugin = { path = "crates/romuq-plugin" }

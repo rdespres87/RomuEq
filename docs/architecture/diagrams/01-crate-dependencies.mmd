@@ -1,0 +1,26 @@
+flowchart TD
+ COMMON["romuq-common"]
+ DSP["romuq-dsp"]
+ ENGINE["romuq-engine"]
+ ANALYSIS["romuq-analysis"]
+ GUI["romuq-gui"]
+ PLUGIN["romuq-plugin"]
+ STANDALONE["romuq-standalone"]
+ CLI["romuq-cli"]
+ TESTS["romuq-integration-tests"]
+ DSP --> COMMON
+ ENGINE --> COMMON
+ ENGINE --> DSP
+ ANALYSIS --> COMMON
+ GUI --> COMMON
+ PLUGIN --> COMMON
+ PLUGIN --> ENGINE
+ PLUGIN --> GUI
+ STANDALONE --> ENGINE
+ STANDALONE --> GUI
+ CLI --> COMMON
+ CLI --> ENGINE
+ TESTS --> COMMON
+ TESTS --> DSP
+ TESTS --> ENGINE
+ TESTS --> ANALYSIS
