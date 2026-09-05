@@ -16,8 +16,8 @@ members = [
 edition = "2024"
 rust-version = "1.88"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/OWNER/romuq"
-homepage = "https://github.com/OWNER/romuq"
+repository = "https://github.com/OWNER/romueq"
+homepage = "https://github.com/OWNER/romueq"
 readme = "README.md"
 
 [workspace.dependencies]
