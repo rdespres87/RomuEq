@@ -2,6 +2,8 @@
 
 //! Common types and traits for RomuEq.
 
+pub mod automation;
+
 pub const MAX_BANDS: usize = 8;
 
 /// Filter type for EQ bands.
