@@ -584,7 +584,7 @@
   {
     "id": "M1-T001",
     "title": "Pin Rust toolchain and workspace policy",
-    "status": "READY",
+    "status": "DONE",
     "priority": "P0",
     "milestone": "M1",
     "deps": [
@@ -702,7 +702,7 @@
   {
     "id": "M1-T002",
     "title": "Establish CI validation ladder",
-    "status": "BLOCKED",
+    "status": "DONE",
     "priority": "P0",
     "milestone": "M1",
     "deps": [
@@ -809,7 +809,7 @@
   {
     "id": "M1-T003",
     "title": "Establish dependency/security checks",
-    "status": "BLOCKED",
+    "status": "DONE",
     "priority": "P1",
     "milestone": "M1",
     "deps": [
@@ -910,7 +910,7 @@
   {
     "id": "M1-T004",
     "title": "Establish cross-platform build matrix",
-    "status": "BLOCKED",
+    "status": "DONE",
     "priority": "P0",
     "milestone": "M1",
     "deps": [
@@ -1013,7 +1013,7 @@
   {
     "id": "M1-T005",
     "title": "Run M1 repository gate",
-    "status": "BLOCKED",
+    "status": "DONE",
     "priority": "P0",
     "milestone": "M1",
     "deps": [
@@ -1114,7 +1114,7 @@
   {
     "id": "M2-T001",
     "title": "Prototype bounded parameter transport",
-    "status": "BLOCKED",
+    "status": "DONE",
     "priority": "P0",
     "milestone": "M2",
     "deps": [
