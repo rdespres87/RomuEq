@@ -8,3 +8,4 @@
 
 pub mod automation;
 pub mod parameter_store;
+pub mod plugin;
