@@ -2,6 +2,8 @@
 
 //! Common types and traits for RomuEq.
 
+pub mod audio_buffer;
+
 pub mod automation;
 
 pub mod plugin;
