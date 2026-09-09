@@ -1222,7 +1222,7 @@
   {
     "id": "M2-T002",
     "title": "Prototype host automation event ingestion",
-    "status": "BLOCKED",
+    "status": "DONE",
     "priority": "P0",
     "milestone": "M2",
     "deps": [
@@ -1325,7 +1325,7 @@
   {
     "id": "M2-T003",
     "title": "Prototype engine/plugin boundary",
-    "status": "BLOCKED",
+    "status": "DONE",
     "priority": "P0",
     "milestone": "M2",
     "deps": [
@@ -1434,7 +1434,7 @@
   {
     "id": "M2-T004",
     "title": "Prototype audio buffer and lifecycle contract",
-    "status": "BLOCKED",
+    "status": "DONE",
     "priority": "P0",
     "milestone": "M2",
     "deps": [
@@ -1535,7 +1535,7 @@
   {
     "id": "M2-T005",
     "title": "Run M2 architecture evidence gate",
-    "status": "BLOCKED",
+    "status": "DONE",
     "priority": "P0",
     "milestone": "M2",
     "deps": [
