@@ -8,77 +8,18 @@ pub mod automation;
 
 pub mod plugin;
 
-pub const MAX_BANDS: usize = 8;
+pub mod parameter;
 
-/// Filter type for EQ bands.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FilterType {
-    Bell,
-    LowShelf,
-    HighShelf,
-    HighPass,
-    LowPass,
-}
-
-/// Slope steepness for shelf and pass filters.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Slope {
-    Db6,
-    Db12,
-    Db18,
-    Db24,
-}
-
-/// Stereo processing mode.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum StereoMode {
-    Stereo,
-}
-
-/// Processing mode for the EQ.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ProcessingMode {
-    MinimumPhase,
-}
-
-/// Parameters for a single EQ band.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct BandParameters {
-    pub enabled: bool,
-    pub filter_type: FilterType,
-    pub frequency_hz: f32,
-    pub gain_db: f32,
-    pub q: f32,
-    pub slope: Slope,
-}
-
-/// Global EQ parameters.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct GlobalParameters {
-    pub bypass: bool,
-    pub output_gain_db: f32,
-    pub auto_gain: bool,
-    pub processing_mode: ProcessingMode,
-    pub stereo_mode: StereoMode,
-}
-
-/// Complete EQ parameter set.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct EqParameters {
-    pub global: GlobalParameters,
-    pub bands: [BandParameters; MAX_BANDS],
-}
-
-/// Stable parameter identifier.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct ParamId(pub u32);
-
-/// Parameter command from producer to consumer.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum ParameterCommand {
-    SetParameter { id: ParamId, value: f32 },
-    SetAll(EqParameters),
-}
+pub use parameter::BandParameters;
+pub use parameter::EqParameters;
+pub use parameter::FilterType;
+pub use parameter::GlobalParameters;
+pub use parameter::MAX_BANDS;
+pub use parameter::ParamId;
+pub use parameter::ParameterCommand;
+pub use parameter::ProcessingMode;
+pub use parameter::Slope;
+pub use parameter::StereoMode;
 
 // ---------------------------------------------------------------------------
 // M2-T001: Bounded SPSC parameter transport prototypes
