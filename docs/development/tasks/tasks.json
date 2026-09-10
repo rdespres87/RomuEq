@@ -1729,7 +1729,7 @@
   {
     "id": "M3-T002",
     "title": "Implement biquad coefficient/reference math",
-    "status": "BLOCKED",
+    "status": "DONE",
     "priority": "P0",
     "milestone": "M3",
     "deps": [
@@ -1827,7 +1827,8 @@
       "Do not ask the product owner questions that are already answered by the repository contracts.",
       "If a required decision is open, prepare evidence and create/advance the Decision Request; do not choose silently.",
       "Do not modify forbidden paths or widen scope."
-    ]
+    ],
+    "completed_at": "2026-09-10"
   },
   {
     "id": "M3-T003",
@@ -3794,7 +3795,7 @@
       "Master plan, prior milestone outputs, linked ADRs"
     ],
     "steps": [
-      "Create exhaustive host-ID ↔ ParamId mapping table.",
+      "Create exhaustive host-ID \u2194 ParamId mapping table.",
       "Test normalized/physical conversions.",
       "Test state version migration through both adapters.",
       "Define unsupported parameter behavior."
@@ -3823,7 +3824,7 @@
       "M7-T002 DONE."
     ],
     "implementation_steps": [
-      "Create exhaustive host-ID ↔ ParamId mapping table.",
+      "Create exhaustive host-ID \u2194 ParamId mapping table.",
       "Test normalized/physical conversions.",
       "Test state version migration through both adapters.",
       "Define unsupported parameter behavior."
