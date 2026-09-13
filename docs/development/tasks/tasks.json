@@ -1632,7 +1632,7 @@
   {
     "id": "M3-T001",
     "title": "Implement parameter types and stable IDs",
-    "status": "BLOCKED",
+    "status": "DONE",
     "priority": "P0",
     "milestone": "M3",
     "deps": [
@@ -1724,7 +1724,9 @@
       "Do not ask the product owner questions that are already answered by the repository contracts.",
       "If a required decision is open, prepare evidence and create/advance the Decision Request; do not choose silently.",
       "Do not modify forbidden paths or widen scope."
-    ]
+    ],
+    "completed": "2026-09-13",
+    "commit": "c5a7df1"
   },
   {
     "id": "M3-T002",
