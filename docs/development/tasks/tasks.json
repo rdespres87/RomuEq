@@ -1835,7 +1835,7 @@
   {
     "id": "M3-T003",
     "title": "Implement filter state/reset semantics",
-    "status": "BLOCKED",
+    "status": "DONE",
     "priority": "P0",
     "milestone": "M3",
     "deps": [
