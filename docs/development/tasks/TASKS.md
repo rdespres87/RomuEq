@@ -30,7 +30,7 @@
 | M3-T001 | BLOCKED | P0 | Implement parameter types and stable IDs | M2-T005 | — | NO | M3 |
 | M3-T002 | BLOCKED | P0 | Implement biquad coefficient/reference math | M3-T001 | — | NO | M3 |
 | M3-T003 | BLOCKED | P0 | Implement filter state/reset semantics | M3-T002 | — | NO | M3 |
-| M3-T004 | BLOCKED | P0 | Implement state/preset schema and migrations | M3-T003 | — | NO | M3 |
+| M3-T004 | DONE | P0 | Implement state/preset schema and migrations | M3-T003 | — | NO | M3 |
 | M3-T005 | BLOCKED | P0 | Run M3 DSP gate | M3-T004 | — | NO | M3 |
 | M4-T001 | BLOCKED | P0 | Implement allocation-free engine lifecycle | M3-T005 | — | NO | M4 |
 | M4-T002 | BLOCKED | P0 | Implement block processing and variable block sizes | M4-T001 | — | NO | M4 |

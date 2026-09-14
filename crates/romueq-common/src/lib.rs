@@ -10,6 +10,8 @@ pub mod plugin;
 
 pub mod parameter;
 
+pub mod state;
+
 pub use parameter::BandParameters;
 pub use parameter::EqParameters;
 pub use parameter::FilterType;
