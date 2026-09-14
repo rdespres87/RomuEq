@@ -7,5 +7,6 @@
 //! processing.
 
 pub mod automation;
+pub mod lifecycle;
 pub mod parameter_store;
 pub mod plugin;

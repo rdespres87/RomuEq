@@ -1266,7 +1266,7 @@ If acceptance fails, return to TESTING or create a DR; do not widen scope.
 
 ### M4-T001 — Implement allocation-free engine lifecycle
 
-- **Status:** `BLOCKED`
+- **Status:** `DONE`
 - **Priority:** `P0`
 - **Milestone:** `M4`
 - **Dependencies:** M3-T005
