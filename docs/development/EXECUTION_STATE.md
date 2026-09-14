@@ -55,7 +55,8 @@ This file is operational state. Every task completion and every gate decision up
 | 2026-09-04 | M0.5-T006 execution | Compatibility/performance/release controls confirmed | DONE | No unsupported release claims allowed |
 | 2026-09-04 | M0.5-T007 execution | M0-M11 executable task registry confirmed | DONE | 68 tasks with dependencies and acceptance criteria |
 | 2026-09-04 | M0.5-T008 execution | Final consistency audit | PASS | Zero orphan dependencies/cycles; controls complete |
-| 2026-09-04 | M0.5 Gate | Development System Hardening gate closed | PASS | All 25 criteria PASS |
+| 2026-09-14 | M3-T004 execution | Versioned state/preset schema and migrations implemented | DONE | 17 state tests pass, serialization/deserialization verified |
+| 2026-09-14 | M3-T005 execution | M3 DSP gate PASS — 43 DSP tests, 192 total tests, clippy clean | PASS | All DSP acceptance criteria satisfied, weighted confidence 99.3 |
 
 
 ## Delegation handoff
