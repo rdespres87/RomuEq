@@ -1493,7 +1493,7 @@ mod tests {
     #[test]
     fn test_parameter_error_display() {
         let err = validate_value(1, -0.001).unwrap_err();
-        let msg = format!("{}", err);
+        let msg = format!("{err}");
         assert!(msg.contains("Parameter(1)"));
         assert!(msg.contains("below minimum"));
     }

@@ -274,9 +274,7 @@ mod tests {
         for (o, f) in old_outputs.iter().zip(fresh_outputs.iter()) {
             assert!(
                 (o - f).abs() < 1e-6,
-                "output after reset should match fresh filter, got {} vs {}",
-                o,
-                f
+                "output after reset should match fresh filter, got {o} vs {f}"
             );
         }
     }
@@ -383,8 +381,7 @@ mod tests {
         for i in 0..4 {
             assert!(
                 (output_reset[i] - output_fresh[i]).abs() < 1e-6,
-                "channel {} output after reset should match fresh",
-                i
+                "channel {i} output after reset should match fresh"
             );
         }
     }

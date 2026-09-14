@@ -472,7 +472,7 @@ mod tests {
         let mut events = Vec::new();
         for i in 0..10_000 {
             events.push(make_event(
-                ParamId((i % 8) as u32),
+                ParamId(i % 8),
                 (i as f32) / 10_000.0,
                 i % 256,
                 i as u64,
@@ -483,7 +483,7 @@ mod tests {
         // deduplicated: 8 params * 256 offsets = 2048 unique (param, offset)
         // pairs, so at most 2048 events remain.
         assert!(batch.len() <= 2048);
-        assert!(batch.len() > 0);
+        assert!(!batch.is_empty());
     }
 
     // -----------------------------------------------------------------------

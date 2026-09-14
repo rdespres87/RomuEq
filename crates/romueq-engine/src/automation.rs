@@ -292,7 +292,7 @@ mod tests {
         let mut events = Vec::new();
         for i in 0..1000 {
             events.push(make_event(
-                ParamId((i % 16) as u32),
+                ParamId(i % 16),
                 (i as f32) / 1000.0,
                 i % 256,
                 i as u64,

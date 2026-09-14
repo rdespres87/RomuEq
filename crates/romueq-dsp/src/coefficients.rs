@@ -100,7 +100,7 @@ pub fn compute_coefficients(
     let frequency_hz = frequency_hz.max(1.0).min(nyquist * 0.999);
 
     // Clamp Q to a safe range: [0.001, 100.0]
-    let q = q.max(0.001).min(100.0);
+    let q = q.clamp(0.001, 100.0);
 
     // Scale Q based on slope steepness (higher slope = lower effective Q for stability)
     let q = match slope {
@@ -414,8 +414,7 @@ mod tests {
         let gain = dc_num / dc_den;
         assert!(
             (gain - 1.0).abs() < 0.01,
-            "overall gain should be ~1.0 at 0dB, got {}",
-            gain
+            "overall gain should be ~1.0 at 0dB, got {gain}"
         );
         assert!(c.is_finite());
     }
@@ -465,8 +464,7 @@ mod tests {
         let dc_response = c.b0 + c.b1 + c.b2;
         assert!(
             dc_response.abs() < 0.01,
-            "DC response should be near zero, got {}",
-            dc_response
+            "DC response should be near zero, got {dc_response}"
         );
     }
 
@@ -486,8 +484,7 @@ mod tests {
         // Should be close to 2.0 (normalized)
         assert!(
             nyq_response.abs() > 1.0,
-            "Nyquist response should be high, got {}",
-            nyq_response
+            "Nyquist response should be high, got {nyq_response}"
         );
     }
 
@@ -510,8 +507,7 @@ mod tests {
         let dc_response = c.b0 + c.b1 + c.b2 - c.a1 - c.a2;
         assert!(
             (dc_response - 1.0).abs() < 0.01,
-            "DC response should be ~1.0, got {}",
-            dc_response
+            "DC response should be ~1.0, got {dc_response}"
         );
     }
 
@@ -530,8 +526,7 @@ mod tests {
         let nyq_response = c.b0 - c.b1 + c.b2;
         assert!(
             nyq_response.abs() < 0.5,
-            "Nyquist response should be low, got {}",
-            nyq_response
+            "Nyquist response should be low, got {nyq_response}"
         );
     }
 
@@ -559,10 +554,7 @@ mod tests {
                     );
                     assert!(
                         bell.is_finite(),
-                        "Bell at freq={} gain={} q={} should be finite",
-                        freq,
-                        gain,
-                        q_val
+                        "Bell at freq={freq} gain={gain} q={q_val} should be finite"
                     );
 
                     let low_shelf = compute_coefficients(
@@ -575,10 +567,7 @@ mod tests {
                     );
                     assert!(
                         low_shelf.is_finite(),
-                        "LowShelf at freq={} gain={} q={} should be finite",
-                        freq,
-                        gain,
-                        q_val
+                        "LowShelf at freq={freq} gain={gain} q={q_val} should be finite"
                     );
 
                     let high_shelf = compute_coefficients(
@@ -591,10 +580,7 @@ mod tests {
                     );
                     assert!(
                         high_shelf.is_finite(),
-                        "HighShelf at freq={} gain={} q={} should be finite",
-                        freq,
-                        gain,
-                        q_val
+                        "HighShelf at freq={freq} gain={gain} q={q_val} should be finite"
                     );
 
                     let hp = compute_coefficients(
@@ -607,10 +593,7 @@ mod tests {
                     );
                     assert!(
                         hp.is_finite(),
-                        "HighPass at freq={} gain={} q={} should be finite",
-                        freq,
-                        gain,
-                        q_val
+                        "HighPass at freq={freq} gain={gain} q={q_val} should be finite"
                     );
 
                     let lp = compute_coefficients(
@@ -623,10 +606,7 @@ mod tests {
                     );
                     assert!(
                         lp.is_finite(),
-                        "LowPass at freq={} gain={} q={} should be finite",
-                        freq,
-                        gain,
-                        q_val
+                        "LowPass at freq={freq} gain={gain} q={q_val} should be finite"
                     );
                 }
             }
@@ -742,8 +722,7 @@ mod tests {
         let dc_gain = dc_num / dc_den;
         assert!(
             (dc_gain - 1.0).abs() < 0.01,
-            "Bell DC gain should be ~1.0 at 0dB, got {}",
-            dc_gain
+            "Bell DC gain should be ~1.0 at 0dB, got {dc_gain}"
         );
     }
 
@@ -765,9 +744,7 @@ mod tests {
         let expected = 10.0_f32.powf(12.0 / 20.0);
         assert!(
             (dc_gain - expected).abs() < expected * 0.5,
-            "Low shelf DC gain should be ~{} at +12dB, got {}",
-            expected,
-            dc_gain
+            "Low shelf DC gain should be ~{expected} at +12dB, got {dc_gain}"
         );
     }
 
@@ -787,8 +764,7 @@ mod tests {
         let dc_gain = dc_num / dc_den;
         assert!(
             dc_gain.abs() < 0.1,
-            "High pass DC gain should be near 0, got {}",
-            dc_gain
+            "High pass DC gain should be near 0, got {dc_gain}"
         );
     }
 
@@ -808,8 +784,7 @@ mod tests {
         let nyq_gain = nyq_num / nyq_den;
         assert!(
             nyq_gain.abs() < 0.1,
-            "Low pass Nyquist gain should be near 0, got {}",
-            nyq_gain
+            "Low pass Nyquist gain should be near 0, got {nyq_gain}"
         );
     }
 
@@ -869,7 +844,7 @@ mod tests {
                 slope,
                 48000.0,
             );
-            assert!(hp.is_finite(), "HighPass with {:?} should be finite", slope);
+            assert!(hp.is_finite(), "HighPass with {slope:?} should be finite");
 
             let lp = compute_coefficients(
                 romueq_common::FilterType::LowPass,
@@ -879,7 +854,7 @@ mod tests {
                 slope,
                 48000.0,
             );
-            assert!(lp.is_finite(), "LowPass with {:?} should be finite", slope);
+            assert!(lp.is_finite(), "LowPass with {slope:?} should be finite");
         }
     }
 
@@ -930,7 +905,7 @@ mod tests {
                 romueq_common::Slope::Db12,
                 48000.0,
             );
-            assert!(c.is_finite(), "Filter {:?} at 20Hz should be finite", ft);
+            assert!(c.is_finite(), "Filter {ft:?} at 20Hz should be finite");
         }
     }
 
@@ -951,7 +926,7 @@ mod tests {
                 romueq_common::Slope::Db12,
                 48000.0,
             );
-            assert!(c.is_finite(), "Filter {:?} at 19kHz should be finite", ft);
+            assert!(c.is_finite(), "Filter {ft:?} at 19kHz should be finite");
         }
     }
 
@@ -971,7 +946,7 @@ mod tests {
                 romueq_common::Slope::Db12,
                 sr,
             );
-            assert!(c.is_finite(), "Bell at sample_rate={} should be finite", sr);
+            assert!(c.is_finite(), "Bell at sample_rate={sr} should be finite");
         }
     }
 }

@@ -678,6 +678,7 @@ mod tests {
     // Latency / contention benchmark helpers
     // -----------------------------------------------------------------------
 
+    #[allow(dead_code)]
     /// Measure enqueue latency for a single value.
     ///
     /// Returns the median latency in nanoseconds over `iterations` enqueues.
@@ -702,6 +703,7 @@ mod tests {
         latencies[iterations / 2]
     }
 
+    #[allow(dead_code)]
     /// Measure dequeue latency for a single value.
     ///
     /// Returns the median latency in nanoseconds over `iterations` dequeues.
