@@ -1080,12 +1080,485 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Helper: assert that a closure panics with a specific message
+    // M4-T002: Split-block equivalence tests
     // -----------------------------------------------------------------------
 
-    #[allow(dead_code)]
-    fn assert_panics<F: FnOnce()>(f: F) {
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
-        assert!(result.is_err(), "expected panic but closure succeeded");
+    #[test]
+    fn test_split_block_equivalence() {
+        // Process a block of 128 samples as one block vs two halves of 64.
+        // Results should match within numerical tolerance.
+        let mut engine1 = EngineLifecycle::new();
+        engine1.prepare(44100.0, 256, 1);
+        let mut params = EqParameters::default();
+        params.bands[0] = BandParameters {
+            enabled: true,
+            filter_type: romueq_common::FilterType::Bell,
+            frequency_hz: 1000.0,
+            gain_db: 6.0,
+            q: 0.707,
+            slope: Slope::Db12,
+        };
+        engine1.set_parameters(params);
+
+        let mut engine2 = EngineLifecycle::new();
+        engine2.prepare(44100.0, 256, 1);
+        engine2.set_parameters(params);
+
+        // Full block of 128 samples.
+        let full_input: Vec<f32> = (0..128)
+            .map(|i| (2.0 * std::f32::consts::PI * 1000.0 * i as f32 / 44100.0).sin() * 0.5)
+            .collect();
+        let mut full_output = vec![0.0; 128];
+        let input_refs: Vec<&[f32]> = vec![&full_input];
+        let mut output_refs: Vec<&mut [f32]> = vec![&mut full_output];
+        assert!(engine1.process(&input_refs, &mut output_refs));
+
+        // Split into two halves of 64.
+        let half1_input: Vec<f32> = full_input[..64].to_vec();
+        let mut half1_output = vec![0.0; 64];
+        let input_refs1: Vec<&[f32]> = vec![&half1_input];
+        let mut output_refs1: Vec<&mut [f32]> = vec![&mut half1_output];
+        assert!(engine2.process(&input_refs1, &mut output_refs1));
+
+        let half2_input: Vec<f32> = full_input[64..].to_vec();
+        let mut half2_output = vec![0.0; 64];
+        let input_refs2: Vec<&[f32]> = vec![&half2_input];
+        let mut output_refs2: Vec<&mut [f32]> = vec![&mut half2_output];
+        assert!(engine2.process(&input_refs2, &mut output_refs2));
+
+        // Concatenate split outputs.
+        let mut split_output = half1_output;
+        split_output.extend(half2_output);
+
+        // Compare: full vs split should match within tolerance.
+        for i in 0..128 {
+            let diff = (full_output[i] - split_output[i]).abs();
+            assert!(
+                diff < 1e-6,
+                "split-block mismatch at sample {}: full={}, split={}, diff={}",
+                i,
+                full_output[i],
+                split_output[i],
+                diff
+            );
+        }
+    }
+
+    #[test]
+    fn test_split_block_equivalence_stereo() {
+        // Same test for stereo: split-block should match whole-block.
+        let mut engine1 = EngineLifecycle::new();
+        engine1.prepare(44100.0, 256, 2);
+        let mut params = EqParameters::default();
+        params.bands[0] = BandParameters {
+            enabled: true,
+            filter_type: romueq_common::FilterType::HighPass,
+            frequency_hz: 500.0,
+            gain_db: 0.0,
+            q: 0.707,
+            slope: Slope::Db12,
+        };
+        engine1.set_parameters(params);
+
+        let mut engine2 = EngineLifecycle::new();
+        engine2.prepare(44100.0, 256, 2);
+        engine2.set_parameters(params);
+
+        let input: Vec<f32> = (0..128)
+            .map(|i| (2.0 * std::f32::consts::PI * 800.0 * i as f32 / 44100.0).sin() * 0.3)
+            .collect();
+        let inputs_ch0: Vec<&[f32]> = vec![&input, &input];
+        let mut out1_ch0 = vec![0.0; 128];
+        let mut out1_ch1 = vec![0.0; 128];
+        let mut refs1: Vec<&mut [f32]> = vec![&mut out1_ch0[..], &mut out1_ch1[..]];
+        assert!(engine1.process(&inputs_ch0, &mut refs1));
+
+        // Split: first 64 samples.
+        let mut out2_ch0 = vec![0.0; 64];
+        let mut out2_ch1 = vec![0.0; 64];
+        let mut refs2: Vec<&mut [f32]> = vec![&mut out2_ch0[..], &mut out2_ch1[..]];
+        let half_input: Vec<f32> = input[..64].to_vec();
+        let half_refs: Vec<&[f32]> = vec![&half_input[..], &half_input[..]];
+        assert!(engine2.process(&half_refs, &mut refs2));
+
+        // Second 64 samples.
+        let mut out3_ch0 = vec![0.0; 64];
+        let mut out3_ch1 = vec![0.0; 64];
+        let mut refs3: Vec<&mut [f32]> = vec![&mut out3_ch0[..], &mut out3_ch1[..]];
+        let half_input2: Vec<f32> = input[64..].to_vec();
+        let half_refs2: Vec<&[f32]> = vec![&half_input2[..], &half_input2[..]];
+        assert!(engine2.process(&half_refs2, &mut refs3));
+
+        // Concatenate and compare.
+        let mut split_ch0 = out2_ch0;
+        split_ch0.extend(out3_ch0);
+        let mut split_ch1 = out2_ch1;
+        split_ch1.extend(out3_ch1);
+
+        for i in 0..128 {
+            let diff0: f32 = (out1_ch0[i] - split_ch0[i]).abs();
+            let diff1: f32 = (out1_ch1[i] - split_ch1[i]).abs();
+            assert!(
+                diff0 < 1e-6,
+                "stereo ch0 split mismatch at {}: diff={}",
+                i,
+                diff0
+            );
+            assert!(
+                diff1 < 1e-6,
+                "stereo ch1 split mismatch at {}: diff={}",
+                i,
+                diff1
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // M4-T002: All eight bands coexist
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_all_eight_bands_coexist() {
+        let mut engine = EngineLifecycle::new();
+        engine.prepare(44100.0, 256, 1);
+
+        // Enable all 8 bands with different frequencies and gains.
+        let mut params = EqParameters::default();
+        let band_configs = [
+            (60.0, 6.0),     // Sub-bass boost
+            (200.0, -3.0),   // Bass cut
+            (500.0, 4.0),    // Low-mid boost
+            (1000.0, -2.0),  // Mid cut
+            (2500.0, 5.0),   // Upper-mid boost
+            (5000.0, -4.0),  // Presence cut
+            (10000.0, 3.0),  // Brilliance boost
+            (14000.0, -2.0), // Air cut
+        ];
+        for (i, (freq, gain)) in band_configs.iter().enumerate() {
+            params.bands[i] = BandParameters {
+                enabled: true,
+                filter_type: romueq_common::FilterType::Bell,
+                frequency_hz: *freq,
+                gain_db: *gain,
+                q: 0.707,
+                slope: Slope::Db12,
+            };
+        }
+        engine.set_parameters(params);
+
+        // Process a complex signal (sum of multiple frequencies).
+        let input: Vec<f32> = (0..256)
+            .map(|i| {
+                let t = i as f32 / 44100.0;
+                (2.0 * std::f32::consts::PI * 60.0 * t).sin() * 0.1
+                    + (2.0 * std::f32::consts::PI * 1000.0 * t).sin() * 0.2
+                    + (2.0 * std::f32::consts::PI * 5000.0 * t).sin() * 0.1
+            })
+            .collect();
+
+        let mut output = vec![0.0; 256];
+        let input_refs: Vec<&[f32]> = vec![&input];
+        let mut output_refs: Vec<&mut [f32]> = vec![&mut output];
+        assert!(engine.process(&input_refs, &mut output_refs));
+
+        // Output should be non-zero (processing happened).
+        let output_rms: f32 = output.iter().map(|s| s * s).sum::<f32>().sqrt() / 256.0_f32.sqrt();
+        assert!(
+            output_rms > 0.01,
+            "all-8-bands output RMS {} should be > 0.01",
+            output_rms
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // M4-T002: Block size variety tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_block_sizes_2_3_4_8() {
+        let mut engine = EngineLifecycle::new();
+        engine.prepare(44100.0, 256, 1);
+
+        let mut params = EqParameters::default();
+        params.bands[0] = BandParameters {
+            enabled: true,
+            filter_type: romueq_common::FilterType::LowPass,
+            frequency_hz: 2000.0,
+            gain_db: 0.0,
+            q: 0.707,
+            slope: Slope::Db12,
+        };
+        engine.set_parameters(params);
+
+        for block_size in [2, 3, 4, 8] {
+            let input: Vec<f32> = (0..block_size)
+                .map(|i| (2.0 * std::f32::consts::PI * 500.0 * i as f32 / 44100.0).sin() * 0.5)
+                .collect();
+            let mut output = vec![0.0; block_size];
+            let input_refs: Vec<&[f32]> = vec![&input];
+            let mut output_refs: Vec<&mut [f32]> = vec![&mut output];
+            assert!(engine.process(&input_refs, &mut output_refs));
+
+            // Output should be non-zero.
+            let sum: f32 = output.iter().map(|s| s.abs()).sum();
+            assert!(
+                sum > 0.0,
+                "block_size={} output should be non-zero",
+                block_size
+            );
+        }
+    }
+
+    #[test]
+    fn test_block_size_powers_of_two() {
+        let mut engine = EngineLifecycle::new();
+        engine.prepare(44100.0, 8192, 1);
+
+        let input: Vec<f32> = (0..8192)
+            .map(|i| (2.0 * std::f32::consts::PI * 440.0 * i as f32 / 44100.0).sin() * 0.5)
+            .collect();
+        let mut output = vec![0.0; 8192];
+        let input_refs: Vec<&[f32]> = vec![&input];
+        let mut output_refs: Vec<&mut [f32]> = vec![&mut output];
+        assert!(engine.process(&input_refs, &mut output_refs));
+        assert_eq!(engine.blocks_processed(), 1);
+    }
+
+    #[test]
+    fn test_silence_input() {
+        let mut engine = EngineLifecycle::new();
+        engine.prepare(44100.0, 256, 1);
+
+        let mut params = EqParameters::default();
+        params.bands[0] = BandParameters {
+            enabled: true,
+            filter_type: romueq_common::FilterType::Bell,
+            frequency_hz: 1000.0,
+            gain_db: 12.0,
+            q: 0.707,
+            slope: Slope::Db12,
+        };
+        engine.set_parameters(params);
+
+        let input: Vec<f32> = vec![0.0; 64];
+        let mut output = vec![0.0; 64];
+        let input_refs: Vec<&[f32]> = vec![&input];
+        let mut output_refs: Vec<&mut [f32]> = vec![&mut output];
+        assert!(engine.process(&input_refs, &mut output_refs));
+
+        // Silence in → silence out (no stored state after reset).
+        let sum: f32 = output.iter().map(|s| s.abs()).sum();
+        assert!(
+            sum < 1e-10,
+            "silence input should produce silence output, got sum={}",
+            sum
+        );
+    }
+
+    #[test]
+    fn test_impulse_response() {
+        let mut engine = EngineLifecycle::new();
+        engine.prepare(44100.0, 256, 1);
+
+        let mut params = EqParameters::default();
+        params.bands[0] = BandParameters {
+            enabled: true,
+            filter_type: romueq_common::FilterType::Bell,
+            frequency_hz: 1000.0,
+            gain_db: 6.0,
+            q: 2.0, // High Q for ringing
+            slope: Slope::Db12,
+        };
+        engine.set_parameters(params);
+
+        // Impulse at sample 0.
+        let mut input = vec![1.0; 64];
+        input[0] = 1.0;
+        for i in 1..64 {
+            input[i] = 0.0;
+        }
+        let mut output = vec![0.0; 64];
+        let input_refs: Vec<&[f32]> = vec![&input];
+        let mut output_refs: Vec<&mut [f32]> = vec![&mut output];
+        assert!(engine.process(&input_refs, &mut output_refs));
+
+        // Impulse should produce non-zero output (filter response).
+        let sum: f32 = output.iter().map(|s| s.abs()).sum();
+        assert!(sum > 0.5, "impulse response sum {} should be > 0.5", sum);
+    }
+
+    // -----------------------------------------------------------------------
+    // M4-T002: Channel routing correctness
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_channel_routing_mono() {
+        let mut engine = EngineLifecycle::new();
+        engine.prepare(44100.0, 256, 1);
+
+        let input: Vec<f32> = (0..64)
+            .map(|i| (2.0 * std::f32::consts::PI * 800.0 * i as f32 / 44100.0).sin() * 0.7)
+            .collect();
+        let mut output = vec![0.0; 64];
+        let input_refs: Vec<&[f32]> = vec![&input];
+        let mut output_refs: Vec<&mut [f32]> = vec![&mut output];
+        assert!(engine.process(&input_refs, &mut output_refs));
+
+        // Output should match input pattern (unity gain, default params).
+        for i in 0..64 {
+            assert!(
+                (output_refs[0][i] - input[i]).abs() < 1e-3,
+                "mono ch0 sample {}: expected {} got {}",
+                i,
+                input[i],
+                output_refs[0][i]
+            );
+        }
+    }
+
+    #[test]
+    fn test_channel_routing_stereo_different_content() {
+        let mut engine = EngineLifecycle::new();
+        engine.prepare(44100.0, 256, 2);
+
+        // Different content per channel.
+        let ch0: Vec<f32> = (0..64).map(|i| (i as f32 * 0.01).sin() * 0.5).collect();
+        let ch1: Vec<f32> = (0..64).map(|i| (i as f32 * 0.02).sin() * 0.3).collect();
+        let inputs: Vec<&[f32]> = vec![&ch0, &ch1];
+        let mut out0 = vec![0.0; 64];
+        let mut out1 = vec![0.0; 64];
+        let mut output_refs: Vec<&mut [f32]> = vec![&mut out0, &mut out1];
+        assert!(engine.process(&inputs, &mut output_refs));
+
+        // Each channel should preserve its own content (unity gain).
+        for i in 0..64 {
+            let diff0 = (out0[i] - ch0[i]).abs();
+            let diff1 = (out1[i] - ch1[i]).abs();
+            assert!(diff0 < 1e-3, "stereo ch0 sample {}: diff={}", i, diff0);
+            assert!(diff1 < 1e-3, "stereo ch1 sample {}: diff={}", i, diff1);
+        }
+    }
+
+    #[test]
+    fn test_channel_routing_stereo_with_filter() {
+        let mut engine = EngineLifecycle::new();
+        engine.prepare(44100.0, 256, 2);
+
+        // Boost 1000 Hz on both channels.
+        let mut params = EqParameters::default();
+        params.bands[0] = BandParameters {
+            enabled: true,
+            filter_type: romueq_common::FilterType::Bell,
+            frequency_hz: 1000.0,
+            gain_db: 12.0,
+            q: 0.707,
+            slope: Slope::Db12,
+        };
+        engine.set_parameters(params);
+
+        let ch0: Vec<f32> = (0..64)
+            .map(|i| (2.0 * std::f32::consts::PI * 1000.0 * i as f32 / 44100.0).sin() * 0.5)
+            .collect();
+        let ch1: Vec<f32> = (0..64)
+            .map(|i| (2.0 * std::f32::consts::PI * 1000.0 * i as f32 / 44100.0).sin() * 0.3)
+            .collect();
+        let inputs: Vec<&[f32]> = vec![&ch0, &ch1];
+        let mut out0 = vec![0.0; 64];
+        let mut out1 = vec![0.0; 64];
+        let mut output_refs: Vec<&mut [f32]> = vec![&mut out0, &mut out1];
+        assert!(engine.process(&inputs, &mut output_refs));
+
+        // Both channels should be boosted (output amplitude > input amplitude).
+        let ch0_in_rms: f32 = ch0.iter().map(|s| s * s).sum::<f32>().sqrt() / 64.0_f32.sqrt();
+        let ch0_out_rms: f32 = out0.iter().map(|s| s * s).sum::<f32>().sqrt() / 64.0_f32.sqrt();
+        let ch1_in_rms: f32 = ch1.iter().map(|s| s * s).sum::<f32>().sqrt() / 64.0_f32.sqrt();
+        let ch1_out_rms: f32 = out1.iter().map(|s| s * s).sum::<f32>().sqrt() / 64.0_f32.sqrt();
+
+        assert!(
+            ch0_out_rms > ch0_in_rms * 1.5,
+            "ch0 boost: in_rms={}, out_rms={}",
+            ch0_in_rms,
+            ch0_out_rms
+        );
+        assert!(
+            ch1_out_rms > ch1_in_rms * 1.5,
+            "ch1 boost: in_rms={}, out_rms={}",
+            ch1_in_rms,
+            ch1_out_rms
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // M4-T002: Split-block equivalence with filter
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_split_block_with_filter() {
+        // Verify split-block equivalence when filters are active.
+        let mut engine1 = EngineLifecycle::new();
+        engine1.prepare(44100.0, 256, 1);
+        let mut params = EqParameters::default();
+        params.bands[0] = BandParameters {
+            enabled: true,
+            filter_type: romueq_common::FilterType::LowPass,
+            frequency_hz: 2000.0,
+            gain_db: 0.0,
+            q: 0.707,
+            slope: Slope::Db12,
+        };
+        params.bands[1] = BandParameters {
+            enabled: true,
+            filter_type: romueq_common::FilterType::Bell,
+            frequency_hz: 500.0,
+            gain_db: 6.0,
+            q: 0.707,
+            slope: Slope::Db12,
+        };
+        engine1.set_parameters(params);
+
+        let mut engine2 = EngineLifecycle::new();
+        engine2.prepare(44100.0, 256, 1);
+        engine2.set_parameters(params);
+
+        let input: Vec<f32> = (0..128)
+            .map(|i| {
+                (2.0 * std::f32::consts::PI * 300.0 * i as f32 / 44100.0).sin() * 0.3
+                    + (2.0 * std::f32::consts::PI * 1500.0 * i as f32 / 44100.0).sin() * 0.2
+            })
+            .collect();
+
+        // Full block.
+        let mut full_output = vec![0.0; 128];
+        let input_refs: Vec<&[f32]> = vec![&input];
+        let mut output_refs: Vec<&mut [f32]> = vec![&mut full_output];
+        assert!(engine1.process(&input_refs, &mut output_refs));
+
+        // Split into two halves.
+        let mut split_output = vec![0.0; 128];
+        let half1 = &input[..64];
+        let half2 = &input[64..];
+        let mut half1_out = vec![0.0; 64];
+        let mut half2_out = vec![0.0; 64];
+        let refs1: Vec<&[f32]> = vec![half1];
+        let mut refs2: Vec<&mut [f32]> = vec![&mut half1_out];
+        assert!(engine2.process(&refs1, &mut refs2));
+        let refs3: Vec<&[f32]> = vec![half2];
+        let mut refs4: Vec<&mut [f32]> = vec![&mut half2_out];
+        assert!(engine2.process(&refs3, &mut refs4));
+        split_output[..64].copy_from_slice(&half1_out);
+        split_output[64..].copy_from_slice(&half2_out);
+
+        // Compare.
+        for i in 0..128 {
+            let diff = (full_output[i] - split_output[i]).abs();
+            assert!(
+                diff < 1e-6,
+                "split-block with filter mismatch at {}: full={}, split={}, diff={}",
+                i,
+                full_output[i],
+                split_output[i],
+                diff
+            );
+        }
     }
 }
