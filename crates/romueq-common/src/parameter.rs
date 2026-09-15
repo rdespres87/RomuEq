@@ -997,6 +997,45 @@ pub struct BandParameters {
     pub slope: Slope,
 }
 
+impl BandParameters {
+    /// Returns the parameter ID for this band's gain value.
+    pub fn gain_param_id(&self) -> ParamId {
+        let band_idx = self.band_index();
+        ParamId(BAND_ID_MIN + (band_idx as u32 * 100) + 3)
+    }
+
+    /// Returns the parameter ID for this band's frequency value.
+    pub fn frequency_param_id(&self) -> ParamId {
+        let band_idx = self.band_index();
+        ParamId(BAND_ID_MIN + (band_idx as u32 * 100) + 2)
+    }
+
+    /// Returns the band index (0–9) for this parameter set.
+    pub fn band_index(&self) -> usize {
+        0 // Default; must be set by caller using band position.
+    }
+
+    /// Returns the minimum gain range for automation mapping.
+    pub const fn gain_db_min() -> f32 {
+        -24.0
+    }
+
+    /// Returns the maximum gain range for automation mapping.
+    pub const fn gain_db_max() -> f32 {
+        24.0
+    }
+
+    /// Returns the minimum frequency for automation mapping.
+    pub const fn freq_min() -> f32 {
+        20.0
+    }
+
+    /// Returns the maximum frequency for automation mapping.
+    pub const fn freq_max() -> f32 {
+        20_000.0
+    }
+}
+
 impl Default for BandParameters {
     fn default() -> Self {
         BandParameters {

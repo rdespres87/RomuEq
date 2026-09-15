@@ -37,7 +37,11 @@
 //! in a flat `[f32; MAX_BANDS * MAX_CHANNELS * 4]` array (two delay samples
 //! per biquad stage × 2 delay lines).
 
-use romueq_common::{EqParameters, MAX_BANDS, MAX_BLOCK_SIZE, MAX_CHANNELS};
+use crate::automation::AutomationIngestor;
+use romueq_common::automation::{AutomationEvent, AutomationValueProvider, InterpolationMode};
+use romueq_common::{
+    BandParameters, EqParameters, MAX_BANDS, MAX_BLOCK_SIZE, MAX_CHANNELS, ParamId,
+};
 use romueq_dsp::coefficients::compute_coefficients;
 
 // ---------------------------------------------------------------------------
@@ -131,6 +135,12 @@ pub struct EngineLifecycle {
     eq_params: EqParameters,
     /// Number of blocks processed since last reset.
     blocks_processed: u64,
+    /// Current stream sample offset (monotonically increasing).
+    sample_offset: u64,
+    /// Automation event ingestor (initialized in process)
+    automation_ingestor: Option<AutomationIngestor>,
+    /// Last pushed automation event (for API)
+    last_automation_event: Option<AutomationEvent>,
 }
 
 impl EngineLifecycle {
@@ -147,6 +157,9 @@ impl EngineLifecycle {
             delay_line: [0.0; DELAY_BUFFER_SIZE],
             eq_params: EqParameters::default(),
             blocks_processed: 0,
+            sample_offset: 0,
+            automation_ingestor: None,
+            last_automation_event: None,
         }
     }
 
@@ -204,6 +217,39 @@ impl EngineLifecycle {
     /// **No allocation.** The `EqParameters` struct is `Copy` and stored inline.
     pub fn set_parameters(&mut self, params: EqParameters) {
         self.eq_params = params;
+    }
+
+    /// Push an automation event into the ingestor.
+    ///
+    /// The event is queued and will be batched when `process()` is called.
+    /// This method is non-blocking and allocation-free (the ingestor uses
+    /// pre-allocated internal storage).
+    pub fn push_automation_event(&mut self, event: AutomationEvent) {
+        if let Some(ingestor) = &mut self.automation_ingestor {
+            ingestor.push_event(event);
+        }
+        self.last_automation_event = Some(event);
+    }
+
+    /// Create an automation value provider from the finalized batch.
+    fn create_automation_provider(&mut self, block_size: usize) -> Option<AutomationValueProvider> {
+        let ingestor = self.automation_ingestor.as_mut()?;
+        let batch = ingestor.process_block(block_size as u32);
+        Some(ingestor.value_provider(&batch))
+    }
+
+    /// Query the automation provider for a parameter value at a given sample.
+    #[allow(dead_code)]
+    fn query_automation(
+        &self,
+        provider: &Option<AutomationValueProvider>,
+        param_id: ParamId,
+        sample_in_block: usize,
+    ) -> Option<f32> {
+        provider.as_ref().and_then(|p| {
+            let sample = self.sample_offset as u32 + sample_in_block as u32;
+            p.value_at_sample(param_id, sample, None)
+        })
     }
 
     /// Process a single audio block.
@@ -264,14 +310,22 @@ impl EngineLifecycle {
             return false;
         }
 
+        // Initialize the automation ingestor on first process() call.
+        if self.automation_ingestor.is_none() {
+            self.automation_ingestor = Some(AutomationIngestor::new(InterpolationMode::Linear));
+        }
+
+        // Finalize the automation batch for this block and create an interpolation provider.
+        let automation_provider = self.create_automation_provider(block_size);
+
         // Copy inputs to flat buffer (planar layout).
         for (ch, input_ch) in inputs.iter().enumerate().take(self.channels) {
             let offset = ch * self.max_block_size;
             self.buffer[offset..offset + block_size].copy_from_slice(input_ch);
         }
 
-        // Apply DSP processing: band cascade → output gain → bypass.
-        self.process_dsp(block_size);
+        // Apply DSP processing: band cascade → output gain → bypass, with automation.
+        self.process_dsp(block_size, &automation_provider);
 
         // Copy processed buffer to outputs.
         for (ch, output_ch) in outputs.iter_mut().enumerate().take(self.channels) {
@@ -279,6 +333,8 @@ impl EngineLifecycle {
             output_ch.copy_from_slice(&self.buffer[offset..offset + block_size]);
         }
 
+        // Advance the stream sample offset.
+        self.sample_offset += block_size as u64;
         self.blocks_processed += 1;
         true
     }
@@ -287,11 +343,16 @@ impl EngineLifecycle {
     ///
     /// Processes each channel through a cascade of biquad filters (one per
     /// enabled band), then applies output gain and optional bypass.
+    /// Automation events are interpolated sample-by-sample via the provider.
     ///
     /// # Allocation
     ///
     /// **No allocation.** Uses pre-allocated delay-line state.
-    fn process_dsp(&mut self, block_size: usize) {
+    fn process_dsp(
+        &mut self,
+        block_size: usize,
+        automation_provider: &Option<AutomationValueProvider>,
+    ) {
         let sample_rate = self.sample_rate as f32;
         let bypass = self.eq_params.global.bypass;
         let output_gain_db = self.eq_params.global.output_gain_db;
@@ -309,14 +370,53 @@ impl EngineLifecycle {
 
             // Process through band cascade.
             for band_idx in 0..MAX_BANDS {
-                let band_params = self.eq_params.bands[band_idx];
+                let mut band_params = self.eq_params.bands[band_idx];
 
                 // Skip disabled bands.
                 if !band_params.enabled {
                     continue;
                 }
 
-                // Compute coefficients for this band.
+                // Apply automation interpolation for gain_db and frequency_hz.
+                if let Some(provider) = &automation_provider {
+                    let block_start_sample = self.sample_offset as u32;
+                    let gain_min = BandParameters::gain_db_min();
+                    let gain_max = BandParameters::gain_db_max();
+                    let freq_min: f32 = 20.0;
+                    let freq_max: f32 = sample_rate / 2.0;
+
+                    // Interpolate gain_db per sample.
+                    let mut last_gain = band_params.gain_db;
+                    for i in 0..block_size {
+                        let sample_idx = block_start_sample + i as u32;
+                        if let Some(automation_value) =
+                            provider.value_at_sample(band_params.gain_param_id(), sample_idx, None)
+                        {
+                            // Map automation value [-1.0, 1.0] to gain range [gain_min, gain_max].
+                            let gain_range = gain_max - gain_min;
+                            last_gain = gain_min + (automation_value + 1.0) * 0.5 * gain_range;
+                        }
+                    }
+                    band_params.gain_db = last_gain;
+
+                    // Interpolate frequency_hz per sample.
+                    let mut last_freq = band_params.frequency_hz;
+                    for i in 0..block_size {
+                        let sample_idx = block_start_sample + i as u32;
+                        if let Some(automation_value) = provider.value_at_sample(
+                            band_params.frequency_param_id(),
+                            sample_idx,
+                            None,
+                        ) {
+                            // Map automation value to frequency range using log scale.
+                            let t = automation_value * 0.5 + 0.5;
+                            last_freq = freq_min.powf(t) * (freq_max / freq_min).powf(t);
+                        }
+                    }
+                    band_params.frequency_hz = last_freq;
+                }
+
+                // Compute coefficients for this band (may have been modified by automation).
                 let coeffs = compute_coefficients(
                     band_params.filter_type,
                     band_params.frequency_hz,
@@ -380,6 +480,10 @@ impl EngineLifecycle {
             self.buffer.iter_mut().for_each(|s| *s = 0.0);
             self.delay_line.iter_mut().for_each(|s| *s = 0.0);
             self.blocks_processed = 0;
+            self.sample_offset = 0;
+            if let Some(ref mut ingestor) = self.automation_ingestor {
+                ingestor.reset();
+            }
         }
     }
 
@@ -396,6 +500,8 @@ impl EngineLifecycle {
         self.buffer.iter_mut().for_each(|s| *s = 0.0);
         self.delay_line.iter_mut().for_each(|s| *s = 0.0);
         self.blocks_processed = 0;
+        self.sample_offset = 0;
+        self.automation_ingestor = None;
     }
 
     /// Return the current lifecycle state.
