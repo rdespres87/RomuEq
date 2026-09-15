@@ -16,6 +16,7 @@
 //! ```text
 //! EngineLifecycle::new()
 //!     → prepare(sample_rate, max_block_size, channels)
+//!     → set_parameters(eq_params)
 //!     → process(inputs, outputs)  // can be called repeatedly
 //!     → reset()                   // optional, clears internal state
 //!     → prepare(new_params)       // reprepare (sample-rate/channel change)
@@ -28,8 +29,16 @@
 //! - Invalid-host behaviour is deterministic: returns `false` without
 //!   modifying state (except the documented panic on `inputs.len() != outputs.len()`).
 //! - All buffers are stack-allocated or use a flat pre-allocated array.
+//!
+//! # DSP processing
+//!
+//! The engine applies a cascade of biquad filters (one per band) per channel,
+//! then applies output gain and optional bypass. All filter state is stored
+//! in a flat `[f32; MAX_BANDS * MAX_CHANNELS * 4]` array (two delay samples
+//! per biquad stage × 2 delay lines).
 
-use romueq_common::{MAX_BLOCK_SIZE, MAX_CHANNELS};
+use romueq_common::{EqParameters, MAX_BANDS, MAX_BLOCK_SIZE, MAX_CHANNELS};
+use romueq_dsp::coefficients::compute_coefficients;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -44,6 +53,16 @@ const LIFECYCLE_MAX_BLOCK_SIZE: usize = MAX_BLOCK_SIZE;
 /// Total number of samples in the flat internal buffer:
 /// `MAX_CHANNELS * MAX_BLOCK_SIZE`.
 const FLAT_BUFFER_SIZE: usize = LIFECYCLE_MAX_CHANNELS * LIFECYCLE_MAX_BLOCK_SIZE;
+
+/// Number of biquad stages per channel (one per band).
+const BIQUAD_STAGES_PER_CHANNEL: usize = MAX_BANDS;
+
+/// Delay line samples per biquad stage (x[n-1], x[n-2], y[n-1], y[n-2]).
+const DELAY_SAMPLES_PER_STAGE: usize = 4;
+
+/// Total delay line storage: bands × channels × delay samples.
+const DELAY_BUFFER_SIZE: usize =
+    BIQUAD_STAGES_PER_CHANNEL * LIFECYCLE_MAX_CHANNELS * DELAY_SAMPLES_PER_STAGE;
 
 // ---------------------------------------------------------------------------
 // LifecycleState
@@ -71,23 +90,27 @@ impl Default for LifecycleState {
 /// Engine lifecycle manager.
 ///
 /// Manages the prepare/process/reset/reprepare sequence for the engine.
-/// It owns the sample rate, block size, channel configuration, and a
-/// **flat pre-allocated audio buffer** — no `Vec` allocations during
-/// `process()`.
+/// It owns the sample rate, block size, channel configuration, a
+/// **flat pre-allocated audio buffer**, and **flat pre-allocated biquad
+/// delay-line state** — no `Vec` allocations during `process()`.
 ///
 /// # Allocation-free guarantee
 ///
-/// - `new()` allocates nothing (flat array is stack-sized: 8 * 8192 * 4 bytes
-///   ≈ 256 KiB, stored inline in the struct).
-/// - `prepare()` zeroes the buffer but does **not** allocate.
-/// - `process()` copies data into/out of the flat buffer — no allocation.
-/// - `reset()` zeroes the buffer — no allocation.
+/// - `new()` allocates nothing (flat arrays are inline in the struct).
+/// - `prepare()` zeroes the buffers but does **not** allocate.
+/// - `process()` copies data into/out of the flat buffer and runs biquad
+///   cascades — no allocation.
+/// - `reset()` zeroes the buffers — no allocation.
 /// - `destroy()` resets state — no allocation.
 ///
 /// # Layout
 ///
-/// The flat buffer is indexed as `data[channel * max_block_size + sample]`,
+/// The flat audio buffer is indexed as `data[channel * max_block_size + sample]`,
 /// giving planar channel layout with a single contiguous allocation.
+///
+/// The delay-line buffer is indexed as
+/// `delay[band * channels * 4 + channel * 4 + delay_slot]`,
+/// where `delay_slot` is 0/1 for x[n-1]/x[n-2] and 2/3 for y[n-1]/y[n-2].
 pub struct EngineLifecycle {
     /// Current lifecycle state.
     state: LifecycleState,
@@ -97,9 +120,15 @@ pub struct EngineLifecycle {
     max_block_size: usize,
     /// Number of channels (1 = mono, 2 = stereo).
     channels: usize,
-    /// Flat pre-allocated buffer: `channel * max_block_size + sample`.
+    /// Flat pre-allocated audio buffer: `channel * max_block_size + sample`.
     /// Initialized to zeros; never reallocated.
     buffer: [f32; FLAT_BUFFER_SIZE],
+    /// Flat pre-allocated biquad delay-line state:
+    /// `band * channels * 4 + channel * 4 + slot`.
+    /// Slot 0/1 = x[n-1]/x[n-2], slot 2/3 = y[n-1]/y[n-2].
+    delay_line: [f32; DELAY_BUFFER_SIZE],
+    /// Current EQ parameters.
+    eq_params: EqParameters,
     /// Number of blocks processed since last reset.
     blocks_processed: u64,
 }
@@ -107,7 +136,7 @@ pub struct EngineLifecycle {
 impl EngineLifecycle {
     /// Create a new engine lifecycle in the `Created` state.
     ///
-    /// No allocation occurs — the flat buffer is inline in the struct.
+    /// No allocation occurs — all arrays are inline in the struct.
     pub fn new() -> Self {
         EngineLifecycle {
             state: LifecycleState::Created,
@@ -115,6 +144,8 @@ impl EngineLifecycle {
             max_block_size: 512,
             channels: 2,
             buffer: [0.0; FLAT_BUFFER_SIZE],
+            delay_line: [0.0; DELAY_BUFFER_SIZE],
+            eq_params: EqParameters::default(),
             blocks_processed: 0,
         }
     }
@@ -138,7 +169,7 @@ impl EngineLifecycle {
     ///
     /// # Allocation
     ///
-    /// **No allocation.** The flat buffer is pre-sized at construction time.
+    /// **No allocation.** The flat buffers are pre-sized at construction time.
     /// This method only updates metadata and zeroes the used portion.
     pub fn prepare(&mut self, sample_rate: f64, max_block_size: usize, channels: usize) -> bool {
         assert!(sample_rate > 0.0, "sample_rate must be > 0");
@@ -158,9 +189,21 @@ impl EngineLifecycle {
 
         // Zero the entire flat buffer on prepare (reprepare clears stale data).
         self.buffer.iter_mut().for_each(|s| *s = 0.0);
+        self.delay_line.iter_mut().for_each(|s| *s = 0.0);
 
         self.state = LifecycleState::Ready;
         true
+    }
+
+    /// Set the EQ parameters.
+    ///
+    /// Parameters are applied on the next `process()` call.
+    ///
+    /// # Allocation
+    ///
+    /// **No allocation.** The `EqParameters` struct is `Copy` and stored inline.
+    pub fn set_parameters(&mut self, params: EqParameters) {
+        self.eq_params = params;
     }
 
     /// Process a single audio block.
@@ -190,6 +233,7 @@ impl EngineLifecycle {
     /// # Allocation
     ///
     /// **No allocation.** All data is copied to/from the flat pre-allocated buffer.
+    /// DSP processing uses pre-allocated biquad delay-line state.
     pub fn process(&mut self, inputs: &[&[f32]], outputs: &mut [&mut [f32]]) -> bool {
         // Check state.
         if self.state != LifecycleState::Ready {
@@ -226,8 +270,10 @@ impl EngineLifecycle {
             self.buffer[offset..offset + block_size].copy_from_slice(input_ch);
         }
 
-        // Process: copy inputs to outputs (identity pass-through for now).
-        // The actual DSP will be wired in M3.
+        // Apply DSP processing: band cascade → output gain → bypass.
+        self.process_dsp(block_size);
+
+        // Copy processed buffer to outputs.
         for (ch, output_ch) in outputs.iter_mut().enumerate().take(self.channels) {
             let offset = ch * self.max_block_size;
             output_ch.copy_from_slice(&self.buffer[offset..offset + block_size]);
@@ -237,6 +283,90 @@ impl EngineLifecycle {
         true
     }
 
+    /// Apply DSP processing to the flat buffer.
+    ///
+    /// Processes each channel through a cascade of biquad filters (one per
+    /// enabled band), then applies output gain and optional bypass.
+    ///
+    /// # Allocation
+    ///
+    /// **No allocation.** Uses pre-allocated delay-line state.
+    fn process_dsp(&mut self, block_size: usize) {
+        let sample_rate = self.sample_rate as f32;
+        let bypass = self.eq_params.global.bypass;
+        let output_gain_db = self.eq_params.global.output_gain_db;
+        let output_gain_linear = 10.0_f32.powf(output_gain_db / 20.0);
+
+        for ch_idx in 0..self.channels {
+            let buffer_offset = ch_idx * self.max_block_size;
+            let samples = &mut self.buffer[buffer_offset..buffer_offset + block_size];
+
+            if bypass {
+                // Bypass: zero the output (silence).
+                samples.iter_mut().for_each(|s| *s = 0.0);
+                continue;
+            }
+
+            // Process through band cascade.
+            for band_idx in 0..MAX_BANDS {
+                let band_params = self.eq_params.bands[band_idx];
+
+                // Skip disabled bands.
+                if !band_params.enabled {
+                    continue;
+                }
+
+                // Compute coefficients for this band.
+                let coeffs = compute_coefficients(
+                    band_params.filter_type,
+                    band_params.frequency_hz,
+                    band_params.gain_db,
+                    band_params.q,
+                    band_params.slope,
+                    sample_rate,
+                );
+
+                // Get delay line state for this band/channel.
+                let delay_offset = band_idx * self.channels * DELAY_SAMPLES_PER_STAGE
+                    + ch_idx * DELAY_SAMPLES_PER_STAGE;
+                let delay =
+                    &mut self.delay_line[delay_offset..delay_offset + DELAY_SAMPLES_PER_STAGE];
+
+                // Apply biquad filter to this band (direct-form I).
+                let b0 = coeffs.b0;
+                let b1 = coeffs.b1;
+                let b2 = coeffs.b2;
+                let a1 = coeffs.a1;
+                let a2 = coeffs.a2;
+
+                let mut x1 = delay[0];
+                let mut x2 = delay[1];
+                let mut y1 = delay[2];
+                let mut y2 = delay[3];
+
+                for sample in samples.iter_mut().take(block_size) {
+                    let x_n = *sample;
+                    let y_n = b0 * x_n + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
+                    *sample = y_n;
+                    x2 = x1;
+                    x1 = x_n;
+                    y2 = y1;
+                    y1 = y_n;
+                }
+
+                delay[0] = x1;
+                delay[1] = x2;
+                delay[2] = y1;
+                delay[3] = y2;
+            }
+
+            // Apply output gain.
+            if output_gain_linear != 1.0 {
+                samples.iter_mut().for_each(|s| *s *= output_gain_linear);
+            }
+        }
+    }
+
     /// Reset internal state (delays, filters, meters).
     ///
     /// Does NOT change sample rate, block size, or channel configuration.
@@ -244,10 +374,11 @@ impl EngineLifecycle {
     ///
     /// # Allocation
     ///
-    /// **No allocation.** Only zeroes the flat buffer and resets the counter.
+    /// **No allocation.** Only zeroes the flat buffers and resets the counter.
     pub fn reset(&mut self) {
         if self.state == LifecycleState::Ready {
             self.buffer.iter_mut().for_each(|s| *s = 0.0);
+            self.delay_line.iter_mut().for_each(|s| *s = 0.0);
             self.blocks_processed = 0;
         }
     }
@@ -263,6 +394,7 @@ impl EngineLifecycle {
     pub fn destroy(&mut self) {
         self.state = LifecycleState::Created;
         self.buffer.iter_mut().for_each(|s| *s = 0.0);
+        self.delay_line.iter_mut().for_each(|s| *s = 0.0);
         self.blocks_processed = 0;
     }
 
@@ -303,6 +435,16 @@ impl EngineLifecycle {
     pub fn buffer_mut(&mut self) -> &mut [f32] {
         &mut self.buffer
     }
+
+    /// Return the current EQ parameters.
+    pub fn eq_parameters(&self) -> &EqParameters {
+        &self.eq_params
+    }
+
+    /// Return a mutable reference to the current EQ parameters.
+    pub fn eq_parameters_mut(&mut self) -> &mut EqParameters {
+        &mut self.eq_params
+    }
 }
 
 impl Default for EngineLifecycle {
@@ -318,6 +460,7 @@ impl Default for EngineLifecycle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use romueq_common::{BandParameters, Slope};
 
     // -----------------------------------------------------------------------
     // EngineLifecycle construction tests
@@ -336,11 +479,18 @@ mod tests {
 
     #[test]
     fn test_lifecycle_new_no_allocation() {
-        // Verify the struct size is reasonable (flat buffer inline).
+        // Verify the struct size is reasonable (flat buffers inline).
         // FLAT_BUFFER_SIZE = 8 * 8192 = 65536 f32s = 262144 bytes.
-        // Plus metadata (~40 bytes). Should be ~262 KiB.
+        // DELAY_BUFFER_SIZE = 8 * 8 * 4 = 256 f32s = 1024 bytes.
+        // Metadata + padding brings total to ~263 KiB.
         let size = std::mem::size_of::<EngineLifecycle>();
-        assert_eq!(size, FLAT_BUFFER_SIZE * 4 + 40);
+        let expected = FLAT_BUFFER_SIZE * 4 + DELAY_BUFFER_SIZE * 4;
+        // Allow up to 256 bytes of metadata/padding overhead.
+        assert!(
+            size >= expected && size <= expected + 256,
+            "EngineLifecycle size {size} out of range [{expected}, {}]",
+            expected + 256
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -453,16 +603,22 @@ mod tests {
         assert!(engine.process(&input_refs, &mut output_refs));
         assert_eq!(engine.blocks_processed(), 1);
 
-        // Identity pass-through: outputs should match inputs.
+        // With default parameters (all bands disabled by default), the output
+        // should be near-zero (bypass is false, but all bands are enabled
+        // with default params — gain 0dB, unity gain).
+        // Actually, default BandParameters has enabled=true, gain_db=0.0,
+        // which means unity gain through each band. So output ≈ input.
         for ch in 0..2 {
             for i in 0..64 {
+                // Allow small numerical error from biquad processing.
                 assert!(
-                    (output_refs[ch][i] - input_refs[ch][i]).abs() < f32::EPSILON,
-                    "ch={} i={} expected {} got {}",
+                    (output_refs[ch][i] - input_refs[ch][i]).abs() < 1e-3,
+                    "ch={} i={} expected {} got {} (diff {})",
                     ch,
                     i,
                     input_refs[ch][i],
-                    output_refs[ch][i]
+                    output_refs[ch][i],
+                    (output_refs[ch][i] - input_refs[ch][i]).abs()
                 );
             }
         }
@@ -493,7 +649,8 @@ mod tests {
             outputs.iter_mut().map(|v| v.as_mut_slice()).collect();
 
         assert!(engine.process(&input_refs, &mut output_refs));
-        assert!((output_refs[0][0] - 0.7).abs() < f32::EPSILON);
+        // With default params (unity gain), output should be near input.
+        assert!((output_refs[0][0] - 0.7).abs() < 1e-3);
     }
 
     #[test]
@@ -587,6 +744,168 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // DSP processing tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_lifecycle_process_bypass_silences_output() {
+        let mut engine = EngineLifecycle::new();
+        engine.prepare(44100.0, 256, 2);
+
+        // Set bypass to true.
+        let mut params = EqParameters::default();
+        params.global.bypass = true;
+        engine.set_parameters(params);
+
+        let inputs: Vec<Vec<f32>> = vec![vec![0.5; 64], vec![0.3; 64]];
+        let mut outputs: Vec<Vec<f32>> = vec![vec![0.0; 64], vec![0.0; 64]];
+        let input_refs: Vec<&[f32]> = inputs.iter().map(|v| v.as_slice()).collect();
+        let mut output_refs: Vec<&mut [f32]> =
+            outputs.iter_mut().map(|v| v.as_mut_slice()).collect();
+
+        assert!(engine.process(&input_refs, &mut output_refs));
+
+        // Bypass should silence all output.
+        for (ch, output_ch) in output_refs.iter().enumerate().take(2) {
+            for (i, &sample) in output_ch.iter().enumerate() {
+                assert_eq!(
+                    sample, 0.0,
+                    "ch={ch} i={i} bypass output should be 0, got {sample}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_lifecycle_process_output_gain() {
+        let mut engine = EngineLifecycle::new();
+        engine.prepare(44100.0, 256, 1);
+
+        // Set output gain to +6 dB (×2 linear).
+        let mut params = EqParameters::default();
+        params.global.output_gain_db = 6.0206; // ≈ ×2
+        engine.set_parameters(params);
+
+        let inputs: Vec<Vec<f32>> = vec![vec![0.5; 64]];
+        let mut outputs: Vec<Vec<f32>> = vec![vec![0.0; 64]];
+        let input_refs: Vec<&[f32]> = inputs.iter().map(|v| v.as_slice()).collect();
+        let mut output_refs: Vec<&mut [f32]> =
+            outputs.iter_mut().map(|v| v.as_mut_slice()).collect();
+
+        assert!(engine.process(&input_refs, &mut output_refs));
+
+        // Output should be ≈ input × 2.
+        for i in 0..64 {
+            assert!(
+                (output_refs[0][i] - 1.0).abs() < 1e-2,
+                "i={} expected ~1.0 got {}",
+                i,
+                output_refs[0][i]
+            );
+        }
+    }
+
+    #[test]
+    fn test_lifecycle_process_band_boost() {
+        let mut engine = EngineLifecycle::new();
+        engine.prepare(44100.0, 256, 1);
+
+        // Enable band 0 with +12 dB boost at 1000 Hz.
+        let mut params = EqParameters::default();
+        params.bands[0] = BandParameters {
+            enabled: true,
+            filter_type: romueq_common::FilterType::Bell,
+            frequency_hz: 1000.0,
+            gain_db: 12.0,
+            q: 0.707,
+            slope: Slope::Db12,
+        };
+        engine.set_parameters(params);
+
+        // Generate a 1000 Hz sine wave (one channel, 64 samples).
+        let sample_rate = 44100.0;
+        let freq = 1000.0;
+        let input_samples: Vec<f32> = (0..64)
+            .map(|i| (2.0 * std::f32::consts::PI * freq * i as f32 / sample_rate).sin() * 0.5)
+            .collect();
+        let inputs: Vec<&[f32]> = vec![&input_samples];
+        let mut outputs: Vec<Vec<f32>> = vec![vec![0.0; 64]];
+        let mut output_refs: Vec<&mut [f32]> =
+            outputs.iter_mut().map(|v| v.as_mut_slice()).collect();
+
+        assert!(engine.process(&inputs, &mut output_refs));
+
+        // The output should have higher amplitude than the input at 1000 Hz
+        // (the bell filter boosts by +12 dB ≈ ×4 in amplitude).
+        let input_rms: f32 = inputs[0].iter().map(|s| s * s).sum::<f32>().sqrt() / 64.0_f32.sqrt();
+        let output_rms: f32 =
+            output_refs[0].iter().map(|s| s * s).sum::<f32>().sqrt() / 64.0_f32.sqrt();
+
+        // Output RMS should be significantly higher than input RMS.
+        assert!(
+            output_rms > input_rms * 1.5,
+            "output RMS {output_rms} should be > input RMS {input_rms} × 1.5"
+        );
+    }
+
+    #[test]
+    fn test_lifecycle_process_band_disable() {
+        let mut engine = EngineLifecycle::new();
+        engine.prepare(44100.0, 256, 1);
+
+        // Disable all bands.
+        let mut params = EqParameters::default();
+        for band in &mut params.bands {
+            band.enabled = false;
+        }
+        engine.set_parameters(params);
+
+        let inputs: Vec<Vec<f32>> = vec![vec![0.5; 64]];
+        let mut outputs: Vec<Vec<f32>> = vec![vec![0.0; 64]];
+        let input_refs: Vec<&[f32]> = inputs.iter().map(|v| v.as_slice()).collect();
+        let mut output_refs: Vec<&mut [f32]> =
+            outputs.iter_mut().map(|v| v.as_mut_slice()).collect();
+
+        assert!(engine.process(&input_refs, &mut output_refs));
+
+        // With all bands disabled and no output gain, the input signal passes
+        // through unchanged (no processing applied).
+        for i in 0..64 {
+            assert_eq!(
+                output_refs[0][i], 0.5,
+                "i={} output should match input (0.5) with all bands disabled, got {}",
+                i, output_refs[0][i]
+            );
+        }
+    }
+
+    #[test]
+    fn test_lifecycle_process_stereo_channel_isolation() {
+        let mut engine = EngineLifecycle::new();
+        engine.prepare(44100.0, 256, 2);
+
+        // Set different parameters for each channel by using different inputs.
+        let inputs: Vec<Vec<f32>> = vec![vec![1.0; 64], vec![0.0; 64]];
+        let mut outputs: Vec<Vec<f32>> = vec![vec![0.0; 64], vec![0.0; 64]];
+        let input_refs: Vec<&[f32]> = inputs.iter().map(|v| v.as_slice()).collect();
+        let mut output_refs: Vec<&mut [f32]> =
+            outputs.iter_mut().map(|v| v.as_mut_slice()).collect();
+
+        assert!(engine.process(&input_refs, &mut output_refs));
+
+        // Channel 0 should have non-zero output (input was 1.0).
+        // Channel 1 should have near-zero output (input was 0.0, and with
+        // default params the biquad cascade starts from zero state).
+        let ch0_sum: f32 = output_refs[0].iter().sum();
+        let ch1_sum: f32 = output_refs[1].iter().sum();
+
+        assert!(
+            ch0_sum.abs() > ch1_sum.abs(),
+            "ch0 sum {ch0_sum} should be > ch1 sum {ch1_sum}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
     // Reset tests
     // -----------------------------------------------------------------------
 
@@ -614,6 +933,8 @@ mod tests {
         assert_eq!(engine.channels(), 2);
         // Buffer should be zeroed.
         assert!(engine.buffer().iter().all(|&s| s == 0.0));
+        // Delay line should be zeroed.
+        assert!(engine.delay_line.iter().all(|&s| s == 0.0));
     }
 
     #[test]
@@ -730,7 +1051,7 @@ mod tests {
         // Buffer should still have the input values.
         assert_eq!(engine.buffer()[0], 1.0);
         assert_eq!(engine.buffer()[256], 2.0);
-        // Outputs should match inputs (identity pass-through).
+        // Outputs should match inputs (identity pass-through with default params).
         assert_eq!(output_refs[0][0], 1.0);
         assert_eq!(output_refs[1][0], 2.0);
     }
