@@ -259,6 +259,70 @@ impl Default for AnalysisBuffer {
 }
 
 // ---------------------------------------------------------------------------
+// Analysis configuration (separate from EQ state)
+// ---------------------------------------------------------------------------
+
+/// Configuration for the analysis pipeline.
+///
+/// This is independent of the EQ's logical state — it controls what
+/// analysis is performed and how, not how the audio is processed.
+#[derive(Debug, Clone)]
+pub struct AnalysisConfig {
+    /// Whether analysis is enabled. When disabled, frames are still
+    /// produced but not pushed to the buffer.
+    pub enabled: bool,
+    /// Sample rate used for analysis calculations.
+    pub sample_rate: f64,
+    /// Block size (number of samples per processing block).
+    pub block_size: usize,
+    /// Number of channels.
+    pub channels: usize,
+}
+
+impl Default for AnalysisConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            sample_rate: 44100.0,
+            block_size: 512,
+            channels: 2,
+        }
+    }
+}
+
+impl AnalysisConfig {
+    /// Create a new analysis config with the given parameters.
+    pub fn new(sample_rate: f64, block_size: usize, channels: usize) -> Self {
+        Self {
+            enabled: true,
+            sample_rate,
+            block_size,
+            channels,
+        }
+    }
+
+    /// Returns `true` if analysis is enabled.
+    pub fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
+    /// Enable analysis.
+    pub fn enable(&mut self) {
+        self.enabled = true;
+    }
+
+    /// Disable analysis (frames are still produced but not pushed).
+    pub fn disable(&mut self) {
+        self.enabled = false;
+    }
+
+    /// Toggle analysis enabled state.
+    pub fn toggle(&mut self) {
+        self.enabled = !self.enabled;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // AnalysisEngine — consumer-side analysis API
 // ---------------------------------------------------------------------------
 
@@ -266,6 +330,13 @@ impl Default for AnalysisBuffer {
 ///
 /// Drains the analysis buffer and maintains a latest-frame snapshot that
 /// can be queried by the GUI thread at any time.
+///
+/// # Thread boundaries
+///
+/// - `push()` is called from the audio thread (RT-safe: no allocation).
+/// - `consume_all()`, `latest_frame()`, `latest_snapshot()` are called
+///   from the GUI/worker thread.
+/// - The engine owns its buffer; the audio thread only pushes frames.
 pub struct AnalysisEngine {
     /// The bounded ring buffer receiving frames from the audio thread.
     buffer: AnalysisBuffer,
@@ -278,21 +349,82 @@ pub struct AnalysisEngine {
 
     /// Total frames dropped by the ring buffer.
     dropped_count: u64,
+
+    /// Analysis configuration (separate from EQ state).
+    config: AnalysisConfig,
+
+    /// Whether the engine is currently running (receiving frames).
+    running: bool,
 }
 
 impl AnalysisEngine {
-    /// Create a new analysis engine with an empty buffer.
+    /// Create a new analysis engine with an empty buffer and default config.
     pub fn new() -> Self {
+        Self::with_config(AnalysisConfig::default())
+    }
+
+    /// Create a new analysis engine with the given configuration.
+    pub fn with_config(config: AnalysisConfig) -> Self {
         AnalysisEngine {
             buffer: AnalysisBuffer::new(),
             latest: AnalysisFrame::default(),
             consumed_count: 0,
             dropped_count: 0,
+            config,
+            running: true,
         }
     }
 
+    /// Returns a reference to the analysis configuration.
+    pub fn config(&self) -> &AnalysisConfig {
+        &self.config
+    }
+
+    /// Returns a mutable reference to the analysis configuration.
+    pub fn config_mut(&mut self) -> &mut AnalysisConfig {
+        &mut self.config
+    }
+
+    /// Returns `true` if analysis is enabled and the engine is running.
+    pub fn is_active(&self) -> bool {
+        self.config.enabled && self.running
+    }
+
+    /// Enable analysis.
+    pub fn enable(&mut self) {
+        self.config.enable();
+        self.running = true;
+    }
+
+    /// Disable analysis — frames are still produced but not pushed.
+    pub fn disable(&mut self) {
+        self.config.disable();
+        self.running = false;
+    }
+
+    /// Toggle analysis enabled state.
+    pub fn toggle(&mut self) {
+        self.config.toggle();
+        self.running = self.config.enabled;
+    }
+
+    /// Reconfigure the analysis pipeline with new parameters.
+    ///
+    /// Replaces the current config and resets internal state (consumed/dropped
+    /// counts, latest frame). This is safe to call from the GUI thread.
+    pub fn reconfigure(&mut self, new_config: AnalysisConfig) {
+        self.config = new_config;
+        self.running = true;
+    }
+
     /// Push a frame from the audio thread.
+    ///
+    /// If analysis is disabled, the frame is silently ignored.
     pub fn push(&mut self, frame: AnalysisFrame) -> bool {
+        if !self.config.enabled || !self.running {
+            return true; // Not an error, just not recording.
+        }
+
         let result = self.buffer.push(frame);
         if !result {
             // Frame was dropped by the ring buffer.
@@ -1756,5 +1888,179 @@ mod tests {
                 "window {window_type:?} should produce non-zero output"
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // M5-T004: AnalysisConfig / AnalysisEngine enable/disable/reconfigure
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_analysis_config_default() {
+        let config = AnalysisConfig::default();
+        assert!(config.is_enabled());
+        assert_eq!(config.sample_rate, 44100.0);
+        assert_eq!(config.block_size, 512);
+        assert_eq!(config.channels, 2);
+    }
+
+    #[test]
+    fn test_analysis_config_enable_disable() {
+        let mut config = AnalysisConfig::default();
+        assert!(config.is_enabled());
+
+        config.disable();
+        assert!(!config.is_enabled());
+
+        config.enable();
+        assert!(config.is_enabled());
+
+        config.toggle();
+        assert!(!config.is_enabled());
+    }
+
+    #[test]
+    fn test_analysis_engine_with_config() {
+        let config = AnalysisConfig::new(48000.0, 256, 1);
+        let mut engine = AnalysisEngine::with_config(config);
+        assert!(engine.is_active());
+
+        engine.disable();
+        assert!(!engine.is_active());
+
+        engine.enable();
+        assert!(engine.is_active());
+    }
+
+    #[test]
+    fn test_analysis_engine_enable_disable_with_frames() {
+        let mut engine = AnalysisEngine::new();
+        assert!(engine.is_active());
+
+        // Disable — frames should be accepted but not recorded.
+        engine.disable();
+        assert!(!engine.is_active());
+
+        // Push frames while disabled — buffer should not grow (push returns true
+        // but doesn't record when disabled).
+        let frame = AnalysisFrame {
+            block_size: 256,
+            sample_rate: 44100.0,
+            rms: [0.0; ANALYSIS_MAX_CHANNELS],
+            peak: [0.0; ANALYSIS_MAX_CHANNELS],
+            zero_crossings: [0; ANALYSIS_MAX_CHANNELS],
+            frame_number: 0,
+            dropped: false,
+        };
+
+        for _ in 0..ANALYSIS_BUFFER_CAPACITY + 1 {
+            engine.push(frame);
+        }
+
+        // Buffer should be empty because push returns early when disabled.
+        assert_eq!(engine.buffer_len(), 0);
+
+        // Re-enable — engine should be active again.
+        engine.enable();
+        assert!(engine.is_active());
+
+        // Now push should record frames.
+        engine.push(frame);
+        assert_eq!(engine.buffer_len(), 1);
+
+        // Consume and verify.
+        let drained = engine.consume_all();
+        assert_eq!(drained, 1);
+        assert_eq!(engine.latest_frame().frame_number, 0);
+    }
+
+    #[test]
+    fn test_analysis_engine_reconfigure() {
+        let mut engine = AnalysisEngine::new();
+        assert!(engine.is_active());
+
+        // Reconfigure with new parameters.
+        let new_config = AnalysisConfig::new(48000.0, 512, 2);
+        engine.reconfigure(new_config);
+
+        // Should still be active after reconfigure.
+        assert!(engine.is_active());
+        assert_eq!(engine.config().sample_rate, 48000.0);
+        assert_eq!(engine.config().block_size, 512);
+    }
+
+    #[test]
+    fn test_analysis_engine_new_is_active_by_default() {
+        // AnalysisEngine::new() uses default config (enabled=true), so it starts active.
+        let engine = AnalysisEngine::new();
+        assert!(engine.is_active());
+    }
+
+    #[test]
+    fn test_analysis_engine_push_disabled_then_reenabled() {
+        let mut engine = AnalysisEngine::new();
+
+        // Disable and push many frames.
+        engine.disable();
+        let frame = AnalysisFrame {
+            block_size: 256,
+            sample_rate: 44100.0,
+            rms: [0.0; ANALYSIS_MAX_CHANNELS],
+            peak: [0.0; ANALYSIS_MAX_CHANNELS],
+            zero_crossings: [0; ANALYSIS_MAX_CHANNELS],
+            frame_number: 0,
+            dropped: false,
+        };
+
+        for i in 0..100 {
+            let mut f = frame;
+            f.frame_number = i;
+            engine.push(f);
+        }
+
+        // Buffer should be empty.
+        assert_eq!(engine.buffer_len(), 0);
+
+        // Re-enable and push one frame.
+        engine.enable();
+        let mut f = frame;
+        f.frame_number = 100;
+        engine.push(f);
+
+        // Only the last frame should be in buffer.
+        assert_eq!(engine.buffer_len(), 1);
+    }
+
+    #[test]
+    fn test_meter_engine_reconfigure() {
+        let mut engine = MeterEngine::new(44100.0, 256);
+        // Push some data — meter engine push takes peak and rms arrays.
+        engine.push(
+            [0.8, 0.6, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            [0.3, 0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        );
+
+        // Reconfigure with new sample rate and block size.
+        engine.reconfigure(48000.0, 512);
+
+        // Reconfigure resets peak-hold state (decay rate changes).
+        // Values should be reset to zero after reconfigure.
+        let latest = engine.latest();
+        assert_eq!(latest.values.rms[0], 0.0);
+        assert_eq!(latest.values.rms[1], 0.0);
+    }
+
+    #[test]
+    fn test_analysis_engine_config_accessors() {
+        let config = AnalysisConfig::new(48000.0, 512, 4);
+        let mut engine = AnalysisEngine::with_config(config);
+
+        // Immutable access.
+        assert_eq!(engine.config().sample_rate, 48000.0);
+        assert_eq!(engine.config().block_size, 512);
+        assert_eq!(engine.config().channels, 4);
+
+        // Mutable access.
+        engine.config_mut().disable();
+        assert!(!engine.is_active());
     }
 }

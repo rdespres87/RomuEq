@@ -88,6 +88,13 @@ impl PeakHold {
     pub fn reset(&mut self) {
         self.value = 0.0;
     }
+
+    /// Reset the peak hold and update its decay rate with new parameters.
+    pub fn reset_with(&mut self, sample_rate: f64, block_size: usize) {
+        let frames_per_second = sample_rate / block_size as f64;
+        self.decay = 10.0f32.powf(-18.0 / (20.0_f32 * frames_per_second as f32));
+        self.value = 0.0;
+    }
 }
 
 impl Default for PeakHold {
@@ -291,6 +298,17 @@ impl MeterEngine {
     /// and pushes them to this engine.
     pub fn push_from_analysis(&mut self, analysis: &crate::AnalysisFrame) -> bool {
         self.push(analysis.peak, analysis.rms)
+    }
+
+    /// Reconfigure the meter engine with new sample rate and block size.
+    ///
+    /// Recreates all `PeakHold` instances with the new parameters and resets
+    /// peak hold state. Safe to call from the GUI thread.
+    pub fn reconfigure(&mut self, sample_rate: f64, block_size: usize) {
+        for ph in &mut self.peak_holds {
+            ph.reset_with(sample_rate, block_size);
+        }
+        self.reset();
     }
 
     /// Return a reference to the latest meter frame.
