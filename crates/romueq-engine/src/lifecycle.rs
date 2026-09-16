@@ -1409,15 +1409,11 @@ mod tests {
             let diff1: f32 = (out1_ch1[i] - split_ch1[i]).abs();
             assert!(
                 diff0 < 1e-6,
-                "stereo ch0 split mismatch at {}: diff={}",
-                i,
-                diff0
+                "stereo ch0 split mismatch at {i}: diff={diff0}"
             );
             assert!(
                 diff1 < 1e-6,
-                "stereo ch1 split mismatch at {}: diff={}",
-                i,
-                diff1
+                "stereo ch1 split mismatch at {i}: diff={diff1}"
             );
         }
     }
@@ -1474,8 +1470,7 @@ mod tests {
         let output_rms: f32 = output.iter().map(|s| s * s).sum::<f32>().sqrt() / 256.0_f32.sqrt();
         assert!(
             output_rms > 0.01,
-            "all-8-bands output RMS {} should be > 0.01",
-            output_rms
+            "all-8-bands output RMS {output_rms} should be > 0.01"
         );
     }
 
@@ -1512,8 +1507,7 @@ mod tests {
             let sum: f32 = output.iter().map(|s| s.abs()).sum();
             assert!(
                 sum > 0.0,
-                "block_size={} output should be non-zero",
-                block_size
+                "block_size={block_size} output should be non-zero"
             );
         }
     }
@@ -1559,8 +1553,7 @@ mod tests {
         let sum: f32 = output.iter().map(|s| s.abs()).sum();
         assert!(
             sum < 1e-10,
-            "silence input should produce silence output, got sum={}",
-            sum
+            "silence input should produce silence output, got sum={sum}"
         );
     }
 
@@ -1582,9 +1575,8 @@ mod tests {
 
         // Impulse at sample 0.
         let mut input = vec![1.0; 64];
-        input[0] = 1.0;
-        for i in 1..64 {
-            input[i] = 0.0;
+        for item in &mut input[1..] {
+            *item = 0.0;
         }
         let mut output = vec![0.0; 64];
         let input_refs: Vec<&[f32]> = vec![&input];
@@ -1593,7 +1585,7 @@ mod tests {
 
         // Impulse should produce non-zero output (filter response).
         let sum: f32 = output.iter().map(|s| s.abs()).sum();
-        assert!(sum > 0.5, "impulse response sum {} should be > 0.5", sum);
+        assert!(sum > 0.5, "impulse response sum {sum} should be > 0.5");
     }
 
     // -----------------------------------------------------------------------
@@ -1614,13 +1606,10 @@ mod tests {
         assert!(engine.process(&input_refs, &mut output_refs));
 
         // Output should match input pattern (unity gain, default params).
-        for i in 0..64 {
+        for (i, (out_s, in_s)) in output_refs[0].iter().zip(&input).enumerate() {
             assert!(
-                (output_refs[0][i] - input[i]).abs() < 1e-3,
-                "mono ch0 sample {}: expected {} got {}",
-                i,
-                input[i],
-                output_refs[0][i]
+                (out_s - in_s).abs() < 1e-3,
+                "mono ch0 sample {i}: expected {in_s} got {out_s}"
             );
         }
     }
@@ -1640,11 +1629,13 @@ mod tests {
         assert!(engine.process(&inputs, &mut output_refs));
 
         // Each channel should preserve its own content (unity gain).
-        for i in 0..64 {
-            let diff0 = (out0[i] - ch0[i]).abs();
-            let diff1 = (out1[i] - ch1[i]).abs();
-            assert!(diff0 < 1e-3, "stereo ch0 sample {}: diff={}", i, diff0);
-            assert!(diff1 < 1e-3, "stereo ch1 sample {}: diff={}", i, diff1);
+        for (i, (out_s, ch_s)) in out0.iter().zip(&ch0).enumerate() {
+            let diff = (out_s - ch_s).abs();
+            assert!(diff < 1e-3, "stereo ch0 sample {i}: diff={diff}");
+        }
+        for (i, (out_s, ch_s)) in out1.iter().zip(&ch1).enumerate() {
+            let diff = (out_s - ch_s).abs();
+            assert!(diff < 1e-3, "stereo ch1 sample {i}: diff={diff}");
         }
     }
 
@@ -1685,15 +1676,11 @@ mod tests {
 
         assert!(
             ch0_out_rms > ch0_in_rms * 1.5,
-            "ch0 boost: in_rms={}, out_rms={}",
-            ch0_in_rms,
-            ch0_out_rms
+            "ch0 boost: in_rms={ch0_in_rms}, out_rms={ch0_out_rms}"
         );
         assert!(
             ch1_out_rms > ch1_in_rms * 1.5,
-            "ch1 boost: in_rms={}, out_rms={}",
-            ch1_in_rms,
-            ch1_out_rms
+            "ch1 boost: in_rms={ch1_in_rms}, out_rms={ch1_out_rms}"
         );
     }
 
