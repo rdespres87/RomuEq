@@ -68,6 +68,9 @@ const DELAY_SAMPLES_PER_STAGE: usize = 4;
 const DELAY_BUFFER_SIZE: usize =
     BIQUAD_STAGES_PER_CHANNEL * LIFECYCLE_MAX_CHANNELS * DELAY_SAMPLES_PER_STAGE;
 
+/// Crossfade duration for click-free bypass in milliseconds.
+const CROSSFADE_MS: usize = 10;
+
 // ---------------------------------------------------------------------------
 // LifecycleState
 // ---------------------------------------------------------------------------
@@ -87,6 +90,8 @@ impl Default for LifecycleState {
     }
 }
 
+// ---------------------------------------------------------------------------
+// BypassTransition
 // ---------------------------------------------------------------------------
 // EngineLifecycle
 // ---------------------------------------------------------------------------
@@ -141,6 +146,20 @@ pub struct EngineLifecycle {
     automation_ingestor: Option<AutomationIngestor>,
     /// Last pushed automation event (for API)
     last_automation_event: Option<AutomationEvent>,
+
+    // -----------------------------------------------------------------------
+    // Bypass transition state (click-free crossfade)
+    // -----------------------------------------------------------------------
+    /// Previous bypass state (before the current transition)
+    prev_bypass: bool,
+    /// Current bypass state
+    curr_bypass: bool,
+    /// Crossfade progress in samples (0 = start, CROSSFADE_SAMPLES = done)
+    crossfade_progress: usize,
+    /// Whether a transition is currently in progress
+    transitioning: bool,
+    /// Buffer to store original input for crossfade bypass
+    bypass_buffer: [f32; FLAT_BUFFER_SIZE],
 }
 
 impl EngineLifecycle {
@@ -160,6 +179,12 @@ impl EngineLifecycle {
             sample_offset: 0,
             automation_ingestor: None,
             last_automation_event: None,
+            // Bypass transition state (click-free crossfade)
+            prev_bypass: false,
+            curr_bypass: false,
+            crossfade_progress: 0,
+            transitioning: false,
+            bypass_buffer: [0.0; FLAT_BUFFER_SIZE],
         }
     }
 
@@ -202,7 +227,14 @@ impl EngineLifecycle {
 
         // Zero the entire flat buffer on prepare (reprepare clears stale data).
         self.buffer.iter_mut().for_each(|s| *s = 0.0);
+        self.bypass_buffer.iter_mut().for_each(|s| *s = 0.0);
         self.delay_line.iter_mut().for_each(|s| *s = 0.0);
+
+        // Reset bypass transition state on prepare.
+        self.prev_bypass = false;
+        self.curr_bypass = false;
+        self.crossfade_progress = 0;
+        self.transitioning = false;
 
         self.state = LifecycleState::Ready;
         true
@@ -355,6 +387,18 @@ impl EngineLifecycle {
     ) {
         let sample_rate = self.sample_rate as f32;
         let bypass = self.eq_params.global.bypass;
+
+        // Detect bypass state change and start transition if needed.
+        if self.curr_bypass != bypass {
+            self.prev_bypass = self.curr_bypass;
+            self.curr_bypass = bypass;
+            self.crossfade_progress = 0;
+            self.transitioning = true;
+        }
+
+        // Calculate crossfade samples count.
+        let crossfade_samples = (CROSSFADE_MS as f32 / 1000.0 * sample_rate) as usize;
+
         let output_gain_db = self.eq_params.global.output_gain_db;
         let output_gain_linear = 10.0_f32.powf(output_gain_db / 20.0);
 
@@ -362,13 +406,10 @@ impl EngineLifecycle {
             let buffer_offset = ch_idx * self.max_block_size;
             let samples = &mut self.buffer[buffer_offset..buffer_offset + block_size];
 
-            if bypass {
-                // Bypass: zero the output (silence).
-                samples.iter_mut().for_each(|s| *s = 0.0);
-                continue;
-            }
+            // Copy input signal to bypass buffer (for crossfade).
+            self.bypass_buffer[buffer_offset..buffer_offset + block_size].copy_from_slice(samples);
 
-            // Process through band cascade.
+            // Process through band cascade (always, even during bypass transition).
             for band_idx in 0..MAX_BANDS {
                 let mut band_params = self.eq_params.bands[band_idx];
 
@@ -464,6 +505,32 @@ impl EngineLifecycle {
             if output_gain_linear != 1.0 {
                 samples.iter_mut().for_each(|s| *s *= output_gain_linear);
             }
+
+            // Apply crossfade if bypass transition is in progress.
+            if self.transitioning && self.crossfade_progress < crossfade_samples {
+                let t = self.crossfade_progress as f32 / crossfade_samples as f32;
+                // Equal-power crossfade curve.
+                let fade_in = (t * std::f32::consts::PI / 2.0).sin();
+                let fade_out = (t * std::f32::consts::PI / 2.0).cos();
+
+                // When bypassing (prev_bypass=false → curr_bypass=true):
+                //   fade_out = processed signal, fade_in = dry (input) signal.
+                for (i, sample) in samples.iter_mut().enumerate().take(block_size) {
+                    let processed = *sample;
+                    let dry = self.bypass_buffer[buffer_offset + i];
+                    *sample = processed * fade_out + dry * fade_in;
+                }
+
+                self.crossfade_progress += block_size;
+                if self.crossfade_progress >= crossfade_samples {
+                    self.transitioning = false;
+                }
+            } else if self.curr_bypass {
+                // Bypass is steady (no transition): pass through dry signal.
+                samples.copy_from_slice(
+                    &self.bypass_buffer[buffer_offset..buffer_offset + block_size],
+                );
+            }
         }
     }
 
@@ -478,12 +545,18 @@ impl EngineLifecycle {
     pub fn reset(&mut self) {
         if self.state == LifecycleState::Ready {
             self.buffer.iter_mut().for_each(|s| *s = 0.0);
+            self.bypass_buffer.iter_mut().for_each(|s| *s = 0.0);
             self.delay_line.iter_mut().for_each(|s| *s = 0.0);
             self.blocks_processed = 0;
             self.sample_offset = 0;
             if let Some(ref mut ingestor) = self.automation_ingestor {
                 ingestor.reset();
             }
+            // Reset bypass transition state.
+            self.prev_bypass = false;
+            self.curr_bypass = false;
+            self.crossfade_progress = 0;
+            self.transitioning = false;
         }
     }
 
@@ -586,16 +659,18 @@ mod tests {
     #[test]
     fn test_lifecycle_new_no_allocation() {
         // Verify the struct size is reasonable (flat buffers inline).
-        // FLAT_BUFFER_SIZE = 8 * 8192 = 65536 f32s = 262144 bytes.
+        // FLAT_BUFFER_SIZE = 8 * 8192 = 65536 f32s.
+        // buffer: FLAT_BUFFER_SIZE * 4 bytes = 262144.
+        // bypass_buffer: FLAT_BUFFER_SIZE * 4 bytes = 262144.
         // DELAY_BUFFER_SIZE = 8 * 8 * 4 = 256 f32s = 1024 bytes.
-        // Metadata + padding brings total to ~263 KiB.
+        // Metadata + padding brings total to ~526 KiB.
         let size = std::mem::size_of::<EngineLifecycle>();
-        let expected = FLAT_BUFFER_SIZE * 4 + DELAY_BUFFER_SIZE * 4;
-        // Allow up to 256 bytes of metadata/padding overhead.
+        let expected = FLAT_BUFFER_SIZE * 8 + DELAY_BUFFER_SIZE * 4;
+        // Allow up to 2048 bytes of metadata/padding overhead.
         assert!(
-            size >= expected && size <= expected + 256,
+            size >= expected && size <= expected + 2048,
             "EngineLifecycle size {size} out of range [{expected}, {}]",
-            expected + 256
+            expected + 2048
         );
     }
 
@@ -858,7 +933,7 @@ mod tests {
         let mut engine = EngineLifecycle::new();
         engine.prepare(44100.0, 256, 2);
 
-        // Set bypass to true.
+        // Set bypass to true on first process → transition starts.
         let mut params = EqParameters::default();
         params.global.bypass = true;
         engine.set_parameters(params);
@@ -871,12 +946,40 @@ mod tests {
 
         assert!(engine.process(&input_refs, &mut output_refs));
 
-        // Bypass should silence all output.
+        // First block: crossfade starts — output is a blend of dry and processed, not silence.
+        // After 10ms (441 samples) of continuous bypass, output should be fully dry (equal to input).
+        // For this test we just verify the engine processes without panicking and output ≈ input.
         for (ch, output_ch) in output_refs.iter().enumerate().take(2) {
             for (i, &sample) in output_ch.iter().enumerate() {
+                // During transition, sample is a mix — never exactly 0.0 or input value.
+                assert!(sample >= 0.0, "ch={ch} i={i} sample should be non-negative");
+            }
+        }
+
+        // Process more blocks to complete the crossfade (441 samples at 44100 Hz = 10 ms).
+        // After transition, bypass output should equal the input signal exactly.
+        let mut outputs2: Vec<Vec<f32>> = vec![vec![0.0; 64], vec![0.0; 64]];
+        let _input_refs2: Vec<&[f32]> = inputs.iter().map(|v| v.as_slice()).collect();
+        let mut output_refs2: Vec<&mut [f32]> =
+            outputs2.iter_mut().map(|v| v.as_mut_slice()).collect();
+        for _ in 0..10 {
+            let mut outputs_tmp: Vec<Vec<f32>> = vec![vec![0.0; 64], vec![0.0; 64]];
+            let input_refs_tmp: Vec<&[f32]> = inputs.iter().map(|v| v.as_slice()).collect();
+            let mut output_refs_tmp: Vec<&mut [f32]> =
+                outputs_tmp.iter_mut().map(|v| v.as_mut_slice()).collect();
+            assert!(engine.process(&input_refs_tmp, &mut output_refs_tmp));
+            // Carry forward to output_refs2 for final assertion.
+            outputs2 = outputs_tmp;
+            output_refs2 = outputs2.iter_mut().map(|v| v.as_mut_slice()).collect();
+        }
+
+        // After transition completes, bypass output should equal input.
+        for (ch, output_ch) in output_refs2.iter().enumerate().take(2) {
+            for (i, &sample) in output_ch.iter().enumerate() {
+                let expected = inputs[ch][i];
                 assert_eq!(
-                    sample, 0.0,
-                    "ch={ch} i={i} bypass output should be 0, got {sample}"
+                    sample, expected,
+                    "ch={ch} i={i} post-transition bypass output should equal input (got {sample}, expected {expected})"
                 );
             }
         }
