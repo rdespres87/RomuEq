@@ -892,6 +892,13 @@ fn one_third_octave_group_edges(group: usize) -> Option<(f64, f64)> {
     Some((low, high))
 }
 
+// ---------------------------------------------------------------------------
+// Meters module
+// ---------------------------------------------------------------------------
+
+mod meters;
+pub use meters::*;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1022,7 +1029,7 @@ mod tests {
                 dropped: false,
                 zero_crossings: [0; ANALYSIS_MAX_CHANNELS],
             };
-            assert!(buffer.push(frame), "frame {} should be enqueued", i);
+            assert!(buffer.push(frame), "frame {i} should be enqueued");
         }
 
         assert!(buffer.is_full());
@@ -1222,12 +1229,12 @@ mod tests {
             // GUI thread drains every 3 blocks.
             if block % 3 == 2 {
                 let drained = engine.consume_all();
-                assert!(drained > 0, "should drain at block {}", block);
+                assert!(drained > 0, "should drain at block {block}");
             }
         }
 
         // Final drain.
-        let final_drain = engine.consume_all();
+        let _final_drain = engine.consume_all();
         assert_eq!(engine.frames_consumed(), 10);
         // Some frames may have been dropped if the buffer was full.
         assert!(
@@ -1279,9 +1286,9 @@ mod tests {
             });
             // After filling, all pushes should fail.
             if i < ANALYSIS_BUFFER_CAPACITY {
-                assert!(result, "frame {} should be enqueued", i);
+                assert!(result, "frame {i} should be enqueued");
             } else {
-                assert!(!result, "frame {} should be dropped", i);
+                assert!(!result, "frame {i} should be dropped");
             }
         }
 
@@ -1349,7 +1356,7 @@ mod tests {
 
             // push() writes into a pre-allocated Vec — no heap alloc.
             let pushed = engine.push(frame);
-            assert!(pushed, "frame {} should be enqueued", i);
+            assert!(pushed, "frame {i} should be enqueued");
         }
 
         // Buffer is full — next push drops.
@@ -1544,10 +1551,7 @@ mod tests {
         // The peak should be at or very near the expected bin.
         assert!(
             (peak_bin as i64 - bin_idx as i64).abs() <= 1,
-            "expected peak near bin {} (freq {:.1} Hz), got bin {}",
-            bin_idx,
-            freq_hz,
-            peak_bin
+            "expected peak near bin {bin_idx} (freq {freq_hz:.1} Hz), got {peak_bin}"
         );
 
         // Verify the peak is significantly above zero.
@@ -1592,11 +1596,7 @@ mod tests {
                 let delta = (peak - prev_peak).abs();
                 assert!(
                     delta < 0.01,
-                    "EMA should converge: frame {} peak={}, prev_peak={}, delta={}",
-                    frame_num,
-                    peak,
-                    prev_peak,
-                    delta
+                    "EMA should converge: frame {frame_num} peak={peak}, prev_peak={prev_peak}, delta={delta}"
                 );
             }
             prev_peak = peak;
@@ -1666,8 +1666,7 @@ mod tests {
         for &mag in &frame.magnitudes_linear {
             assert!(
                 mag < 1e-6,
-                "zero input should produce near-zero magnitude, got {}",
-                mag
+                "zero input should produce near-zero magnitude, got {mag}"
             );
         }
     }
@@ -1754,8 +1753,7 @@ mod tests {
                 .unwrap();
             assert!(
                 max_mag > 0.0,
-                "window {:?} should produce non-zero output",
-                window_type
+                "window {window_type:?} should produce non-zero output"
             );
         }
     }
