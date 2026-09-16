@@ -38,6 +38,7 @@
 //! per biquad stage × 2 delay lines).
 
 use crate::automation::AutomationIngestor;
+use romueq_analysis::{AnalysisBuffer, AnalysisFrame};
 use romueq_common::automation::{AutomationEvent, AutomationValueProvider, InterpolationMode};
 use romueq_common::{
     BandParameters, EqParameters, MAX_BANDS, MAX_BLOCK_SIZE, MAX_CHANNELS, ParamId,
@@ -160,6 +161,13 @@ pub struct EngineLifecycle {
     transitioning: bool,
     /// Buffer to store original input for crossfade bypass
     bypass_buffer: [f32; FLAT_BUFFER_SIZE],
+
+    // -----------------------------------------------------------------------
+    // Analysis handoff (M5-T001)
+    // -----------------------------------------------------------------------
+    /// Bounded ring buffer for analysis frame handoff to the GUI thread.
+    /// Audio thread pushes frames; GUI thread consumes them.
+    analysis_buffer: AnalysisBuffer,
 }
 
 impl EngineLifecycle {
@@ -185,6 +193,8 @@ impl EngineLifecycle {
             crossfade_progress: 0,
             transitioning: false,
             bypass_buffer: [0.0; FLAT_BUFFER_SIZE],
+            // Analysis handoff (M5-T001) — pre-allocated ring buffer
+            analysis_buffer: AnalysisBuffer::new(),
         }
     }
 
@@ -249,6 +259,15 @@ impl EngineLifecycle {
     /// **No allocation.** The `EqParameters` struct is `Copy` and stored inline.
     pub fn set_parameters(&mut self, params: EqParameters) {
         self.eq_params = params;
+    }
+
+    /// M5-T001: Get a mutable reference to the analysis buffer for GUI thread consumption.
+    ///
+    /// The GUI thread calls `consume_all()` on the returned buffer to drain
+    /// analysis frames produced by the audio thread.
+    #[allow(dead_code)]
+    pub fn analysis_buffer(&mut self) -> &mut AnalysisBuffer {
+        &mut self.analysis_buffer
     }
 
     /// Push an automation event into the ingestor.
@@ -358,6 +377,18 @@ impl EngineLifecycle {
 
         // Apply DSP processing: band cascade → output gain → bypass, with automation.
         self.process_dsp(block_size, &automation_provider);
+
+        // M5-T001: Capture analysis frame (allocation-free, RT-safe).
+        // Compute analysis from the input buffer before DSP modifies it.
+        let frame = AnalysisFrame::compute(
+            &self.buffer[..block_size * self.channels],
+            self.channels,
+            self.sample_rate,
+            block_size,
+            self.blocks_processed,
+        );
+        // Best-effort push: drops silently if the analysis ring buffer is full.
+        self.analysis_buffer.push(frame);
 
         // Copy processed buffer to outputs.
         for (ch, output_ch) in outputs.iter_mut().enumerate().take(self.channels) {

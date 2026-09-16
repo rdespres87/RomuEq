@@ -32,6 +32,7 @@ dependencies = [
 name = "romueq-engine"
 version = "0.1.0"
 dependencies = [
+ "romueq-analysis",
  "romueq-common",
  "romueq-dsp",
 ]

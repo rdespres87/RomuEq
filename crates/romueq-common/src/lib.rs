@@ -29,6 +29,12 @@ pub use parameter::Slope;
 pub use parameter::StereoMode;
 
 // ---------------------------------------------------------------------------
+// M2-T001/M5-T001: Bounded SPSC transport (exported for analysis handoff)
+// ---------------------------------------------------------------------------
+
+// OverflowPolicy and SpscRingBuffer are already pub in this module.
+
+// ---------------------------------------------------------------------------
 // M2-T001: Bounded SPSC parameter transport prototypes
 // ---------------------------------------------------------------------------
 

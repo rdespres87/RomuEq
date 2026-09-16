@@ -37,7 +37,7 @@
 | M4-T003 | BLOCKED | P0 | Implement sample-accurate parameter application | M4-T002 | — | NO | M4 |
 | M4-T004 | BLOCKED | P0 | Implement bypass/reprepare behavior | M4-T003 | — | NO | M4 |
 | M4-T005 | BLOCKED | P0 | Run M4 real-time safety gate | M4-T004 | — | NO | M4 |
-| M5-T001 | BLOCKED | P1 | Implement analysis data path outside audio thread | M4-T005 | — | NO | M5 |
+|| M5-T001 | DONE | P1 | Implement analysis data path outside audio thread | M4-T005 | — | NO | M5 |
 | M5-T002 | BLOCKED | P1 | Implement spectrum/FFT pipeline | M5-T001 | — | NO | M5 |
 | M5-T003 | BLOCKED | P1 | Implement meter computation and transport | M5-T002 | — | NO | M5 |
 | M5-T004 | BLOCKED | P1 | Implement analysis configuration/state boundaries | M5-T003 | — | NO | M5 |
