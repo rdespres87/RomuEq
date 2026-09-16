@@ -35,6 +35,9 @@
 /// Unique parameter identifier (re-exports romueq_common for GUI convenience).
 pub use romueq_common::parameter::ParamId;
 
+/// egui Widget trait for `.ui()` method on sliders, checkboxes, etc.
+use egui::Widget;
+
 /// A command from the GUI to the engine.
 ///
 /// Each command targets exactly one parameter and carries the new value.
@@ -159,6 +162,279 @@ impl Default for AnalysisSnapshot {
             dropped: false,
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Band parameter bindings (stable ParamId mappings)
+// ---------------------------------------------------------------------------
+
+/// Offset from a band base ID to each parameter's stable ID.
+pub use romueq_common::parameter::band;
+
+/// All parameters for a single EQ band.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BandParams {
+    /// Band index (0–7).
+    pub band_index: usize,
+    /// Base parameter ID for this band (e.g. 100 for band 0).
+    pub base_id: u32,
+}
+
+impl BandParams {
+    /// Create a new band parameter set.
+    pub const fn new(band_index: usize, base_id: u32) -> Self {
+        Self {
+            band_index,
+            base_id,
+        }
+    }
+
+    /// Return the ParamId for a specific band parameter.
+    pub fn param_id(&self, offset: u32) -> ParamId {
+        ParamId(self.base_id + offset)
+    }
+
+    /// Returns the enabled parameter ID.
+    pub fn enabled(&self) -> ParamId {
+        self.param_id(band::ENABLED)
+    }
+
+    /// Returns the filter type parameter ID.
+    pub fn filter_type(&self) -> ParamId {
+        self.param_id(band::FILTER_TYPE)
+    }
+
+    /// Returns the frequency HZ parameter ID.
+    pub fn frequency_hz(&self) -> ParamId {
+        self.param_id(band::FREQUENCY_HZ)
+    }
+
+    /// Returns the gain dB parameter ID.
+    pub fn gain_db(&self) -> ParamId {
+        self.param_id(band::GAIN_DB)
+    }
+
+    /// Returns the Q parameter ID.
+    pub fn q(&self) -> ParamId {
+        self.param_id(band::Q)
+    }
+
+    /// Returns the slope parameter ID.
+    pub fn slope(&self) -> ParamId {
+        self.param_id(band::SLOPE)
+    }
+
+    /// Returns the human-readable band label.
+    pub fn label(&self) -> String {
+        format!("Band {}", self.band_index + 1)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Band editor widget state
+// ---------------------------------------------------------------------------
+
+/// Per-band editing state for egui widgets.
+///
+/// Tracks which parameters are currently being edited (keyboard focus).
+#[derive(Clone, Debug)]
+pub struct BandEditor {
+    /// Currently editing parameter ID (None when not focused).
+    pub editing: Option<ParamId>,
+}
+
+impl BandEditor {
+    /// Create a new empty editor.
+    pub fn new() -> Self {
+        Self { editing: None }
+    }
+
+    /// Returns true if the given parameter is currently being edited.
+    pub fn is_editing(&self, param_id: ParamId) -> bool {
+        self.editing == Some(param_id)
+    }
+
+    /// Set the currently editing parameter.
+    pub fn start_editing(&mut self, param_id: ParamId) {
+        self.editing = Some(param_id);
+    }
+
+    /// Clear the editing state.
+    pub fn stop_editing(&mut self) {
+        self.editing = None;
+    }
+}
+
+impl Default for BandEditor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Editor state for all 8 bands.
+#[derive(Clone, Debug)]
+pub struct BandControls {
+    editors: [BandEditor; romueq_common::MAX_BANDS],
+}
+
+impl BandControls {
+    /// Create a new empty band controls.
+    pub fn new() -> Self {
+        Self {
+            editors: core::array::from_fn(|_| BandEditor::new()),
+        }
+    }
+
+    /// Get the editor for a specific band.
+    pub fn editor(&mut self, band_index: usize) -> &mut BandEditor {
+        &mut self.editors[band_index]
+    }
+
+    /// Returns the band parameters for a given index.
+    pub fn params(&self, band_index: usize) -> BandParams {
+        BandParams::new(band_index, (band_index as u32 + 1) * 100)
+    }
+}
+
+impl Default for BandControls {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Band widget rendering (egui integration)
+// ---------------------------------------------------------------------------
+
+/// Render a single band's controls.
+///
+/// Each control maps to exactly one stable ParamId and validates/clamps values
+/// before emitting commands through the batch.
+pub fn render_band(
+    ui: &mut egui::Ui,
+    band_index: usize,
+    params: &BandParams,
+    snapshot: &ParamSnapshot,
+    batch: &mut GuiCommandBatch,
+) {
+    // Band header with enable checkbox.
+    ui.horizontal(|ui| {
+        let enabled_val = snapshot.get(params.enabled()).unwrap_or(1.0);
+        let mut enabled = enabled_val >= 0.5;
+
+        egui::Checkbox::new(&mut enabled, "")
+            .ui(ui)
+            .on_hover_text("Enable/disable band");
+
+        if enabled {
+            batch.push(params.enabled(), 0.0);
+        } else {
+            batch.push(params.enabled(), 1.0);
+        }
+
+        ui.label(params.label());
+
+        // Enable/disable button.
+        if ui
+            .button(if enabled { "Disable" } else { "Enable" })
+            .clicked()
+        {
+            let new_val = if enabled { 0.0 } else { 1.0 };
+            batch.push(params.enabled(), new_val);
+        }
+
+        ui.separator();
+    });
+
+    // Filter type dropdown (enum, 0–4).
+    let mut filter_type_val = snapshot.get(params.filter_type()).unwrap_or(0.0);
+    ui.horizontal(|ui| {
+        let filter_types = ["Lowpass", "Highpass", "Peaking", "Lowshelf", "Highshelf"];
+        let idx = filter_type_val as usize;
+        let selected = if idx < filter_types.len() {
+            filter_types[idx]
+        } else {
+            "?"
+        };
+
+        egui::ComboBox::from_id_salt(format!("filter_type_{band_index}"))
+            .selected_text(selected)
+            .show_ui(ui, |ui| {
+                for (i, name) in filter_types.iter().enumerate() {
+                    if ui
+                        .selectable_label(filter_type_val == i as f32, *name)
+                        .clicked()
+                    {
+                        filter_type_val = i as f32;
+                        batch.push(params.filter_type(), filter_type_val);
+                    }
+                }
+            });
+    });
+
+    // Frequency slider (logarithmic scale, 20–20000 Hz).
+    let mut freq_val: f32 = snapshot.get(params.frequency_hz()).unwrap_or(1000.0);
+    ui.horizontal(|ui| {
+        let freq_min: f32 = 20.0;
+        let freq_max: f32 = 20_000.0;
+
+        // Use logarithmic scale for better UX.
+        let log_min = freq_val.log10().clamp(freq_min.log10(), freq_max.log10());
+        let mut display_log = log_min;
+
+        egui::Slider::new(&mut display_log, freq_min.log10()..=freq_max.log10())
+            .suffix(" Hz")
+            .ui(ui);
+
+        // Update value on change.
+        let new_val = 10.0_f32.powf(display_log);
+        if new_val != freq_val {
+            freq_val = new_val;
+            batch.push(params.frequency_hz(), freq_val);
+        }
+    });
+
+    // Gain slider (-24 to +24 dB).
+    let mut gain_val: f32 = snapshot.get(params.gain_db()).unwrap_or(0.0);
+    ui.horizontal(|ui| {
+        egui::Slider::new(&mut gain_val, -24.0..=24.0)
+            .suffix(" dB")
+            .ui(ui);
+        batch.push(params.gain_db(), gain_val);
+    });
+
+    // Q slider (0.1 to 20).
+    let mut q_val: f32 = snapshot.get(params.q()).unwrap_or(0.707);
+    ui.horizontal(|ui| {
+        egui::Slider::new(&mut q_val, 0.1..=20.0)
+            .suffix(" Q")
+            .ui(ui);
+        batch.push(params.q(), q_val);
+    });
+
+    // Slope dropdown (enum, 0–3: 6/12/24/48 dB/oct).
+    let mut slope_val = snapshot.get(params.slope()).unwrap_or(1.0);
+    ui.horizontal(|ui| {
+        let slopes = ["6", "12", "24", "48"];
+        let idx = slope_val as usize;
+        let selected = if idx < slopes.len() { slopes[idx] } else { "?" };
+
+        egui::ComboBox::from_id_salt(format!("slope_{band_index}"))
+            .selected_text(format!("{selected} dB/oct"))
+            .show_ui(ui, |ui| {
+                for (i, label) in slopes.iter().enumerate() {
+                    if ui
+                        .selectable_label(slope_val == i as f32, format!("{label} dB/oct"))
+                        .clicked()
+                    {
+                        slope_val = i as f32;
+                        batch.push(params.slope(), slope_val);
+                    }
+                }
+            });
+    });
+
+    ui.separator();
 }
 
 // ---------------------------------------------------------------------------
@@ -375,5 +651,92 @@ pub mod standalone {
         fn is_prepared(&self) -> bool {
             false // Placeholder
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_band_params_id_mapping() {
+        let band0 = BandParams::new(0, 100);
+        assert_eq!(band0.enabled(), ParamId(100));
+        assert_eq!(band0.filter_type(), ParamId(101));
+        assert_eq!(band0.frequency_hz(), ParamId(102));
+        assert_eq!(band0.gain_db(), ParamId(103));
+        assert_eq!(band0.q(), ParamId(104));
+        assert_eq!(band0.slope(), ParamId(105));
+
+        let band7 = BandParams::new(7, 800);
+        assert_eq!(band7.enabled(), ParamId(800));
+        assert_eq!(band7.gain_db(), ParamId(803));
+    }
+
+    #[test]
+    fn test_band_editor_state() {
+        let mut editor = BandEditor::new();
+        assert!(!editor.is_editing(ParamId(100)));
+
+        editor.start_editing(ParamId(100));
+        assert!(editor.is_editing(ParamId(100)));
+        assert!(!editor.is_editing(ParamId(101)));
+
+        editor.stop_editing();
+        assert!(!editor.is_editing(ParamId(100)));
+    }
+
+    #[test]
+    fn test_band_controls_new() {
+        let controls = BandControls::new();
+        assert_eq!(controls.params(0).band_index, 0);
+        assert_eq!(controls.params(7).band_index, 7);
+    }
+
+    #[test]
+    fn test_gui_command_batch_dedup() {
+        let mut batch = GuiCommandBatch::new();
+        batch.push(ParamId(100), 1.0);
+        batch.push(ParamId(100), 2.0); // should replace
+        assert_eq!(batch.commands().len(), 1);
+        assert_eq!(batch.commands()[0].value, 2.0);
+    }
+
+    #[test]
+    fn test_gui_command_batch_empty() {
+        let batch = GuiCommandBatch::new();
+        assert!(batch.is_empty());
+    }
+
+    #[test]
+    fn test_param_snapshot_get() {
+        let snap = ParamSnapshot::new(vec![
+            ParamValue {
+                param_id: ParamId(100),
+                value: 1.0,
+            },
+            ParamValue {
+                param_id: ParamId(103),
+                value: 6.5,
+            },
+        ]);
+
+        assert_eq!(snap.get(ParamId(100)), Some(1.0));
+        assert_eq!(snap.get(ParamId(103)), Some(6.5));
+        assert_eq!(snap.get(ParamId(101)), None);
+    }
+
+    #[test]
+    fn test_analysis_snapshot_default() {
+        let snap = AnalysisSnapshot::default();
+        assert!(!snap.dropped);
+        assert_eq!(snap.rms[0], f32::NEG_INFINITY);
+        assert_eq!(snap.peak[0], f32::NEG_INFINITY);
+    }
+
+    #[test]
+    fn test_band_label() {
+        assert_eq!(BandParams::new(0, 100).label(), "Band 1");
+        assert_eq!(BandParams::new(7, 800).label(), "Band 8");
     }
 }
