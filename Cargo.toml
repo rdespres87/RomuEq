@@ -27,3 +27,5 @@ romueq-engine = { path = "crates/romueq-engine" }
 romueq-analysis = { path = "crates/romueq-analysis" }
 romueq-gui = { path = "crates/romueq-gui" }
 romueq-plugin = { path = "crates/romueq-plugin" }
+
+rustfft = "6.2"

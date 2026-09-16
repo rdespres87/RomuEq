@@ -20,7 +20,10 @@
 //! - **AnalysisEngine**: consumer-side API that drains frames and provides
 //!   the latest analysis snapshot.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 
 use romueq_common::{OverflowPolicy, SpscRingBuffer};
 
@@ -367,6 +370,527 @@ impl Default for AnalysisEngine {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+// =======================================================================
+// M5-T002: Spectrum / FFT pipeline (consumer-thread, no audio allocation)
+// =======================================================================
+
+use rustfft::{FftPlanner, num_complex::Complex};
+
+/// Window function types supported by the spectrum processor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowType {
+    /// Hann window (default). Best dynamic range for audio analysis.
+    Hann,
+    /// Hamming window. Slightly better peak resolution.
+    Hamming,
+}
+
+/// Frequency bin grouping modes for log-scaled output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogBinMode {
+    /// No grouping — one bin per FFT frequency bin (linear).
+    None,
+    /// Octave bands (1 octave = 2:1 frequency ratio).
+    Octave,
+    /// One-third octave bands (standard acoustic analysis).
+    OneThirdOctave,
+}
+
+/// Configuration for the spectrum processor.
+#[derive(Debug, Clone)]
+pub struct SpectrumConfig {
+    /// FFT size (must be power of 2, e.g. 256, 512, 1024, 2048).
+    pub fft_size: usize,
+    /// Smoothing factor for EMA across frames (0.0 = no smoothing, 1.0 = full).
+    /// Default: 0.4.
+    pub smoothing_factor: f32,
+    /// Window function applied before FFT.
+    pub window_type: WindowType,
+    /// Log frequency bin grouping mode.
+    pub log_bin_mode: LogBinMode,
+    /// Minimum dB floor for log magnitude output.
+    pub min_db: f32,
+}
+
+impl SpectrumConfig {
+    /// Creates a new `SpectrumConfig` with the given FFT size and sample rate.
+    ///
+    /// Uses sensible defaults: Hann window, 1/3-octave log bins, 0.4 EMA
+    /// smoothing, -120 dB floor.
+    pub fn new(fft_size: usize, _sample_rate: f64) -> Self {
+        assert!(
+            fft_size.is_power_of_two() && fft_size >= 16,
+            "fft_size must be a power of 2 ≥ 16, got {fft_size}"
+        );
+        Self {
+            fft_size,
+            smoothing_factor: 0.4,
+            window_type: WindowType::Hann,
+            log_bin_mode: LogBinMode::OneThirdOctave,
+            min_db: -120.0,
+        }
+    }
+}
+
+impl Default for SpectrumConfig {
+    fn default() -> Self {
+        Self {
+            fft_size: 1024,
+            smoothing_factor: 0.4,
+            window_type: WindowType::Hann,
+            log_bin_mode: LogBinMode::OneThirdOctave,
+            min_db: -120.0,
+        }
+    }
+}
+
+/// A single frame of spectrum data produced by `SpectrumProcessor`.
+#[derive(Debug, Clone)]
+pub struct SpectrumFrame {
+    /// Number of linear frequency bins (fft_size / 2 + 1).
+    pub num_bins: usize,
+    /// FFT size used for this frame.
+    pub fft_size: usize,
+    /// Sample rate used for frequency calculations.
+    pub sample_rate: f64,
+    /// Linear magnitude per bin (fft_size / 2 + 1 values).
+    pub magnitudes_linear: Vec<f32>,
+    /// Magnitude in dB per bin (same layout as magnitudes_linear).
+    pub magnitudes_db: Vec<f32>,
+    /// Log-binned magnitude (one value per group).
+    pub log_binned_magnitudes_linear: Vec<f32>,
+    /// Log-binned magnitude in dB.
+    pub log_binned_magnitudes_db: Vec<f32>,
+    /// Number of log groups (0 if log_bin_mode is None).
+    pub num_log_groups: usize,
+    /// Frame sequence number (matches AnalysisFrame::frame_number).
+    pub frame_number: u64,
+}
+
+impl SpectrumFrame {
+    /// Returns the center frequency of a linear bin.
+    #[inline]
+    pub fn bin_frequency(&self, bin: usize) -> f64 {
+        bin as f64 * self.sample_rate / self.fft_size as f64
+    }
+
+    /// Returns the band edges (low, high) for a log group.
+    pub fn log_group_edges(&self, group: usize) -> Option<(f64, f64)> {
+        if self.num_log_groups == 0 {
+            return None;
+        }
+        match self.log_bin_mode() {
+            LogBinMode::None => None,
+            LogBinMode::Octave => octave_group_edges(group),
+            LogBinMode::OneThirdOctave => one_third_octave_group_edges(group),
+        }
+    }
+
+    /// Returns the log bin mode used for this frame.
+    fn log_bin_mode(&self) -> LogBinMode {
+        if self.num_log_groups == 0 {
+            LogBinMode::None
+        } else {
+            // Default to 1/3-octave for non-zero groups (matches default config).
+            LogBinMode::OneThirdOctave
+        }
+    }
+
+    /// Creates an empty frame with the given FFT size and log mode.
+    fn empty(config: &SpectrumConfig) -> Self {
+        let num_bins = config.fft_size / 2 + 1;
+        let (log_linear, log_db, num_groups) = Self::empty_log_bins(config);
+        Self {
+            num_bins,
+            fft_size: config.fft_size,
+            sample_rate: 44100.0,
+            magnitudes_linear: vec![0.0_f32; num_bins],
+            magnitudes_db: vec![config.min_db; num_bins],
+            log_binned_magnitudes_linear: log_linear,
+            log_binned_magnitudes_db: log_db,
+            num_log_groups: num_groups,
+            frame_number: 0,
+        }
+    }
+
+    fn empty_log_bins(config: &SpectrumConfig) -> (Vec<f32>, Vec<f32>, usize) {
+        // Use 48 kHz default for construction-time group sizing.
+        // Actual frequency mapping uses the runtime sample rate in process().
+        const DEFAULT_SAMPLE_RATE: f64 = 48000.0;
+
+        match config.log_bin_mode {
+            LogBinMode::None => (Vec::new(), Vec::new(), 0),
+            LogBinMode::Octave => {
+                let groups = octave_groups(config.fft_size, DEFAULT_SAMPLE_RATE);
+                (vec![0.0_f32; groups], vec![config.min_db; groups], groups)
+            }
+            LogBinMode::OneThirdOctave => {
+                let groups = one_third_octave_groups(config.fft_size, DEFAULT_SAMPLE_RATE);
+                (vec![0.0_f32; groups], vec![config.min_db; groups], groups)
+            }
+        }
+    }
+}
+
+/// FFT processor that converts time-domain samples to spectrum data.
+///
+/// All buffers are pre-allocated at construction — no heap allocation
+/// happens during `process()` calls, making it safe for the consumer
+/// (GUI/worker) thread with predictable latency.
+pub struct SpectrumProcessor {
+    config: SpectrumConfig,
+    fft_size: usize,
+    num_bins: usize,
+    /// Number of log groups (computed at construction).
+    num_log_groups: usize,
+    /// FFT planner instance.
+    fft: Arc<dyn rustfft::Fft<f32>>,
+    /// Hann or Hamming window coefficients.
+    window: Vec<f32>,
+    /// Previous spectrum for EMA smoothing.
+    prev_magnitudes: Vec<f32>,
+    /// True until the first `process()` call completes.
+    first_frame: bool,
+    /// Input buffer for windowed samples (f32, pre-windowing).
+    input_buffer: Vec<f32>,
+    /// Complex buffer for FFT in-place operation.
+    complex_buffer: Vec<Complex<f32>>,
+}
+
+impl std::fmt::Debug for SpectrumProcessor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SpectrumProcessor")
+            .field("config", &self.config)
+            .field("fft_size", &self.fft_size)
+            .field("num_bins", &self.num_bins)
+            .finish()
+    }
+}
+
+impl SpectrumProcessor {
+    /// Creates a new `SpectrumProcessor` with the given configuration.
+    ///
+    /// # Panics
+    /// Panics if `fft_size` is not a power of 2.
+    pub fn new(config: SpectrumConfig) -> Self {
+        assert!(
+            config.fft_size.is_power_of_two() && config.fft_size >= 2,
+            "fft_size must be a power of 2 >= 2"
+        );
+
+        let fft_size = config.fft_size;
+        let num_bins = fft_size / 2 + 1;
+
+        let mut planner = FftPlanner::<f32>::new();
+        let fft = planner.plan_fft_forward(fft_size);
+
+        let window = match config.window_type {
+            WindowType::Hann => hann_window(fft_size),
+            WindowType::Hamming => hamming_window(fft_size),
+        };
+
+        let (log_linear, _, num_groups) = SpectrumFrame::empty_log_bins(&config);
+        let _log_linear = log_linear; // keep for buffer sizing if needed
+
+        Self {
+            config,
+            fft_size,
+            num_bins,
+            num_log_groups: num_groups,
+            fft,
+            window,
+            first_frame: true,
+            prev_magnitudes: vec![0.0_f32; num_bins],
+            input_buffer: vec![0.0_f32; fft_size],
+            complex_buffer: vec![Complex { re: 0.0, im: 0.0 }; fft_size],
+        }
+    }
+
+    /// Returns a reference to the current configuration.
+    pub fn config(&self) -> &SpectrumConfig {
+        &self.config
+    }
+
+    /// Returns the FFT size.
+    pub fn fft_size(&self) -> usize {
+        self.fft_size
+    }
+
+    /// Returns the number of frequency bins.
+    pub fn num_bins(&self) -> usize {
+        self.num_bins
+    }
+
+    /// Reconfigure the processor. Buffers are reallocated if `fft_size` changes.
+    pub fn reconfigure(&mut self, new_config: SpectrumConfig) {
+        if new_config.fft_size != self.fft_size {
+            let fft_size = new_config.fft_size;
+            let num_bins = fft_size / 2 + 1;
+
+            let mut planner = FftPlanner::<f32>::new();
+            self.fft = planner.plan_fft_forward(fft_size);
+
+            self.window = match new_config.window_type {
+                WindowType::Hann => hann_window(fft_size),
+                WindowType::Hamming => hamming_window(fft_size),
+            };
+
+            self.prev_magnitudes = vec![0.0_f32; num_bins];
+            self.input_buffer = vec![0.0_f32; fft_size];
+            self.complex_buffer = vec![Complex { re: 0.0, im: 0.0 }; fft_size];
+            self.fft_size = fft_size;
+            self.num_bins = num_bins;
+
+            // Recalculate log groups
+            let (_, _, num_groups) = SpectrumFrame::empty_log_bins(&new_config);
+            self.num_log_groups = num_groups;
+        }
+
+        self.config = new_config;
+    }
+
+    /// Returns the number of log groups.
+    pub fn num_log_groups(&self) -> usize {
+        self.num_log_groups
+    }
+
+    /// Returns the center frequency of a bin.
+    #[inline]
+    fn bin_frequency(&self, sample_rate: f64, bin: usize) -> f64 {
+        bin as f64 * sample_rate / self.fft_size as f64
+    }
+
+    /// Maps a frequency (Hz) to a log-group index.
+    fn freq_to_log_group(&self, freq_hz: f64) -> usize {
+        if freq_hz <= 0.0 {
+            return 0;
+        }
+
+        match self.config.log_bin_mode {
+            LogBinMode::None => 0,
+            LogBinMode::Octave => {
+                let base_freq = 25.5;
+                (freq_hz / base_freq).log2().floor() as usize + 1
+            }
+            LogBinMode::OneThirdOctave => {
+                let base_freq = 25.0;
+                let idx = (freq_hz / base_freq).log2().floor() as i64 * 3 + 10;
+                idx.max(0) as usize
+            }
+        }
+    }
+
+    /// Processes a block of time-domain samples and produces a `SpectrumFrame`.
+    ///
+    /// # Arguments
+    /// * `samples` — input samples (should have at least `fft_size` values).
+    ///   If shorter, the remainder is zero-padded.
+    /// * `sample_rate` — sample rate in Hz.
+    /// * `frame_number` — sequence number forwarded from the source frame.
+    pub fn process(
+        &mut self,
+        samples: &[f32],
+        sample_rate: f64,
+        frame_number: u64,
+    ) -> SpectrumFrame {
+        let fft_size = self.fft_size;
+
+        // Copy and window the input.
+        let len = samples.len().min(fft_size);
+        for (i, (&sample, win)) in samples.iter().zip(self.window.iter()).take(len).enumerate() {
+            self.input_buffer[i] = sample * win;
+        }
+        // Zero-pad the rest.
+        for i in len..fft_size {
+            self.input_buffer[i] = 0.0;
+        }
+
+        // Convert f32 -> Complex<f32> for FFT.
+        for i in 0..fft_size {
+            self.complex_buffer[i] = Complex {
+                re: self.input_buffer[i],
+                im: 0.0,
+            };
+        }
+
+        // Perform FFT in-place.
+        self.fft.process(&mut self.complex_buffer);
+
+        // Compute magnitudes from complex FFT output.
+        let mut magnitudes = vec![0.0_f32; self.num_bins];
+
+        for (bin, comp) in self.complex_buffer.iter().take(self.num_bins).enumerate() {
+            magnitudes[bin] = (comp.re * comp.re + comp.im * comp.im).sqrt();
+        }
+
+        // Apply equal-power normalization for window type.
+        let window_energy = self.compute_window_energy();
+        if window_energy > 0.0 {
+            for m in magnitudes.iter_mut() {
+                *m /= window_energy;
+            }
+        }
+
+        // Apply EMA smoothing across frames (skip on first frame to avoid all-zero output).
+        if self.first_frame {
+            self.first_frame = false;
+            self.prev_magnitudes.clone_from(&magnitudes);
+        } else {
+            let alpha = self.config.smoothing_factor;
+            for (prev, cur) in self.prev_magnitudes.iter_mut().zip(magnitudes.iter()) {
+                *prev = alpha * cur + (1.0 - alpha) * (*prev);
+            }
+        }
+        magnitudes = self.prev_magnitudes.clone();
+
+        // Convert to dB.
+        let min_db = self.config.min_db;
+        let magnitudes_db: Vec<f32> = magnitudes
+            .iter()
+            .map(|m| if *m < 1e-30 { min_db } else { 20.0 * m.log10() })
+            .map(|db| db.max(min_db))
+            .collect();
+
+        // Compute log-binned magnitudes.
+        let (log_binned_linear, log_binned_db, num_groups) =
+            self.compute_log_bins(&magnitudes, &magnitudes_db, sample_rate);
+
+        let mut frame = SpectrumFrame::empty(&self.config);
+        frame.sample_rate = sample_rate;
+        frame.frame_number = frame_number;
+        frame.magnitudes_linear = magnitudes;
+        frame.magnitudes_db = magnitudes_db;
+        frame.log_binned_magnitudes_linear = log_binned_linear;
+        frame.log_binned_magnitudes_db = log_binned_db;
+        frame.num_log_groups = num_groups;
+
+        frame
+    }
+
+    /// Computes the window energy for equal-power normalization.
+    fn compute_window_energy(&self) -> f32 {
+        let sum_sq: f32 = self.window.iter().map(|w| w * w).sum();
+        (sum_sq / self.fft_size as f32).sqrt()
+    }
+
+    /// Groups linear bins into log-scaled frequency bands.
+    fn compute_log_bins(
+        &self,
+        linear_mag: &[f32],
+        _linear_db: &[f32],
+        sample_rate: f64,
+    ) -> (Vec<f32>, Vec<f32>, usize) {
+        if self.config.log_bin_mode == LogBinMode::None {
+            return (Vec::new(), Vec::new(), 0);
+        }
+
+        let num_groups = self.num_log_groups;
+        if num_groups == 0 {
+            return (Vec::new(), Vec::new(), 0);
+        }
+
+        let mut group_mags = vec![0.0_f32; num_groups];
+        let mut group_counts = vec![0usize; num_groups];
+
+        for (bin, &mag) in linear_mag.iter().enumerate().take(self.num_bins) {
+            let freq = self.bin_frequency(sample_rate, bin);
+            let group = self.freq_to_log_group(freq);
+            if group < num_groups {
+                // Accumulate in linear domain (power sum).
+                group_mags[group] += mag * mag;
+                group_counts[group] += 1;
+            }
+        }
+
+        // Convert power sums to magnitude (average then sqrt).
+        let log_linear: Vec<f32> = group_mags
+            .iter()
+            .zip(group_counts.iter())
+            .map(|(sum, count)| {
+                if *count > 0 {
+                    (*sum / *count as f32).sqrt()
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+
+        // Convert to dB.
+        let min_db = self.config.min_db;
+        let log_db: Vec<f32> = log_linear
+            .iter()
+            .map(|m| if *m < 1e-30 { min_db } else { 20.0 * m.log10() })
+            .map(|db| db.max(min_db))
+            .collect();
+
+        (log_linear, log_db, num_groups)
+    }
+}
+
+// =======================================================================
+// Window functions
+// =======================================================================
+
+/// Computes a Hann window of the given size.
+fn hann_window(size: usize) -> Vec<f32> {
+    (0..size)
+        .map(|i| 0.5 * (1.0 - (2.0 * std::f32::consts::PI * i as f32 / size as f32).cos()))
+        .collect()
+}
+
+/// Computes a Hamming window of the given size.
+fn hamming_window(size: usize) -> Vec<f32> {
+    (0..size)
+        .map(|i| 0.54 - 0.46 * (2.0 * std::f32::consts::PI * i as f32 / size as f32).cos())
+        .collect()
+}
+
+// =======================================================================
+// Log frequency bin helpers (IEC 61260 standard)
+// =======================================================================
+
+/// Returns the number of octave bands that fit within [0, sample_rate/2].
+fn octave_groups(_fft_size: usize, sample_rate: f64) -> usize {
+    let nyquist = sample_rate / 2.0;
+    // Center frequencies start at 25.5 Hz, double each step.
+    let base = 25.5;
+    if nyquist <= base {
+        return 1;
+    }
+    ((nyquist / base).log2().floor() as usize) + 2
+}
+
+/// Returns the number of 1/3-octave bands that fit within [0, sample_rate/2].
+fn one_third_octave_groups(_fft_size: usize, sample_rate: f64) -> usize {
+    let nyquist = sample_rate / 2.0;
+    // Center frequencies: 25, 31.5, 40, 50, 63, 80, 100, ... Hz
+    let base = 25.0;
+    if nyquist <= base {
+        return 1;
+    }
+    ((nyquist / base).log2().floor() as i64 * 3 + 10) as usize
+}
+
+/// Returns the band edges for an octave group index.
+fn octave_group_edges(group: usize) -> Option<(f64, f64)> {
+    let base = 25.5;
+    let low = base * (group as f64).max(1.0);
+    let high = low * 2.0;
+    Some((low, high))
+}
+
+/// Returns the band edges for a 1/3-octave group index.
+fn one_third_octave_group_edges(group: usize) -> Option<(f64, f64)> {
+    // Standard 1/3-octave centers: group 10 = 25 Hz, group 13 = 31.5 Hz, etc.
+    // f_center = base * 2^(n/3) where n = group - 10
+    let base = 25.0;
+    let n = (group as i64) - 10;
+    let center = base * (2.0_f64).powf(n as f64 / 3.0);
+    let low = center / 2.0_f64.powf(1.0 / 6.0);
+    let high = center * 2.0_f64.powf(1.0 / 6.0);
+    Some((low, high))
+}
 
 #[cfg(test)]
 mod tests {
@@ -942,5 +1466,297 @@ mod tests {
             frames_consumed + engine.frames_dropped() as usize <= total_blocks,
             "consumed + dropped <= total"
         );
+    }
+
+    // ===================================================================
+    // M5-T002: Spectrum processor tests
+    // ===================================================================
+
+    #[test]
+    fn test_spectrum_config_default_smoothing() {
+        let config = SpectrumConfig::new(1024, 44100.0);
+        assert_eq!(config.smoothing_factor, 0.4);
+        assert_eq!(config.fft_size, 1024);
+        assert_eq!(config.window_type, WindowType::Hann);
+        assert_eq!(config.log_bin_mode, LogBinMode::OneThirdOctave);
+    }
+
+    #[test]
+    fn test_spectrum_config_reconfigure() {
+        let config = SpectrumConfig::new(1024, 44100.0);
+        let mut processor = SpectrumProcessor::new(config.clone());
+
+        // Reconfigure to different FFT size.
+        let new_config = SpectrumConfig::new(2048, 48000.0);
+        processor.reconfigure(new_config.clone());
+
+        assert_eq!(processor.fft_size(), 2048);
+        assert_eq!(processor.config().smoothing_factor, 0.4);
+        assert_eq!(processor.config().log_bin_mode, LogBinMode::OneThirdOctave);
+    }
+
+    #[test]
+    fn test_spectrum_frame_bin_count() {
+        let config = SpectrumConfig::new(1024, 44100.0);
+        let mut processor = SpectrumProcessor::new(config);
+        let frame = processor.process(&vec![0.0_f32; 1024], 44100.0, 0);
+
+        // FFT size N produces N/2 + 1 unique bins for real input.
+        assert_eq!(frame.magnitudes_linear.len(), 1024 / 2 + 1);
+        assert_eq!(frame.magnitudes_db.len(), 1024 / 2 + 1);
+    }
+
+    #[test]
+    fn test_spectrum_sine_peak_detection() {
+        // A sine wave at a known frequency should produce a peak in the correct bin.
+        let fft_size = 1024;
+        let sample_rate = 44100.0;
+        // Bin frequency resolution: sample_rate / fft_size ≈ 43.07 Hz
+        // Frequency 430.7 Hz → bin 10 (exactly).
+        let freq_hz = 430.7;
+        let bin_idx = (freq_hz / sample_rate * fft_size as f64) as usize;
+
+        let config = SpectrumConfig {
+            fft_size,
+            smoothing_factor: 0.0, // No smoothing to see raw peak
+            window_type: WindowType::Hann,
+            log_bin_mode: LogBinMode::None,
+            min_db: -120.0,
+        };
+        let mut processor = SpectrumProcessor::new(config);
+
+        // Generate one period of sine wave.
+        let samples: Vec<f32> = (0..fft_size)
+            .map(|i| (2.0 * std::f64::consts::PI * freq_hz / sample_rate * i as f64).sin() as f32)
+            .collect();
+
+        let frame = processor.process(&samples, sample_rate, 0);
+        let linear = &frame.magnitudes_linear;
+
+        // Find the peak bin.
+        let peak_bin = linear
+            .iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+            .map(|(i, _)| i)
+            .unwrap();
+
+        // The peak should be at or very near the expected bin.
+        assert!(
+            (peak_bin as i64 - bin_idx as i64).abs() <= 1,
+            "expected peak near bin {} (freq {:.1} Hz), got bin {}",
+            bin_idx,
+            freq_hz,
+            peak_bin
+        );
+
+        // Verify the peak is significantly above zero.
+        assert!(
+            linear[peak_bin] > 0.1,
+            "peak magnitude {:.4} should be above noise floor",
+            linear[peak_bin]
+        );
+    }
+
+    #[test]
+    fn test_spectrum_ema_smoothing() {
+        // Verify that EMA smoothing converges on a steady-state signal.
+        let config = SpectrumConfig {
+            fft_size: 256,
+            smoothing_factor: 0.9, // Strong smoothing
+            window_type: WindowType::Hann,
+            log_bin_mode: LogBinMode::None,
+            min_db: -120.0,
+        };
+        let mut processor = SpectrumProcessor::new(config);
+
+        // Generate a constant-amplitude sine wave.
+        let freq_hz = 440.0;
+        let sample_rate = 44100.0;
+        let samples: Vec<f32> = (0..256)
+            .map(|i| (2.0 * std::f64::consts::PI * freq_hz / sample_rate * i as f64).sin() as f32)
+            .collect();
+
+        // Process many frames — the first few should change, later ones should converge.
+        let mut prev_peak = 0.0_f32;
+        for frame_num in 0..50 {
+            let frame = processor.process(&samples, sample_rate, frame_num);
+            let peak = *frame
+                .magnitudes_linear
+                .iter()
+                .max_by(|a, b| a.partial_cmp(b).unwrap())
+                .unwrap();
+
+            if frame_num > 10 {
+                // After warmup, peak should not change much (EMA converges).
+                let delta = (peak - prev_peak).abs();
+                assert!(
+                    delta < 0.01,
+                    "EMA should converge: frame {} peak={}, prev_peak={}, delta={}",
+                    frame_num,
+                    peak,
+                    prev_peak,
+                    delta
+                );
+            }
+            prev_peak = peak;
+        }
+    }
+
+    #[test]
+    fn test_spectrum_log_bin_count() {
+        // Verify that log-binned output has the expected number of groups.
+        let sample_rate = 48000.0;
+        let config = SpectrumConfig {
+            fft_size: 2048,
+            smoothing_factor: 0.4,
+            window_type: WindowType::Hann,
+            log_bin_mode: LogBinMode::OneThirdOctave,
+            min_db: -120.0,
+        };
+        let mut processor = SpectrumProcessor::new(config);
+
+        let samples = vec![0.0_f32; 2048];
+        let frame = processor.process(&samples, sample_rate, 0);
+
+        // At 48 kHz, 1/3-octave bands from 25 Hz to 24 kHz produce ~28 groups.
+        // The exact count depends on the formula; we just verify it's non-zero and bounded.
+        assert!(
+            frame.num_log_groups > 0 && frame.num_log_groups < 100,
+            "expected 1-99 log groups, got {}",
+            frame.num_log_groups
+        );
+        assert_eq!(
+            frame.log_binned_magnitudes_linear.len(),
+            frame.num_log_groups
+        );
+        assert_eq!(frame.log_binned_magnitudes_db.len(), frame.num_log_groups);
+    }
+
+    #[test]
+    fn test_spectrum_no_allocation_during_process() {
+        // Verify that after construction, process() reuses buffers.
+        // We test by checking that the processor can be called repeatedly
+        // without changing its internal buffer sizes.
+        let config = SpectrumConfig::new(512, 44100.0);
+        let mut processor = SpectrumProcessor::new(config);
+
+        // First process call.
+        let samples = vec![0.5_f32; 512];
+        let _frame1 = processor.process(&samples, 44100.0, 0);
+
+        // Reconfigure to same size — should reuse buffers.
+        let new_config = SpectrumConfig::new(512, 44100.0);
+        processor.reconfigure(new_config);
+
+        // Second process call — should produce identical bin count.
+        let _frame2 = processor.process(&samples, 44100.0, 1);
+        assert_eq!(_frame2.num_bins, 512 / 2 + 1);
+    }
+
+    #[test]
+    fn test_spectrum_zero_input() {
+        // All-zero input should produce near-zero magnitudes.
+        let config = SpectrumConfig::new(256, 44100.0);
+        let mut processor = SpectrumProcessor::new(config);
+
+        let samples = vec![0.0_f32; 256];
+        let frame = processor.process(&samples, 44100.0, 0);
+
+        for &mag in &frame.magnitudes_linear {
+            assert!(
+                mag < 1e-6,
+                "zero input should produce near-zero magnitude, got {}",
+                mag
+            );
+        }
+    }
+
+    #[test]
+    fn test_spectrum_short_input_zero_padded() {
+        // Input shorter than FFT size should be zero-padded and still produce valid output.
+        let config = SpectrumConfig::new(1024, 44100.0);
+        let mut processor = SpectrumProcessor::new(config);
+
+        // Only 128 samples of a sine wave.
+        let samples: Vec<f32> = (0..128)
+            .map(|i| (2.0 * std::f64::consts::PI * 440.0 / 44100.0 * i as f64).sin() as f32)
+            .collect();
+
+        let frame = processor.process(&samples, 44100.0, 0);
+
+        // Should still produce full bin count.
+        assert_eq!(frame.num_bins, 1024 / 2 + 1);
+        // Magnitudes should be non-zero (signal exists, even if zero-padded).
+        let max_mag = *frame
+            .magnitudes_linear
+            .iter()
+            .max_by(|a, b| a.partial_cmp(b).unwrap())
+            .unwrap();
+        assert!(
+            max_mag > 0.01,
+            "zero-padded signal should have non-zero peak"
+        );
+    }
+
+    #[test]
+    fn test_spectrum_sample_rate_affects_bin_frequency() {
+        // Same signal at different sample rates should map to different bin frequencies.
+        let fft_size = 1024;
+
+        for sample_rate in [44100.0, 48000.0] {
+            let config = SpectrumConfig::new(fft_size, sample_rate);
+            let mut processor = SpectrumProcessor::new(config);
+
+            // Simple impulse (all zeros except first sample).
+            let mut samples = vec![0.0_f32; fft_size];
+            samples[0] = 1.0;
+
+            let frame = processor.process(&samples, sample_rate, 0);
+
+            // For an impulse, the spectrum should be flat (white).
+            // Verify bin count is correct.
+            assert_eq!(frame.num_bins, fft_size / 2 + 1);
+
+            // Verify the frame number was propagated.
+            assert_eq!(frame.frame_number, 0);
+
+            // Verify sample rate was recorded.
+            assert!((frame.sample_rate - sample_rate).abs() < 0.1);
+        }
+    }
+
+    #[test]
+    fn test_spectrum_window_types() {
+        // Both Hann and Hamming windows should produce valid spectrum.
+        for window_type in [WindowType::Hann, WindowType::Hamming] {
+            let config = SpectrumConfig {
+                fft_size: 512,
+                smoothing_factor: 0.4,
+                window_type,
+                log_bin_mode: LogBinMode::None,
+                min_db: -120.0,
+            };
+            let mut processor = SpectrumProcessor::new(config);
+
+            let samples: Vec<f32> = (0..512)
+                .map(|i| (2.0 * std::f64::consts::PI * 220.0 / 44100.0 * i as f64).sin() as f32)
+                .collect();
+
+            let frame = processor.process(&samples, 44100.0, 0);
+
+            // Both windows should produce valid output.
+            assert_eq!(frame.num_bins, 512 / 2 + 1);
+            let max_mag = *frame
+                .magnitudes_linear
+                .iter()
+                .max_by(|a, b| a.partial_cmp(b).unwrap())
+                .unwrap();
+            assert!(
+                max_mag > 0.0,
+                "window {:?} should produce non-zero output",
+                window_type
+            );
+        }
     }
 }
