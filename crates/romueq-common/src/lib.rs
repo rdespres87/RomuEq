@@ -4,6 +4,9 @@
 
 pub mod audio_buffer;
 
+/// Maximum number of channels for analysis data (RMS, peak, zero-crossings).
+pub const ANALYSIS_MAX_CHANNELS: usize = 8;
+
 pub mod automation;
 
 pub mod plugin;

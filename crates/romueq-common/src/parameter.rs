@@ -104,6 +104,11 @@ impl ParamId {
         }
         Some(self.0 - BAND_ID_MIN - ((self.0 - BAND_ID_MIN) / 100) * 100)
     }
+
+    /// Returns the human-readable name for this parameter, or `"?"` if unknown.
+    pub fn display_name(&self) -> &'static str {
+        parameter_info(self.0).map(|info| info.name).unwrap_or("?")
+    }
 }
 
 impl fmt::Display for ParamId {

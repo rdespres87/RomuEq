@@ -8,3 +8,9 @@ repository.workspace = true
 
 [dependencies]
 romueq-common.workspace = true
+egui = { version = "0.31", optional = true }
+eframe = { version = "0.31", features = ["default_fonts"], optional = true }
+
+[features]
+default = []
+standalone = ["egui", "eframe"]
