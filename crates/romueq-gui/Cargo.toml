@@ -8,7 +8,9 @@ repository.workspace = true
 
 [dependencies]
 romueq-common.workspace = true
+romueq-dsp.workspace = true
 egui = { version = "0.31" }
+egui_plot = { version = "0.31" }
 eframe = { version = "0.31", features = ["default_fonts"], optional = true }
 
 [features]

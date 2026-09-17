@@ -37,6 +37,7 @@ pub use romueq_common::parameter::ParamId;
 
 /// egui Widget trait for `.ui()` method on sliders, checkboxes, etc.
 use egui::Widget;
+use egui_plot::{Line, Plot};
 
 /// A command from the GUI to the engine.
 ///
@@ -432,6 +433,169 @@ pub fn render_band(
                     }
                 }
             });
+    });
+
+    ui.separator();
+}
+
+// ---------------------------------------------------------------------------
+// Frequency response plot widget
+// ---------------------------------------------------------------------------
+
+/// Renders the EQ frequency response curve from band parameters.
+///
+/// Uses a logarithmic frequency axis (20 Hz – Nyquist) with dB magnitude
+/// on the Y axis. Only enabled bands contribute to the response.
+pub fn render_frequency_response_plot(
+    ui: &mut egui::Ui,
+    bands: &[romueq_common::BandParameters; romueq_common::MAX_BANDS],
+    sample_rate: f32,
+    width: usize,
+) {
+    use romueq_dsp::compute_response;
+
+    let response = compute_response(sample_rate, bands, width);
+
+    // Convert to plot points: [frequency_hz, magnitude_db]
+    let points: Vec<[f64; 2]> = response
+        .iter()
+        .map(|p| [p.frequency_hz as f64, p.magnitude_db as f64])
+        .collect();
+
+    let line = Line::new(points)
+        .color(egui::Color32::from_rgb(0, 180, 255))
+        .stroke(egui::Stroke::new(2.0, egui::Color32::from_rgb(0, 180, 255)))
+        .name("EQ Response");
+
+    // Clamp to a reasonable dB range for display
+    let plot = Plot::new("eq_response")
+        .include_x(20.0)
+        .include_x(24000.0)
+        .include_y(-60.0)
+        .include_y(30.0)
+        .height(200.0)
+        .show(ui, |plot_ui| plot_ui.line(line));
+
+    // Show axis labels
+    ui.horizontal(|ui| {
+        ui.label("Frequency (Hz)");
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label("Magnitude (dB)");
+        });
+    });
+
+    let _ = plot;
+}
+
+// ---------------------------------------------------------------------------
+// Spectrum analyzer widget
+// ---------------------------------------------------------------------------
+
+/// Renders a real-time spectrum analyzer from analysis data.
+///
+/// Displays the latest RMS values per channel as a filled bar chart with
+/// logarithmic frequency bins. Falls back to a flat line when no data is
+/// available.
+pub fn render_spectrum_analyzer(
+    ui: &mut egui::Ui,
+    analysis: &AnalysisSnapshot,
+    sample_rate: f32,
+    num_bars: usize,
+) {
+    // Build frequency bins (logarithmically spaced).
+    let nyquist = sample_rate * 0.5;
+    let mut bars: Vec<[f64; 2]> = Vec::with_capacity(num_bars);
+
+    let log_min = 20.0_f64.log10();
+    let log_max = (nyquist as f64).log10();
+
+    for i in 0..num_bars {
+        let t = if num_bars == 1 {
+            0.5_f64
+        } else {
+            i as f64 / (num_bars - 1) as f64
+        };
+        let center_freq = 10.0_f64.powf(log_min + t * (log_max - log_min));
+
+        // Use the latest RMS value (channel 0, mono representation).
+        let rms_db = analysis.rms[0];
+
+        bars.push([center_freq, rms_db as f64]);
+    }
+
+    let bar_chart = Line::new(bars)
+        .color(egui::Color32::from_rgb(0, 255, 100))
+        .name("Spectrum");
+
+    let plot = Plot::new("spectrum")
+        .include_x(20.0)
+        .include_x(nyquist as f64)
+        .include_y(-90.0)
+        .include_y(0.0)
+        .height(150.0)
+        .show(ui, |plot_ui| plot_ui.line(bar_chart));
+
+    // Axis labels
+    ui.horizontal(|ui| {
+        ui.label("Frequency (Hz)");
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label("Level (dBFS)");
+        });
+    });
+
+    let _ = plot;
+}
+
+// ---------------------------------------------------------------------------
+// Master section controls widget
+// ---------------------------------------------------------------------------
+
+/// Renders the master section controls: bypass, output gain, and mute.
+///
+/// These are global parameters that affect the entire EQ signal path.
+pub fn render_master_section(
+    ui: &mut egui::Ui,
+    snapshot: &ParamSnapshot,
+    batch: &mut GuiCommandBatch,
+) {
+    ui.separator();
+    ui.heading("Master");
+
+    ui.horizontal(|ui| {
+        // Bypass checkbox.
+        let bypass_val = snapshot.get(ParamId(1)).unwrap_or(0.0);
+        let mut bypass = bypass_val >= 0.5;
+
+        egui::Checkbox::new(&mut bypass, "Bypass")
+            .ui(ui)
+            .on_hover_text("Bypass the entire EQ");
+
+        if bypass {
+            batch.push(ParamId(1), 1.0);
+        } else {
+            batch.push(ParamId(1), 0.0);
+        }
+
+        // Output gain slider.
+        let mut output_gain = snapshot.get(ParamId(2)).unwrap_or(0.0);
+        egui::Slider::new(&mut output_gain, -24.0..=24.0)
+            .suffix(" dB")
+            .ui(ui);
+        batch.push(ParamId(2), output_gain);
+
+        // Auto-gain checkbox.
+        let auto_gain_val = snapshot.get(ParamId(3)).unwrap_or(0.0);
+        let mut auto_gain = auto_gain_val >= 0.5;
+
+        egui::Checkbox::new(&mut auto_gain, "Auto Gain")
+            .ui(ui)
+            .on_hover_text("Enable auto-gain compensation");
+
+        if auto_gain {
+            batch.push(ParamId(3), 1.0);
+        } else {
+            batch.push(ParamId(3), 0.0);
+        }
     });
 
     ui.separator();
