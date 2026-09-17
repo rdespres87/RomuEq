@@ -8,4 +8,7 @@ repository.workspace = true
 
 [dependencies]
 romueq-engine.workspace = true
-romueq-gui.workspace = true
+romueq-gui = { workspace = true, features = ["standalone"] }
+romueq-common.workspace = true
+eframe.workspace = true
+egui = "0.31"

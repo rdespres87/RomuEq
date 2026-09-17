@@ -133,6 +133,14 @@ impl ParamSnapshot {
             .map(|v| v.value)
     }
 
+    /// Set the value for a specific parameter.
+    pub fn set(&mut self, param_id: ParamId, value: f32) {
+        match self.values.iter_mut().find(|v| v.param_id == param_id) {
+            Some(v) => v.value = value,
+            None => self.values.push(ParamValue { param_id, value }),
+        }
+    }
+
     /// Returns true if this snapshot is empty.
     pub fn is_empty(&self) -> bool {
         self.values.is_empty()
@@ -645,6 +653,30 @@ pub trait GuiClient {
 
     /// Returns true if the engine is currently prepared (after prepare(), before destroy()).
     fn is_prepared(&self) -> bool;
+
+    /// Create a preset from the current state and add it to the manager.
+    fn create_preset(&mut self, name: &str) -> Result<String, String>;
+
+    /// Apply a preset by name to the current state.
+    fn apply_preset(&mut self, name: &str) -> Result<(), String>;
+
+    /// List all stored presets.
+    fn list_presets(&self) -> Vec<String>;
+
+    /// Remove a preset by name.
+    fn remove_preset(&mut self, name: &str) -> bool;
+
+    /// Save a preset to a file on disk.
+    fn save_preset_to_file(&mut self, name: &str, path: &str) -> Result<(), String>;
+
+    /// Load a preset from a file on disk.
+    fn load_preset_from_file(&mut self, path: &str) -> Result<String, String>;
+
+    /// Returns the egui context for rendering.
+    fn egui_context(&self) -> &egui::Context;
+
+    /// Generates the next auto-incrementing preset name.
+    fn next_auto_name(&self) -> String;
 }
 
 // ---------------------------------------------------------------------------
@@ -679,6 +711,13 @@ pub trait GuiApp: Send {
 }
 
 // ---------------------------------------------------------------------------
+// Preset manager module
+// ---------------------------------------------------------------------------
+
+pub mod preset_manager;
+pub use preset_manager::{NamedPreset, PresetManager, PresetManagerError};
+
+// ---------------------------------------------------------------------------
 // Standalone entry point (feature-gated)
 // ---------------------------------------------------------------------------
 
@@ -691,6 +730,7 @@ use eframe::App;
 #[cfg(feature = "standalone")]
 pub mod standalone {
     use super::*;
+    use romueq_common::state::Preset;
 
     /// Run the GUI application as a standalone desktop app.
     pub fn run(app: impl GuiApp) -> eframe::Result {
@@ -705,7 +745,7 @@ pub mod standalone {
             Box::new(move |cc| {
                 let ppp = cc.egui_ctx.pixels_per_point();
                 cc.egui_ctx.set_pixels_per_point(ppp);
-                Ok(Box::new(StandaloneRunner::new(app)))
+                Ok(Box::new(StandaloneRunner::new(app, cc.egui_ctx.clone())))
             }),
         )
     }
@@ -717,11 +757,10 @@ pub mod standalone {
     }
 
     impl<A: GuiApp> StandaloneRunner<A> {
-        fn new(app: A) -> Self {
-            Self {
-                app,
-                client: EngineClient::new(),
-            }
+        fn new(app: A, ctx: egui::Context) -> Self {
+            let mut client = EngineClient::new();
+            client.set_egui_context(ctx);
+            Self { app, client }
         }
     }
 
@@ -780,6 +819,8 @@ pub mod standalone {
         snapshot: ParamSnapshot,
         analysis: AnalysisSnapshot,
         pending_commands: GuiCommandBatch,
+        preset_manager: PresetManager,
+        egui_context: Option<egui::Context>,
     }
 
     impl EngineClient {
@@ -788,7 +829,13 @@ pub mod standalone {
                 snapshot: ParamSnapshot::new(Vec::new()),
                 analysis: AnalysisSnapshot::default(),
                 pending_commands: GuiCommandBatch::new(),
+                preset_manager: PresetManager::new(),
+                egui_context: None,
             }
+        }
+
+        fn set_egui_context(&mut self, ctx: egui::Context) {
+            self.egui_context = Some(ctx);
         }
 
         fn take_pending_commands(&mut self) -> GuiCommandBatch {
@@ -814,6 +861,59 @@ pub mod standalone {
         fn destroy(&mut self) {}
         fn is_prepared(&self) -> bool {
             false // Placeholder
+        }
+
+        fn create_preset(&mut self, name: &str) -> Result<String, String> {
+            // Create a default preset from the current state.
+            let preset = Preset::new(name);
+            self.preset_manager
+                .add(name.to_string(), preset)
+                .map_err(|e| format!("create preset: {e}"))?;
+            Ok(name.to_string())
+        }
+
+        fn apply_preset(&mut self, name: &str) -> Result<(), String> {
+            let preset = self
+                .preset_manager
+                .get(name)
+                .ok_or_else(|| format!("preset '{name}' not found"))?;
+
+            // Apply preset values to the current snapshot.
+            for (id, value) in preset.preset.parameter_values.iter() {
+                self.snapshot.set(ParamId(id), value);
+            }
+            Ok(())
+        }
+
+        fn list_presets(&self) -> Vec<String> {
+            self.preset_manager.iter().map(|p| p.name.clone()).collect()
+        }
+
+        fn remove_preset(&mut self, name: &str) -> bool {
+            self.preset_manager.remove(name)
+        }
+
+        fn save_preset_to_file(&mut self, name: &str, path: &str) -> Result<(), String> {
+            self.preset_manager
+                .save_to_file(name, path)
+                .map_err(|e| format!("save preset: {e}"))
+        }
+
+        fn load_preset_from_file(&mut self, path: &str) -> Result<String, String> {
+            let named = self
+                .preset_manager
+                .load_from_file(path)
+                .map_err(|e| format!("load preset: {e}"))?;
+            Ok(named.name)
+        }
+
+        fn egui_context(&self) -> &egui::Context {
+            self.egui_context.as_ref().expect("egui context not set")
+        }
+
+        fn next_auto_name(&self) -> String {
+            let count = self.list_presets().len() + 1;
+            format!("Preset {count}")
         }
     }
 }
