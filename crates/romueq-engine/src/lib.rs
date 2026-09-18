@@ -10,3 +10,6 @@ pub mod automation;
 pub mod lifecycle;
 pub mod parameter_store;
 pub mod plugin;
+
+// Re-export for plugin crate
+pub use lifecycle::EngineLifecycle;

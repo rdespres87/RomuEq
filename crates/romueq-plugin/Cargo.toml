@@ -10,3 +10,8 @@ repository.workspace = true
 romueq-common.workspace = true
 romueq-engine.workspace = true
 romueq-gui.workspace = true
+clack-plugin = "0.1"
+clack-common = "0.1"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
