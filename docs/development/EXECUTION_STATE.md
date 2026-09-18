@@ -57,7 +57,7 @@ This file is operational state. Every task completion and every gate decision up
 | 2026-09-04 | M0.5-T008 execution | Final consistency audit | PASS | Zero orphan dependencies/cycles; controls complete |
 | 2026-09-14 | M3-T004 execution | Versioned state/preset schema and migrations implemented | DONE | 17 state tests pass, serialization/deserialization verified |
 | 2026-09-14 | M3-T005 execution | M3 DSP gate PASS — 43 DSP tests, 192 total tests, clippy clean | PASS | All DSP acceptance criteria satisfied, weighted confidence 99.3 |
-
+| 2026-09-18 | M6-T005 execution | M6 GUI gate PASS — 267 tests, clippy clean, standalone builds | PASS | All M6 acceptance criteria satisfied; M7 unlocked |
 
 ## Delegation handoff
 
