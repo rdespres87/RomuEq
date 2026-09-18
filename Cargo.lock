@@ -2567,6 +2567,7 @@ dependencies = [
  "eframe",
  "egui",
  "egui_plot",
+ "romueq-analysis",
  "romueq-common",
  "romueq-dsp",
 ]

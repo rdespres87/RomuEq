@@ -38,6 +38,7 @@ pub use romueq_common::parameter::ParamId;
 /// egui Widget trait for `.ui()` method on sliders, checkboxes, etc.
 use egui::Widget;
 use egui_plot::{Line, Plot};
+use romueq_common::BandParameters;
 
 /// A command from the GUI to the engine.
 ///
@@ -161,6 +162,9 @@ pub struct AnalysisSnapshot {
     pub peak: [f32; romueq_common::ANALYSIS_MAX_CHANNELS],
     /// Whether the last frame had dropped data.
     pub dropped: bool,
+    /// Log-scaled spectrum data: Vec of [center_freq_hz, magnitude_db] pairs.
+    /// Empty (zero length) when no spectrum data is available yet.
+    pub spectrum_data: Vec<[f64; 2]>,
 }
 
 impl Default for AnalysisSnapshot {
@@ -169,6 +173,7 @@ impl Default for AnalysisSnapshot {
             rms: [f32::NEG_INFINITY; romueq_common::ANALYSIS_MAX_CHANNELS],
             peak: [f32::NEG_INFINITY; romueq_common::ANALYSIS_MAX_CHANNELS],
             dropped: false,
+            spectrum_data: Vec::new(),
         }
     }
 }
@@ -501,34 +506,87 @@ pub fn render_frequency_response_plot(
 
 /// Renders a real-time spectrum analyzer from analysis data.
 ///
-/// Displays the latest RMS values per channel as a filled bar chart with
-/// logarithmic frequency bins. Falls back to a flat line when no data is
-/// available.
+/// Displays the latest FFT magnitude data as a log-scaled bar chart.
+/// Uses `analysis.spectrum_data` (a Vec of [freq_hz, magnitude_db] pairs)
+/// when available; falls back to a flat line at -inf when no data exists.
 pub fn render_spectrum_analyzer(
     ui: &mut egui::Ui,
     analysis: &AnalysisSnapshot,
     sample_rate: f32,
     num_bars: usize,
 ) {
-    // Build frequency bins (logarithmically spaced).
     let nyquist = sample_rate * 0.5;
-    let mut bars: Vec<[f64; 2]> = Vec::with_capacity(num_bars);
 
+    // Build frequency bins (logarithmically spaced) for x-axis mapping.
     let log_min = 20.0_f64.log10();
     let log_max = (nyquist as f64).log10();
 
-    for i in 0..num_bars {
-        let t = if num_bars == 1 {
-            0.5_f64
-        } else {
-            i as f64 / (num_bars - 1) as f64
-        };
-        let center_freq = 10.0_f64.powf(log_min + t * (log_max - log_min));
+    let mut bars: Vec<[f64; 2]> = Vec::with_capacity(num_bars);
 
-        // Use the latest RMS value (channel 0, mono representation).
-        let rms_db = analysis.rms[0];
+    if analysis.spectrum_data.is_empty() {
+        // No spectrum data yet — draw a flat line at -inf.
+        for i in 0..num_bars {
+            let t = if num_bars == 1 {
+                0.5_f64
+            } else {
+                i as f64 / (num_bars - 1) as f64
+            };
+            let center_freq = 10.0_f64.powf(log_min + t * (log_max - log_min));
+            bars.push([center_freq, f64::NEG_INFINITY]);
+        }
+    } else {
+        // Interpolate the FFT spectrum data onto logarithmic bins.
+        let spectrum = &analysis.spectrum_data;
 
-        bars.push([center_freq, rms_db as f64]);
+        for i in 0..num_bars {
+            let t = if num_bars == 1 {
+                0.5_f64
+            } else {
+                i as f64 / (num_bars - 1) as f64
+            };
+            let target_freq = 10.0_f64.powf(log_min + t * (log_max - log_min));
+
+            // Find the two nearest spectrum data points for interpolation.
+            let mut lower_idx = 0usize;
+            let mut upper_idx = spectrum.len().saturating_sub(1);
+
+            // Binary search for the insertion point.
+            if spectrum.len() > 1 {
+                let mut lo = 0usize;
+                let mut hi = spectrum.len() - 1;
+                while lo < hi {
+                    let mid = (lo + hi) / 2;
+                    if spectrum[mid][0] < target_freq {
+                        lo = mid + 1;
+                    } else {
+                        hi = mid;
+                    }
+                }
+                if lo == 0 {
+                    lower_idx = 0;
+                    upper_idx = std::cmp::min(1, spectrum.len() - 1);
+                } else if lo >= spectrum.len() {
+                    lower_idx = spectrum.len() - 1;
+                    upper_idx = spectrum.len() - 1;
+                } else {
+                    lower_idx = lo.saturating_sub(1);
+                    upper_idx = lo;
+                }
+            }
+
+            let mag_db = if spectrum[lower_idx][0] == spectrum[upper_idx][0] {
+                spectrum[lower_idx][1]
+            } else {
+                // Linear interpolation between the two nearest points.
+                let t_interp = (target_freq - spectrum[lower_idx][0])
+                    / (spectrum[upper_idx][0] - spectrum[lower_idx][0]);
+                let lo_val = spectrum[lower_idx][1];
+                let hi_val = spectrum[upper_idx][1];
+                lo_val + t_interp * (hi_val - lo_val)
+            };
+
+            bars.push([target_freq, mag_db]);
+        }
     }
 
     let bar_chart = Line::new(bars)
@@ -677,6 +735,12 @@ pub trait GuiClient {
 
     /// Generates the next auto-incrementing preset name.
     fn next_auto_name(&self) -> String;
+
+    /// Returns the current band parameters for a given band index.
+    fn band_parameters(&self, band_index: usize) -> Option<BandParameters>;
+
+    /// Returns a reference to the current spectrum data (FFT bins).
+    fn spectrum_data(&self) -> &[[f64; 2]];
 }
 
 // ---------------------------------------------------------------------------
@@ -770,13 +834,15 @@ pub mod standalone {
             let _pixels_per_point = ctx.pixels_per_point();
 
             // Query engine state.
-            let snapshot = self.client.snapshot();
+            let _snapshot = self.client.snapshot();
             let analysis = self.client.analysis_snapshot();
 
             // Process any pending commands.
             let batch = self.client.take_pending_commands();
             if !batch.is_empty() {
-                self.client.apply_commands(batch);
+                self.client.apply_commands(batch.clone());
+                // Update band parameters from commands for real-time FR plot.
+                self.client.apply_params_from_batch(&batch);
             }
 
             // Update GUI app with current state.
@@ -786,15 +852,19 @@ pub mod standalone {
             egui::CentralPanel::default().show(ctx, |ui| {
                 ui.heading("RomuEq — EQ Parameter Editor");
 
-                // Band controls (placeholder — M6-T002 will implement real widgets).
+                // Frequency response plot (real DSP data).
                 ui.separator();
+                render_frequency_response_plot(
+                    ui,
+                    &self.client.band_params,
+                    self.client.sample_rate,
+                    512,
+                );
 
-                // Show current parameter values.
-                for pv in snapshot.values() {
-                    ui.label(format!("{}: {:.2}", pv.param_id.display_name(), pv.value));
-                }
+                // Spectrum analyzer (FFT data).
+                ui.separator();
+                render_spectrum_analyzer(ui, &analysis, self.client.sample_rate, 128);
 
-                // Show analysis data.
                 ui.separator();
                 ui.label("Analysis:");
                 if analysis.dropped {
@@ -821,6 +891,10 @@ pub mod standalone {
         pending_commands: GuiCommandBatch,
         preset_manager: PresetManager,
         egui_context: Option<egui::Context>,
+        /// Band parameters for the frequency response plot.
+        band_params: [romueq_common::BandParameters; romueq_common::MAX_BANDS],
+        /// Sample rate for the frequency response plot.
+        sample_rate: f32,
     }
 
     impl EngineClient {
@@ -831,6 +905,11 @@ pub mod standalone {
                 pending_commands: GuiCommandBatch::new(),
                 preset_manager: PresetManager::new(),
                 egui_context: None,
+                band_params: core::array::from_fn(|i| romueq_common::BandParameters {
+                    frequency_hz: 20.0 * (i + 1) as f32,
+                    ..Default::default()
+                }),
+                sample_rate: 48000.0,
             }
         }
 
@@ -840,6 +919,24 @@ pub mod standalone {
 
         fn take_pending_commands(&mut self) -> GuiCommandBatch {
             std::mem::take(&mut self.pending_commands)
+        }
+
+        /// Update band parameters from a command batch.
+        fn apply_params_from_batch(&mut self, batch: &GuiCommandBatch) {
+            let commands = batch.commands();
+            for cmd in commands {
+                // Map ParamId to band index and parameter
+                if let Some(bp) = self
+                    .band_params
+                    .iter_mut()
+                    .find(|b| b.gain_param_id() == cmd.param_id)
+                {
+                    if cmd.param_id.0 >= 100 && cmd.param_id.0 < 200 {
+                        // Gain parameter (offset 3 from band base)
+                        bp.gain_db = cmd.value;
+                    }
+                }
+            }
         }
     }
 
@@ -914,6 +1011,29 @@ pub mod standalone {
         fn next_auto_name(&self) -> String {
             let count = self.list_presets().len() + 1;
             format!("Preset {count}")
+        }
+
+        fn band_parameters(&self, _band_index: usize) -> Option<BandParameters> {
+            // Build BandParameters from the snapshot values for this band.
+            let base_id = 100;
+            let default_bp = BandParameters::default();
+            let gain_db = self
+                .snapshot
+                .get(ParamId(base_id + 3))
+                .unwrap_or(default_bp.gain_db);
+            let frequency_hz = self
+                .snapshot
+                .get(ParamId(base_id + 2))
+                .unwrap_or(default_bp.frequency_hz);
+            Some(BandParameters {
+                gain_db,
+                frequency_hz,
+                ..default_bp
+            })
+        }
+
+        fn spectrum_data(&self) -> &[[f64; 2]] {
+            &self.analysis.spectrum_data
         }
     }
 }
