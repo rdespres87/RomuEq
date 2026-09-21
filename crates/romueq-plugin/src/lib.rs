@@ -402,8 +402,8 @@ mod tests {
 
     #[test]
     fn test_plugin_default_shared() {
-        let shared = RomuEqShared;
-        assert_eq!(shared, RomuEqShared);
+        let shared = RomuEqShared::default();
+        assert_eq!(shared.engine.lock().unwrap().sample_rate(), 44100.0);
     }
 
     #[test]
