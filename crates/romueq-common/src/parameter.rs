@@ -871,7 +871,7 @@ pub fn clamp_value(id: u32, value: f32) -> f32 {
 // ===========================================================================
 
 /// Filter type for EQ bands.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum FilterType {
     Bell,
     LowShelf,
@@ -910,7 +910,7 @@ impl FilterType {
 // ===========================================================================
 
 /// Slope steepness for shelf and pass filters.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Slope {
     Db6,
     Db12,
@@ -946,7 +946,7 @@ impl Slope {
 // ===========================================================================
 
 /// Stereo processing mode.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum StereoMode {
     Stereo,
 }
@@ -966,7 +966,7 @@ impl StereoMode {
 // ===========================================================================
 
 /// Processing mode for the EQ.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ProcessingMode {
     MinimumPhase,
 }
@@ -986,7 +986,7 @@ impl ProcessingMode {
 // ===========================================================================
 
 /// Parameters for a single EQ band.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct BandParameters {
     /// Whether this band is active.
     pub enabled: bool,
@@ -1059,7 +1059,7 @@ impl Default for BandParameters {
 // ===========================================================================
 
 /// Global EQ parameters.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct GlobalParameters {
     /// Bypass the entire EQ.
     pub bypass: bool,
@@ -1090,7 +1090,7 @@ impl Default for GlobalParameters {
 // ===========================================================================
 
 /// Complete EQ parameter set.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct EqParameters {
     /// Global parameters.
     pub global: GlobalParameters,

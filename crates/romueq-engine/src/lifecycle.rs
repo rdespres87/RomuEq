@@ -655,6 +655,21 @@ impl EngineLifecycle {
     pub fn eq_parameters_mut(&mut self) -> &mut EqParameters {
         &mut self.eq_params
     }
+
+    /// Serialize the current EQ parameters to a bincode byte vector.
+    pub fn save_state(&self) -> Vec<u8> {
+        bincode::serialize(&self.eq_params).unwrap_or_default()
+    }
+
+    /// Deserialize EQ parameters from a bincode byte slice.
+    pub fn load_state(&mut self, data: &[u8]) -> bool {
+        if let Ok(params) = bincode::deserialize::<EqParameters>(data) {
+            self.eq_params = params;
+            true
+        } else {
+            false
+        }
+    }
 }
 
 impl Default for EngineLifecycle {

@@ -3,7 +3,21 @@
 //! This crate provides a CLAP plugin implementation for the RomuEq audio engine.
 //! It bridges the CLAP ABI via `clack-plugin` v0.1.x with the RomuEq engine lifecycle.
 
+use std::any::Any;
+use std::ffi::CStr;
+use std::io::{Read, Write};
+use std::sync::{Arc, Mutex};
+
+use clack_common::extensions::{
+    Extension, ExtensionImplementation, PluginExtensionSide, RawExtension,
+    RawExtensionImplementation,
+};
+use clack_common::stream::{InputStream, OutputStream};
+use clack_plugin::extensions::wrapper::PluginWrapper;
 use clack_plugin::prelude::*;
+use clap_sys::ext::state::{CLAP_EXT_STATE, clap_plugin_state};
+use clap_sys::plugin::clap_plugin;
+use clap_sys::stream::{clap_istream, clap_ostream};
 use romueq_engine::lifecycle::EngineLifecycle;
 
 // ---------------------------------------------------------------------------
@@ -23,15 +37,34 @@ fn get_descriptor() -> PluginDescriptor {
 // Thread-model types — unit structs implementing the clack-plugin traits
 // ---------------------------------------------------------------------------
 
-/// Shared (thread-safe) data — no per-instance state needed yet.
-#[derive(Clone, Copy, Default, PartialEq, Debug)]
-pub struct RomuEqShared;
+/// Shared (thread-safe) data — holds the engine Arc for sharing between main thread and audio processor.
+#[derive(Clone)]
+pub struct RomuEqShared {
+    engine: Arc<Mutex<EngineLifecycle>>,
+}
+
+impl Default for RomuEqShared {
+    fn default() -> Self {
+        Self {
+            engine: Arc::new(Mutex::new(EngineLifecycle::new())),
+        }
+    }
+}
 
 impl<'a> PluginShared<'a> for RomuEqShared {}
 
-/// Main-thread data — no per-instance state needed yet.
-#[derive(Clone, Default, PartialEq, Debug)]
-pub struct RomuEqMainThread;
+/// Main-thread data — owns a clone of the shared engine reference.
+pub struct RomuEqMainThread {
+    engine: Arc<Mutex<EngineLifecycle>>,
+}
+
+impl Default for RomuEqMainThread {
+    fn default() -> Self {
+        Self {
+            engine: Arc::new(Mutex::new(EngineLifecycle::new())),
+        }
+    }
+}
 
 impl<'a, S: PluginShared<'a>> PluginMainThread<'a, S> for RomuEqMainThread {}
 
@@ -41,16 +74,21 @@ impl<'a, S: PluginShared<'a>> PluginMainThread<'a, S> for RomuEqMainThread {}
 
 /// The audio processor that bridges CLAP audio processing with the RomuEq engine.
 pub struct RomuEqAudioProcessor {
-    /// Internal engine managing equalization parameters and processing.
-    engine: EngineLifecycle,
+    /// Shared engine reference.
+    engine: Arc<Mutex<EngineLifecycle>>,
 }
 
 impl RomuEqAudioProcessor {
-    /// Create a new audio processor with default configuration.
-    fn new() -> Self {
+    /// Create a new audio processor with default configuration (for testing).
+    pub fn new() -> Self {
         Self {
-            engine: EngineLifecycle::new(),
+            engine: Arc::new(Mutex::new(EngineLifecycle::new())),
         }
+    }
+
+    /// Create a new audio processor with a shared engine (for the plugin).
+    fn with_engine(engine: Arc<Mutex<EngineLifecycle>>) -> Self {
+        Self { engine }
     }
 }
 
@@ -60,21 +98,28 @@ impl<'a, S: PluginShared<'a>, M: PluginMainThread<'a, S>> PluginAudioProcessor<'
     fn activate(
         _host: HostAudioProcessorHandle<'a>,
         _main_thread: &mut M,
-        _shared: &'a S,
+        shared: &'a S,
         audio_config: PluginAudioConfiguration,
     ) -> Result<Self, PluginError> {
-        let mut processor = Self::new();
+        // Get the shared engine Arc from RomuEqShared.
+        let romu_eq_shared = unsafe { &*(shared as *const S as *const RomuEqShared) };
+        let engine = romu_eq_shared.engine.clone();
+
+        let processor = Self::with_engine(engine);
 
         // Determine channel count from the host-provided audio configuration.
         // We use a default of 2 (stereo) until the port enumeration API is wired up.
         let channels = 2;
 
         // Prepare the engine with host-provided sample rate and block size.
-        processor.engine.prepare(
-            audio_config.sample_rate,
-            audio_config.max_frames_count as usize,
-            channels,
-        );
+        {
+            let mut eng = processor.engine.lock().unwrap();
+            eng.prepare(
+                audio_config.sample_rate,
+                audio_config.max_frames_count as usize,
+                channels,
+            );
+        }
 
         Ok(processor)
     }
@@ -127,8 +172,9 @@ impl<'a, S: PluginShared<'a>, M: PluginMainThread<'a, S>> PluginAudioProcessor<'
         let mut output_refs: Vec<&mut [f32]> =
             all_output.iter_mut().map(|v| v.as_mut_slice()).collect();
 
-        // Run DSP processing through the engine.
-        let success = self.engine.process(&input_refs, &mut output_refs);
+        // Lock the engine and run DSP processing.
+        let mut engine = self.engine.lock().unwrap();
+        let success = engine.process(&input_refs, &mut output_refs);
         if !success {
             return Ok(ProcessStatus::Continue);
         }
@@ -155,13 +201,18 @@ impl<'a, S: PluginShared<'a>, M: PluginMainThread<'a, S>> PluginAudioProcessor<'
         Ok(ProcessStatus::Continue)
     }
 
-    fn deactivate(mut self, _main_thread: &mut M) {
-        self.engine.destroy();
+    fn deactivate(self, _main_thread: &mut M) {
+        // Reset engine state before dropping.
+        if let Ok(mut eng) = self.engine.lock() {
+            eng.destroy();
+        }
     }
 
     fn start_processing(&mut self) -> Result<(), PluginError> {
         // Engine is already prepared on activate; reset processing counters.
-        self.engine.reset();
+        if let Ok(mut eng) = self.engine.lock() {
+            eng.reset();
+        }
         Ok(())
     }
 
@@ -192,20 +243,135 @@ impl Plugin for RomuEqPlugin {
     }
 }
 
+// ---------------------------------------------------------------------------
+// CLAP State extension implementation
+// ---------------------------------------------------------------------------
+
+/// Marker struct for the CLAP State extension.
+#[derive(Copy, Clone)]
+pub struct RomuEqState(RawExtension<PluginExtensionSide, clap_plugin_state>);
+
+unsafe impl Extension for RomuEqState {
+    const IDENTIFIERS: &[&CStr] = &[CLAP_EXT_STATE];
+    type ExtensionSide = PluginExtensionSide;
+
+    #[inline]
+    unsafe fn from_raw(raw: RawExtension<Self::ExtensionSide>) -> Self {
+        Self(raw.cast())
+    }
+}
+
+/// Trait for saving/loading plugin state.
+pub trait RomuEqStateImplementation {
+    fn save(&mut self, save: &mut OutputStream) -> Result<(), PluginError>;
+    fn load(&mut self, load: &mut InputStream) -> Result<(), PluginError>;
+}
+
+/// Implement the CLAP State extension for RomuEqPlugin.
+unsafe impl<P: Plugin> ExtensionImplementation<P> for RomuEqState
+where
+    for<'a> P::MainThread<'a>: RomuEqStateImplementation,
+{
+    const IMPLEMENTATION: RawExtensionImplementation =
+        RawExtensionImplementation::new(&clap_plugin_state {
+            save: Some(save::<P>),
+            load: Some(load::<P>),
+        });
+}
+
+/// Save EQ parameters to a CLAP state stream.
+unsafe extern "C" fn save<P: Plugin>(
+    plugin: *const clap_plugin,
+    ostream: *const clap_ostream,
+) -> bool
+where
+    for<'a> P::MainThread<'a>: RomuEqStateImplementation,
+{
+    PluginWrapper::<P>::handle(plugin, |p| {
+        let output = OutputStream::from_raw_mut(&mut *(ostream as *mut _));
+        p.main_thread().as_mut().save(output)?;
+        Ok(())
+    })
+    .is_some()
+}
+
+/// Load EQ parameters from a CLAP state stream.
+unsafe extern "C" fn load<P: Plugin>(
+    plugin: *const clap_plugin,
+    istream: *const clap_istream,
+) -> bool
+where
+    for<'a> P::MainThread<'a>: RomuEqStateImplementation,
+{
+    PluginWrapper::<P>::handle(plugin, |p| {
+        let input = InputStream::from_raw_mut(&mut *(istream as *mut _));
+        p.main_thread().as_mut().load(input)?;
+        Ok(())
+    })
+    .is_some()
+}
+
+// ---------------------------------------------------------------------------
+// Implement RomuEqStateImplementation for RomuEqMainThread
+// ---------------------------------------------------------------------------
+
+impl RomuEqStateImplementation for RomuEqMainThread {
+    fn save(&mut self, save: &mut OutputStream) -> Result<(), PluginError> {
+        let engine = self.engine.lock().unwrap();
+        let data = engine.save_state();
+
+        // Write all bytes to the stream.
+        let mut written = 0;
+        while written < data.len() {
+            let n = save
+                .write(&data[written..])
+                .map_err(|_| PluginError::Message("Stream write error"))?;
+            if n == 0 {
+                return Err(PluginError::Message("Stream write returned 0"));
+            }
+            written += n;
+        }
+        Ok(())
+    }
+
+    fn load(&mut self, load: &mut InputStream) -> Result<(), PluginError> {
+        // Read all bytes from the stream.
+        let mut data = Vec::new();
+        let mut buf = [0; 1024];
+        loop {
+            let n = load
+                .read(&mut buf)
+                .map_err(|_| PluginError::Message("Stream read error"))?;
+            if n == 0 {
+                break;
+            }
+            data.extend_from_slice(&buf[..n]);
+        }
+
+        let mut engine = self.engine.lock().unwrap();
+        if !engine.load_state(&data) {
+            return Err(PluginError::Message("Failed to load state"));
+        }
+        Ok(())
+    }
+}
+
 impl DefaultPluginFactory for RomuEqPlugin {
     fn get_descriptor() -> PluginDescriptor {
         get_descriptor()
     }
 
     fn new_shared(_host: HostSharedHandle<'_>) -> Result<Self::Shared<'_>, PluginError> {
-        Ok(RomuEqShared)
+        Ok(RomuEqShared::default())
     }
 
     fn new_main_thread<'a>(
         _host: HostMainThreadHandle<'a>,
         _shared: &'a Self::Shared<'a>,
     ) -> Result<Self::MainThread<'a>, PluginError> {
-        Ok(RomuEqMainThread)
+        Ok(RomuEqMainThread {
+            engine: Arc::new(Mutex::new(EngineLifecycle::new())),
+        })
     }
 }
 
@@ -226,7 +392,7 @@ mod tests {
     #[test]
     fn test_plugin_creation() {
         let processor = RomuEqAudioProcessor::new();
-        assert_eq!(processor.engine.sample_rate(), 44100.0);
+        assert_eq!(processor.engine.lock().unwrap().sample_rate(), 44100.0);
     }
 
     #[test]
@@ -238,7 +404,8 @@ mod tests {
     #[test]
     fn test_plugin_default_main_thread() {
         let mt = RomuEqMainThread::default();
-        assert_eq!(mt, RomuEqMainThread);
+        // Verify engine was created
+        assert_eq!(mt.engine.lock().unwrap().sample_rate(), 44100.0);
     }
 
     #[test]
