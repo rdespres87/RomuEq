@@ -402,7 +402,7 @@ mod tests {
 
     #[test]
     fn test_plugin_default_shared() {
-        let shared = RomuEqShared::default();
+        let shared = RomuEqShared;
         assert_eq!(shared, RomuEqShared);
     }
 
