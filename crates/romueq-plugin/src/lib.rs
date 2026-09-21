@@ -160,10 +160,15 @@ impl<'a, S: PluginShared<'a>, M: PluginMainThread<'a, S>> PluginAudioProcessor<'
     }
 
     fn start_processing(&mut self) -> Result<(), PluginError> {
+        // Engine is already prepared on activate; reset processing counters.
+        self.engine.reset();
         Ok(())
     }
 
-    fn stop_processing(&mut self) {}
+    fn stop_processing(&mut self) {
+        // No-op: the engine keeps its state so that start_processing()
+        // can reset and resume without re-preparing.
+    }
 }
 
 // ---------------------------------------------------------------------------
