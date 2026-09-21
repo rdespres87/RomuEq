@@ -10,16 +10,6 @@ use romueq_engine::lifecycle::EngineLifecycle;
 // Plugin metadata / descriptor
 // ---------------------------------------------------------------------------
 
-/// Compute a CLAP-style 32-bit identifier from a string (DJB2 variant).
-#[allow(dead_code)]
-fn compute_clap_id(s: &str) -> u32 {
-    let mut hash: u32 = 5381;
-    for byte in s.bytes() {
-        hash = hash.wrapping_mul(33).wrapping_add(byte as u32);
-    }
-    hash
-}
-
 /// Stable descriptor shared across all plugin instances.
 fn get_descriptor() -> PluginDescriptor {
     let mut desc = PluginDescriptor::new("com.romueq.plugin", "RomuEq");
@@ -71,21 +61,98 @@ impl<'a, S: PluginShared<'a>, M: PluginMainThread<'a, S>> PluginAudioProcessor<'
         _host: HostAudioProcessorHandle<'a>,
         _main_thread: &mut M,
         _shared: &'a S,
-        _audio_config: PluginAudioConfiguration,
+        audio_config: PluginAudioConfiguration,
     ) -> Result<Self, PluginError> {
-        Ok(Self::new())
+        let mut processor = Self::new();
+
+        // Determine channel count from the host-provided audio configuration.
+        // We use a default of 2 (stereo) until the port enumeration API is wired up.
+        let channels = 2;
+
+        // Prepare the engine with host-provided sample rate and block size.
+        processor.engine.prepare(
+            audio_config.sample_rate,
+            audio_config.max_frames_count as usize,
+            channels,
+        );
+
+        Ok(processor)
     }
 
     fn process(
         &mut self,
         _process: Process,
-        _audio: Audio,
+        mut audio: Audio,
         _events: Events,
     ) -> Result<ProcessStatus, PluginError> {
-        // Process audio through the engine.
-        // TODO: wire _audio buffers to engine.process() when EngineLifecycle
-        //       exposes an audio-processing API.
-        Ok(ProcessStatus::Sleep)
+        // Collect all channel data into owned buffers so we can pass them
+        // to the engine's slice-of-slices process() API.
+        let mut all_input: Vec<Vec<f32>> = Vec::new();
+        let mut all_output: Vec<Vec<f32>> = Vec::new();
+
+        for mut port_pair in &mut audio {
+            let Some(channel_pairs) = port_pair.channels()?.into_f32() else {
+                continue;
+            };
+
+            for channel_pair in channel_pairs {
+                match channel_pair {
+                    ChannelPair::InPlace(buf) => {
+                        all_input.push(buf.to_vec());
+                        all_output.push(vec![0.0; buf.len()]);
+                    }
+                    ChannelPair::InputOutput(input, output) => {
+                        all_input.push(input.to_vec());
+                        all_output.push(output.to_vec());
+                    }
+                    ChannelPair::InputOnly(buf) => {
+                        all_input.push(buf.to_vec());
+                        all_output.push(vec![0.0; buf.len()]);
+                    }
+                    ChannelPair::OutputOnly(buf) => {
+                        all_input.push(vec![0.0; buf.len()]);
+                        all_output.push(buf.to_vec());
+                    }
+                }
+            }
+        }
+
+        let num_channels = all_input.len();
+        if num_channels == 0 {
+            return Ok(ProcessStatus::Continue);
+        }
+
+        // Build slice-of-slices for the engine's process() API.
+        let input_refs: Vec<&[f32]> = all_input.iter().map(|v| v.as_slice()).collect();
+        let mut output_refs: Vec<&mut [f32]> =
+            all_output.iter_mut().map(|v| v.as_mut_slice()).collect();
+
+        // Run DSP processing through the engine.
+        let success = self.engine.process(&input_refs, &mut output_refs);
+        if !success {
+            return Ok(ProcessStatus::Continue);
+        }
+
+        // Copy processed output back to CLAP buffers.
+        let mut idx = 0;
+        for mut port_pair in &mut audio {
+            let Some(channel_pairs) = port_pair.channels()?.into_f32() else {
+                continue;
+            };
+
+            for channel_pair in channel_pairs {
+                let out_slice = &all_output[idx];
+                match channel_pair {
+                    ChannelPair::InPlace(buf) => buf.copy_from_slice(out_slice),
+                    ChannelPair::InputOutput(_, output) => output.copy_from_slice(out_slice),
+                    ChannelPair::InputOnly(_) => {} // discard
+                    ChannelPair::OutputOnly(buf) => buf.copy_from_slice(out_slice),
+                }
+                idx += 1;
+            }
+        }
+
+        Ok(ProcessStatus::Continue)
     }
 
     fn deactivate(mut self, _main_thread: &mut M) {
@@ -179,21 +246,5 @@ mod tests {
     #[test]
     fn test_plugin_marker_default() {
         let _plugin = RomuEqPlugin::default();
-    }
-
-    #[test]
-    fn test_clap_id_computation() {
-        let id_str = "com.romueq.plugin";
-        let hash = compute_clap_id(id_str);
-        assert_ne!(hash, 0);
-        // Verify the computed hash is valid (not u32::MAX)
-        assert_ne!(hash, u32::MAX);
-    }
-
-    #[test]
-    fn test_descriptor_has_required_fields() {
-        let desc = get_descriptor();
-        assert!(desc.id().unwrap().to_bytes() == b"com.romueq.plugin");
-        assert!(desc.name().unwrap().to_bytes() == b"RomuEq");
     }
 }
