@@ -3,7 +3,6 @@
 //! This crate provides a CLAP plugin implementation for the RomuEq audio engine.
 //! It bridges the CLAP ABI via `clack-plugin` v0.1.x with the RomuEq engine lifecycle.
 
-use std::any::Any;
 use std::ffi::CStr;
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
@@ -15,7 +14,7 @@ use clack_common::extensions::{
 use clack_common::stream::{InputStream, OutputStream};
 use clack_plugin::extensions::wrapper::PluginWrapper;
 use clack_plugin::prelude::*;
-use clap_sys::ext::state::{CLAP_EXT_STATE, clap_plugin_state};
+use clap_sys::ext::state::{clap_plugin_state, CLAP_EXT_STATE};
 use clap_sys::plugin::clap_plugin;
 use clap_sys::stream::{clap_istream, clap_ostream};
 use romueq_engine::lifecycle::EngineLifecycle;
@@ -76,6 +75,12 @@ impl<'a, S: PluginShared<'a>> PluginMainThread<'a, S> for RomuEqMainThread {}
 pub struct RomuEqAudioProcessor {
     /// Shared engine reference.
     engine: Arc<Mutex<EngineLifecycle>>,
+}
+
+impl Default for RomuEqAudioProcessor {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl RomuEqAudioProcessor {
