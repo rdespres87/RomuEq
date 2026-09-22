@@ -14,7 +14,7 @@ use clack_common::extensions::{
 use clack_common::stream::{InputStream, OutputStream};
 use clack_plugin::extensions::wrapper::PluginWrapper;
 use clack_plugin::prelude::*;
-use clap_sys::ext::state::{clap_plugin_state, CLAP_EXT_STATE};
+use clap_sys::ext::state::{CLAP_EXT_STATE, clap_plugin_state};
 use clap_sys::plugin::clap_plugin;
 use clap_sys::stream::{clap_istream, clap_ostream};
 use romueq_engine::lifecycle::EngineLifecycle;
@@ -254,6 +254,7 @@ impl Plugin for RomuEqPlugin {
 
 /// Marker struct for the CLAP State extension.
 #[derive(Copy, Clone)]
+#[allow(dead_code)]
 pub struct RomuEqState(RawExtension<PluginExtensionSide, clap_plugin_state>);
 
 unsafe impl Extension for RomuEqState {
@@ -262,7 +263,7 @@ unsafe impl Extension for RomuEqState {
 
     #[inline]
     unsafe fn from_raw(raw: RawExtension<Self::ExtensionSide>) -> Self {
-        Self(raw.cast())
+        Self(unsafe { raw.cast() })
     }
 }
 
@@ -292,12 +293,14 @@ unsafe extern "C" fn save<P: Plugin>(
 where
     for<'a> P::MainThread<'a>: RomuEqStateImplementation,
 {
-    PluginWrapper::<P>::handle(plugin, |p| {
-        let output = OutputStream::from_raw_mut(&mut *(ostream as *mut _));
-        p.main_thread().as_mut().save(output)?;
-        Ok(())
-    })
-    .is_some()
+    unsafe {
+        PluginWrapper::<P>::handle(plugin, |p| {
+            let output = OutputStream::from_raw_mut(&mut *(ostream as *mut _));
+            p.main_thread().as_mut().save(output)?;
+            Ok(())
+        })
+        .is_some()
+    }
 }
 
 /// Load EQ parameters from a CLAP state stream.
@@ -308,12 +311,14 @@ unsafe extern "C" fn load<P: Plugin>(
 where
     for<'a> P::MainThread<'a>: RomuEqStateImplementation,
 {
-    PluginWrapper::<P>::handle(plugin, |p| {
-        let input = InputStream::from_raw_mut(&mut *(istream as *mut _));
-        p.main_thread().as_mut().load(input)?;
-        Ok(())
-    })
-    .is_some()
+    unsafe {
+        PluginWrapper::<P>::handle(plugin, |p| {
+            let input = InputStream::from_raw_mut(&mut *(istream as *mut _));
+            p.main_thread().as_mut().load(input)?;
+            Ok(())
+        })
+        .is_some()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -422,6 +427,6 @@ mod tests {
 
     #[test]
     fn test_plugin_marker_default() {
-        let _plugin = RomuEqPlugin::default();
+        let _plugin = RomuEqPlugin;
     }
 }
