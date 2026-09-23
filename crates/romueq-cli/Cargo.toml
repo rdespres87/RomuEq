@@ -9,3 +9,4 @@ repository.workspace = true
 [dependencies]
 romueq-common.workspace = true
 romueq-engine.workspace = true
+hound = "3.5"
