@@ -11,4 +11,4 @@ romueq-analysis.workspace = true
 romueq-common.workspace = true
 romueq-dsp.workspace = true
 serde = { version = "1", features = ["derive"] }
-bincode = "1"
+bincode = "3"
