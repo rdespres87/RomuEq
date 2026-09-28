@@ -246,6 +246,10 @@ impl EngineLifecycle {
         self.crossfade_progress = 0;
         self.transitioning = false;
 
+        // Initialize the automation ingestor on prepare (not process) so it is
+        // allocation-free in the hot path.
+        self.automation_ingestor = Some(AutomationIngestor::new(InterpolationMode::Linear));
+
         self.state = LifecycleState::Ready;
         true
     }
@@ -359,11 +363,6 @@ impl EngineLifecycle {
         // Verify channel count matches.
         if inputs.len() != self.channels {
             return false;
-        }
-
-        // Initialize the automation ingestor on first process() call.
-        if self.automation_ingestor.is_none() {
-            self.automation_ingestor = Some(AutomationIngestor::new(InterpolationMode::Linear));
         }
 
         // Finalize the automation batch for this block and create an interpolation provider.
