@@ -341,30 +341,29 @@ fn test_engine_bypass() {
 
 #[test]
 fn test_engine_prepare_invalid_params() {
-    let mut engine = EngineLifecycle::new();
-
     // Zero sample rate should panic (assertion in prepare)
     assert!(
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut engine = EngineLifecycle::new();
             engine.prepare(0.0, 512, 2);
         }))
         .is_err()
     );
 
-    let mut engine2 = EngineLifecycle::new();
     // Zero channels should panic
     assert!(
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            engine2.prepare(44100.0, 512, 0);
+            let mut engine = EngineLifecycle::new();
+            engine.prepare(44100.0, 512, 0);
         }))
         .is_err()
     );
 
-    let mut engine3 = EngineLifecycle::new();
     // Too many channels should panic
     assert!(
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            engine3.prepare(44100.0, 512, MAX_CHANNELS + 1);
+            let mut engine = EngineLifecycle::new();
+            engine.prepare(44100.0, 512, MAX_CHANNELS + 1);
         }))
         .is_err()
     );
