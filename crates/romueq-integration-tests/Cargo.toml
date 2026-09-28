@@ -11,3 +11,8 @@ romueq-common.workspace = true
 romueq-dsp.workspace = true
 romueq-engine.workspace = true
 romueq-analysis.workspace = true
+
+[dev-dependencies]
+romueq-cli = { path = "../romueq-cli" }
+hound = "3.5"
+tempfile = "3"

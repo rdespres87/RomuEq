@@ -1,9 +1,4 @@
-#![forbid(unsafe_code)]
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn scaffold_smoke() {
-        assert_eq!(2 + 2, 4);
-    }
-}
+//! RomuEq integration tests package.
+//!
+//! Integration test modules are in the `tests/` directory so they can use
+//! dev-dependencies (hound, romueq-cli).
