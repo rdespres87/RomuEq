@@ -8,7 +8,7 @@ The product owner explicitly approved the recommendations presented in the M0 on
 | DR-2026-002 | ACCEPTED | Use bounded preallocated SPSC control-command transport plus a separate sample-offset-preserving host automation stream. Exact queue implementation remains subject to M2 prototype evidence. |
 | DR-2026-003 | ACCEPTED | Use isolated CLAP/VST3 adapters; do not freeze the core around an unverified third-party framework. |
 | DR-2026-004 | ACCEPTED (deferred selection) | Do not freeze GUI framework before the required embedding/standalone/HiDPI/lifecycle/threading/packaging evaluation. |
-| DR-2026-005 | ACCEPTED (baseline) | Freeze MVP platforms/formats as macOS ARM64/x64, Windows x64, Linux x64 with CLAP/VST3. Exact DAW/version test entries are deferred to the M7 compatibility freeze. |
+| DR-2026-005 | **CLOSED** | Frozen exact DAW/host/version compatibility matrix in `docs/compatibility/HOST_COMPATIBILITY_MATRIX.md` (2026-09-30). 17 host entries across macOS/Windows/Linux, 18 deterministic pass/fail test cases. |
 | DR-2026-006 | ACCEPTED (provisional) | Freeze benchmark protocol and reference machine before converting the provisional CPU objective into a release requirement. |
 
 ## Gate consequence

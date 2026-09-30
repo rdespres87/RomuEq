@@ -1,6 +1,6 @@
 # Execution State
 
-**State:** M0-M8 complete; M9 integration tests in progress. Next actionable task is M9-T001 (freeze host compatibility matrix).
+**State:** M0-M8 complete; M9-T001 DONE, M9-T002 READY. Next actionable task is M9-T002 (execute scan/instantiate/lifecycle matrix).
 
 ## Current milestone
 
@@ -52,6 +52,7 @@ This file is operational state. Every task completion and every gate decision up
 | 2026-09-29 | Audit | M7 CLAP plugin complete (10 commits), M5 analysis/FFT complete (13 commits) | DONE | M4-T003/T004/T005, M5-T002/T003/T004, M7-T001/T002/T003/T004 all implemented |
 | 2026-09-29 | Audit | M8 CLI/bypass complete (8 commits), M9 integration tests started (1 commit) | DONE | M8-T001/T002/T003 complete; M9-T001 READY, rest BLOCKED |
 | 2026-09-30 | Tests | 3 spectrum tests fixed in romueq-analysis | DONE | All 371 workspace tests passing, 0 failing |
+| 2026-09-30 | M9-T001 | Frozen host compatibility matrix created — 17 host entries, 18 test cases | DONE | DR-2026-005 CLOSED; M9-T002 now READY |
 
 ## Code statistics (2026-09-30 audit)
 

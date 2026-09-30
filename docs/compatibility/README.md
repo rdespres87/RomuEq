@@ -1,5 +1,7 @@
 # Compatibility Matrix
 
+**Status:** Version-neutral baseline superseded by frozen matrix. See `HOST_COMPATIBILITY_MATRIX.md` for the exact frozen versions.
+
 ## Platforms
 
 - macOS ARM64
@@ -7,7 +9,7 @@
 - Windows x64
 - Linux x64
 
-## DAWs
+## DAWs (see frozen matrix for exact versions)
 
 - REAPER
 - Ableton Live
@@ -30,3 +32,9 @@
 - block-size changes;
 - offline rendering;
 - multiple instances.
+
+## Frozen matrix reference
+
+| File | Description |
+|---|---|
+| `docs/compatibility/HOST_COMPATIBILITY_MATRIX.md` | Exact frozen host compatibility matrix with versions, test cases, and pass/fail criteria. |

@@ -4544,7 +4544,7 @@
   {
     "id": "M9-T001",
     "title": "Freeze exact host compatibility matrix",
-    "status": "READY",
+    "status": "DONE",
     "priority": "P0",
     "milestone": "M9",
     "deps": [
@@ -4641,7 +4641,7 @@
   {
     "id": "M9-T002",
     "title": "Execute scan/instantiate/lifecycle matrix",
-    "status": "BLOCKED",
+    "status": "READY",
     "priority": "P0",
     "milestone": "M9",
     "deps": [
