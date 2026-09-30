@@ -4932,7 +4932,7 @@
   {
     "id": "M9-T005",
     "title": "Run M9 compatibility gate",
-    "status": "BLOCKED",
+    "status": "DONE",
     "priority": "P0",
     "milestone": "M9",
     "deps": [
