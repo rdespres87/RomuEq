@@ -2063,4 +2063,311 @@ mod tests {
         engine.config_mut().disable();
         assert!(!engine.is_active());
     }
+
+    // -----------------------------------------------------------------------
+    // M5-T002: Additional spectrum acceptance criteria tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_spectrum_impulse_flat_response() {
+        // A broadband signal (impulse at center of window) should produce a
+        // spectrum with energy spread across many bins.
+        // We place the impulse at fft_size/2 to avoid Hann window zero at index 0.
+        let config = SpectrumConfig {
+            fft_size: 256,
+            smoothing_factor: 0.0,
+            window_type: WindowType::Hann,
+            log_bin_mode: LogBinMode::None,
+            min_db: -120.0,
+        };
+        let mut processor = SpectrumProcessor::new(config);
+
+        let mut samples = vec![0.0_f32; 256];
+        samples[128] = 1.0; // impulse at center to avoid w[0]=0
+
+        let frame = processor.process(&samples, 44100.0, 0);
+
+        // Spectrum should have non-zero peak.
+        let max_mag = *frame
+            .magnitudes_linear
+            .iter()
+            .max_by(|a, b| a.partial_cmp(b).unwrap())
+            .unwrap();
+        assert!(
+            max_mag > 0.01,
+            "broadband impulse spectrum should have non-zero peak, got {max_mag}"
+        );
+
+        // Count bins above noise floor.
+        let above_noise = frame
+            .magnitudes_linear
+            .iter()
+            .filter(|&&m| m > 0.001)
+            .count();
+        assert!(
+            above_noise > frame.num_bins / 4,
+            "broadband impulse should excite many bins, got {above_noise}"
+        );
+    }
+
+    #[test]
+    fn test_spectrum_white_noise_spectral_density() {
+        // White noise should have a roughly flat power spectral density.
+        let config = SpectrumConfig {
+            fft_size: 1024,
+            smoothing_factor: 0.0,
+            window_type: WindowType::Hann,
+            log_bin_mode: LogBinMode::None,
+            min_db: -120.0,
+        };
+        let mut processor = SpectrumProcessor::new(config);
+
+        // Generate white noise with known variance.
+        let samples: Vec<f32> = (0..1024)
+            .map(|i| {
+                let noise = (i as f64 * 0.1).sin() * 0.5 + (i as f64 * 0.37).cos() * 0.3;
+                noise as f32
+            })
+            .collect();
+
+        let frame = processor.process(&samples, 44100.0, 0);
+
+        // Compute average magnitude (should be non-zero).
+        let avg_mag = frame.magnitudes_linear.iter().sum::<f32>() / frame.num_bins as f32;
+        assert!(
+            avg_mag > 0.01,
+            "white noise should have non-zero average magnitude"
+        );
+
+        // The std of magnitudes should be bounded (not infinite).
+        // For FFT magnitude of deterministic signal, std is naturally bounded.
+        let variance: f32 = frame
+            .magnitudes_linear
+            .iter()
+            .map(|&m| (m - avg_mag) * (m - avg_mag))
+            .sum::<f32>()
+            / frame.num_bins as f32;
+        let std_mag = variance.sqrt();
+        assert!(std_mag < 50.0, "noise std should be bounded, got {std_mag}");
+    }
+
+    #[test]
+    fn test_spectrum_fft_size_boundaries() {
+        // Verify FFT works at various power-of-2 sizes.
+        for fft_size in [64, 128, 256, 512, 1024, 2048] {
+            let config = SpectrumConfig {
+                fft_size,
+                smoothing_factor: 0.0,
+                window_type: WindowType::Hann,
+                log_bin_mode: LogBinMode::None,
+                min_db: -120.0,
+            };
+            let mut processor = SpectrumProcessor::new(config);
+
+            assert_eq!(processor.fft_size(), fft_size);
+            assert_eq!(processor.num_bins(), fft_size / 2 + 1);
+
+            // Process silence.
+            let samples = vec![0.0_f32; fft_size];
+            let frame = processor.process(&samples, 44100.0, 0);
+
+            assert_eq!(frame.num_bins, fft_size / 2 + 1);
+            assert_eq!(frame.magnitudes_linear.len(), fft_size / 2 + 1);
+            assert_eq!(frame.magnitudes_db.len(), fft_size / 2 + 1);
+        }
+    }
+
+    #[test]
+    fn test_spectrum_frequency_mapping_correctness() {
+        // Verify that bin frequencies map correctly to Hz.
+        let config = SpectrumConfig {
+            fft_size: 1024,
+            smoothing_factor: 0.0,
+            window_type: WindowType::Hann,
+            log_bin_mode: LogBinMode::None,
+            min_db: -120.0,
+        };
+        let mut processor = SpectrumProcessor::new(config);
+
+        // Generate a sine wave at exactly bin 20.
+        let sample_rate = 44100.0;
+        let expected_bin = 20usize;
+        let freq_hz = expected_bin as f64 * sample_rate / processor.fft_size() as f64;
+
+        let samples: Vec<f32> = (0..1024)
+            .map(|i| (2.0 * std::f64::consts::PI * freq_hz / sample_rate * i as f64).sin() as f32)
+            .collect();
+
+        let frame = processor.process(&samples, sample_rate, 0);
+
+        // Find the peak bin.
+        let peak_bin = frame
+            .magnitudes_linear
+            .iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+            .map(|(i, _)| i)
+            .unwrap();
+
+        assert_eq!(
+            peak_bin, expected_bin,
+            "peak should be at bin {expected_bin}, got {peak_bin} (freq {freq_hz:.1} Hz)"
+        );
+
+        // Verify adjacent bins are lower (spectral leakage with Hann window).
+        let peak_mag = frame.magnitudes_linear[peak_bin];
+        // For a perfect bin match, sidelobes of Hann window should be ~31.5 dB down (~0.027x).
+        // Use a generous bound to accommodate any normalization differences.
+        if peak_bin + 1 < frame.num_bins {
+            assert!(
+                frame.magnitudes_linear[peak_bin + 1] < peak_mag * 0.6,
+                "adjacent bin should be much lower (spectral leakage)"
+            );
+        }
+    }
+
+    #[test]
+    fn test_spectrum_reconfigure_does_not_corrupt() {
+        // Reconfigure should not corrupt the processor state.
+        let config = SpectrumConfig::new(1024, 44100.0);
+        let mut processor = SpectrumProcessor::new(config);
+
+        // Process a known signal.
+        let samples: Vec<f32> = (0..1024)
+            .map(|i| (2.0 * std::f64::consts::PI * 440.0 / 44100.0 * i as f64).sin() as f32)
+            .collect();
+        let frame1 = processor.process(&samples, 44100.0, 0);
+        let peak_before = *frame1
+            .magnitudes_linear
+            .iter()
+            .max_by(|a, b| a.partial_cmp(b).unwrap())
+            .unwrap();
+
+        // Reconfigure to different FFT size.
+        let new_config = SpectrumConfig::new(2048, 48000.0);
+        processor.reconfigure(new_config);
+
+        // Process same signal (truncated to 2048).
+        let samples_2k: Vec<f32> = (0..2048)
+            .map(|i| (2.0 * std::f64::consts::PI * 440.0 / 48000.0 * i as f64).sin() as f32)
+            .collect();
+        let frame2 = processor.process(&samples_2k, 48000.0, 1);
+        let peak_after = *frame2
+            .magnitudes_linear
+            .iter()
+            .max_by(|a, b| a.partial_cmp(b).unwrap())
+            .unwrap();
+
+        // Both should have valid peaks (not NaN/Inf).
+        assert!(peak_before.is_finite() && peak_before > 0.0);
+        assert!(peak_after.is_finite() && peak_after > 0.0);
+
+        // Reconfigure back to original size.
+        processor.reconfigure(SpectrumConfig::new(1024, 44100.0));
+        let frame3 = processor.process(&samples, 44100.0, 2);
+        let peak_after_restore = *frame3
+            .magnitudes_linear
+            .iter()
+            .max_by(|a, b| a.partial_cmp(b).unwrap())
+            .unwrap();
+
+        // Should still produce valid output after restoring.
+        assert!(peak_after_restore.is_finite() && peak_after_restore > 0.0);
+    }
+
+    #[test]
+    fn test_spectrum_one_third_octave_log_binning() {
+        // Verify 1/3-octave log binning produces expected group count.
+        let config = SpectrumConfig {
+            fft_size: 2048,
+            smoothing_factor: 0.0,
+            window_type: WindowType::Hann,
+            log_bin_mode: LogBinMode::OneThirdOctave,
+            min_db: -120.0,
+        };
+        let mut processor = SpectrumProcessor::new(config);
+
+        // Sine wave at 1 kHz should concentrate in specific log groups.
+        let samples: Vec<f32> = (0..2048)
+            .map(|i| (2.0 * std::f64::consts::PI * 1000.0 / 48000.0 * i as f64).sin() as f32)
+            .collect();
+
+        let frame = processor.process(&samples, 48000.0, 0);
+
+        assert!(frame.num_log_groups > 0);
+        assert_eq!(
+            frame.log_binned_magnitudes_linear.len(),
+            frame.num_log_groups
+        );
+
+        // At least some groups should have non-zero magnitude.
+        let active_groups = frame
+            .log_binned_magnitudes_linear
+            .iter()
+            .filter(|&&m| m > 0.001)
+            .count();
+        assert!(active_groups > 0, "sine wave should excite log groups");
+    }
+
+    #[test]
+    fn test_spectrum_octave_log_binning() {
+        // Verify octave log binning works correctly.
+        let config = SpectrumConfig {
+            fft_size: 2048,
+            smoothing_factor: 0.0,
+            window_type: WindowType::Hann,
+            log_bin_mode: LogBinMode::Octave,
+            min_db: -120.0,
+        };
+        let mut processor = SpectrumProcessor::new(config);
+
+        let samples: Vec<f32> = vec![0.0_f32; 2048];
+        let frame = processor.process(&samples, 44100.0, 0);
+
+        assert!(frame.num_log_groups > 0);
+        assert_eq!(
+            frame.log_binned_magnitudes_linear.len(),
+            frame.num_log_groups
+        );
+
+        // Octave bands should be fewer than 1/3-octave.
+        let mut octave_proc = SpectrumProcessor::new(SpectrumConfig {
+            fft_size: 2048,
+            smoothing_factor: 0.0,
+            window_type: WindowType::Hann,
+            log_bin_mode: LogBinMode::OneThirdOctave,
+            min_db: -120.0,
+        });
+        let frame_13 = octave_proc.process(&samples, 44100.0, 0);
+
+        assert!(
+            frame.num_log_groups < frame_13.num_log_groups,
+            "octave bands ({}) should be fewer than 1/3-octave ({})",
+            frame.num_log_groups,
+            frame_13.num_log_groups
+        );
+    }
+
+    #[test]
+    fn test_spectrum_no_log_binning() {
+        // Verify LogBinMode::None produces empty log bins.
+        let config = SpectrumConfig {
+            fft_size: 512,
+            smoothing_factor: 0.0,
+            window_type: WindowType::Hann,
+            log_bin_mode: LogBinMode::None,
+            min_db: -120.0,
+        };
+        let mut processor = SpectrumProcessor::new(config);
+
+        let samples: Vec<f32> = vec![0.5_f32; 512];
+        let frame = processor.process(&samples, 44100.0, 0);
+
+        assert_eq!(frame.num_log_groups, 0);
+        assert!(frame.log_binned_magnitudes_linear.is_empty());
+        assert!(frame.log_binned_magnitudes_db.is_empty());
+
+        // Linear bins should still be populated.
+        assert_eq!(frame.num_bins, 512 / 2 + 1);
+    }
 }

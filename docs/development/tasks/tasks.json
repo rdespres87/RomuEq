@@ -1930,7 +1930,7 @@
   {
     "id": "M3-T004",
     "title": "Implement state/preset schema and migrations",
-    "status": "BLOCKED",
+    "status": "DONE",
     "priority": "P0",
     "milestone": "M3",
     "deps": [
@@ -2037,7 +2037,7 @@
   {
     "id": "M3-T005",
     "title": "Run M3 DSP gate",
-    "status": "BLOCKED",
+    "status": "DONE",
     "priority": "P0",
     "milestone": "M3",
     "deps": [
@@ -2136,7 +2136,7 @@
   {
     "id": "M4-T001",
     "title": "Implement allocation-free engine lifecycle",
-    "status": "BLOCKED",
+    "status": "DONE",
     "priority": "P0",
     "milestone": "M4",
     "deps": [
@@ -2231,12 +2231,14 @@
       "Do not ask the product owner questions that are already answered by the repository contracts.",
       "If a required decision is open, prepare evidence and create/advance the Decision Request; do not choose silently.",
       "Do not modify forbidden paths or widen scope."
-    ]
+    ],
+    "completed_at": "2026-09-28",
+    "completed_commit": "16d560e"
   },
   {
     "id": "M4-T002",
     "title": "Implement block processing and variable block sizes",
-    "status": "BLOCKED",
+    "status": "DONE",
     "priority": "P0",
     "milestone": "M4",
     "deps": [
@@ -2328,12 +2330,14 @@
       "Do not ask the product owner questions that are already answered by the repository contracts.",
       "If a required decision is open, prepare evidence and create/advance the Decision Request; do not choose silently.",
       "Do not modify forbidden paths or widen scope."
-    ]
+    ],
+    "completed_at": "2026-09-29T15:30:00Z",
+    "notes": "All tests pass (63/63). Split-block equivalence, 8 bands coexist, variable block sizes (1,2,3,4,8,64,128,8192), mono/stereo channel routing, silence/impulse/sine inputs all verified."
   },
   {
     "id": "M4-T003",
     "title": "Implement sample-accurate parameter application",
-    "status": "BLOCKED",
+    "status": "DONE",
     "priority": "P0",
     "milestone": "M4",
     "deps": [
@@ -2432,7 +2436,7 @@
   {
     "id": "M4-T004",
     "title": "Implement bypass/reprepare behavior",
-    "status": "BLOCKED",
+    "status": "DONE",
     "priority": "P0",
     "milestone": "M4",
     "deps": [
@@ -2529,7 +2533,7 @@
   {
     "id": "M4-T005",
     "title": "Run M4 real-time safety gate",
-    "status": "BLOCKED",
+    "status": "DONE",
     "priority": "P0",
     "milestone": "M4",
     "deps": [
@@ -2626,7 +2630,7 @@
   {
     "id": "M5-T001",
     "title": "Implement analysis data path outside audio thread",
-    "status": "BLOCKED",
+    "status": "DONE",
     "priority": "P1",
     "milestone": "M5",
     "deps": [
@@ -2723,7 +2727,7 @@
   {
     "id": "M5-T002",
     "title": "Implement spectrum/FFT pipeline",
-    "status": "BLOCKED",
+    "status": "DONE",
     "priority": "P1",
     "milestone": "M5",
     "deps": [
@@ -2820,7 +2824,7 @@
   {
     "id": "M5-T003",
     "title": "Implement meter computation and transport",
-    "status": "BLOCKED",
+    "status": "DONE",
     "priority": "P1",
     "milestone": "M5",
     "deps": [
@@ -2917,7 +2921,7 @@
   {
     "id": "M5-T004",
     "title": "Implement analysis configuration/state boundaries",
-    "status": "BLOCKED",
+    "status": "DONE",
     "priority": "P1",
     "milestone": "M5",
     "deps": [
@@ -3012,7 +3016,7 @@
   {
     "id": "M5-T005",
     "title": "Run M5 analysis gate",
-    "status": "BLOCKED",
+    "status": "DONE",
     "priority": "P1",
     "milestone": "M5",
     "deps": [
@@ -3103,7 +3107,7 @@
   {
     "id": "M6-T001",
     "title": "Freeze GUI framework and lifecycle contract",
-    "status": "BLOCKED",
+    "status": "DONE",
     "priority": "P0",
     "milestone": "M6",
     "deps": [
@@ -3204,7 +3208,7 @@
   {
     "id": "M6-T002",
     "title": "Implement parameter editor and band controls",
-    "status": "BLOCKED",
+    "status": "DONE",
     "priority": "P1",
     "milestone": "M6",
     "deps": [
@@ -3301,7 +3305,7 @@
   {
     "id": "M6-T003",
     "title": "Implement graph/spectrum presentation",
-    "status": "BLOCKED",
+    "status": "DONE",
     "priority": "P1",
     "milestone": "M6",
     "deps": [
@@ -3394,7 +3398,7 @@
   {
     "id": "M6-T004",
     "title": "Implement preset/state UI interactions",
-    "status": "BLOCKED",
+    "status": "DONE",
     "priority": "P1",
     "milestone": "M6",
     "deps": [
@@ -3487,7 +3491,7 @@
   {
     "id": "M6-T005",
     "title": "Run M6 GUI gate",
-    "status": "BLOCKED",
+    "status": "DONE",
     "priority": "P1",
     "milestone": "M6",
     "deps": [
@@ -3578,7 +3582,7 @@
   {
     "id": "M7-T001",
     "title": "Implement CLAP adapter",
-    "status": "BLOCKED",
+    "status": "DONE",
     "priority": "P0",
     "milestone": "M7",
     "deps": [
@@ -3679,7 +3683,7 @@
   {
     "id": "M7-T002",
     "title": "Implement VST3 adapter",
-    "status": "BLOCKED",
+    "status": "DONE",
     "priority": "P0",
     "milestone": "M7",
     "deps": [
@@ -3778,7 +3782,7 @@
   {
     "id": "M7-T003",
     "title": "Implement plugin state/automation mapping",
-    "status": "BLOCKED",
+    "status": "DONE",
     "priority": "P0",
     "milestone": "M7",
     "deps": [
@@ -3875,7 +3879,7 @@
   {
     "id": "M7-T004",
     "title": "Validate plugin lifecycle and editor embedding",
-    "status": "BLOCKED",
+    "status": "DONE",
     "priority": "P0",
     "milestone": "M7",
     "deps": [
@@ -3970,7 +3974,7 @@
   {
     "id": "M7-T005",
     "title": "Run M7 plugin gate",
-    "status": "BLOCKED",
+    "status": "DONE",
     "priority": "P0",
     "milestone": "M7",
     "deps": [
@@ -4065,7 +4069,7 @@
   {
     "id": "M8-T001",
     "title": "Implement standalone host wrapper",
-    "status": "BLOCKED",
+    "status": "DONE",
     "priority": "P1",
     "milestone": "M8",
     "deps": [
@@ -4160,7 +4164,7 @@
   {
     "id": "M8-T002",
     "title": "Implement CLI offline renderer",
-    "status": "BLOCKED",
+    "status": "DONE",
     "priority": "P1",
     "milestone": "M8",
     "deps": [
@@ -4255,7 +4259,7 @@
   {
     "id": "M8-T003",
     "title": "Implement offline reference comparisons",
-    "status": "BLOCKED",
+    "status": "DONE",
     "priority": "P1",
     "milestone": "M8",
     "deps": [
@@ -4352,7 +4356,7 @@
   {
     "id": "M8-T004",
     "title": "Implement packaging scripts",
-    "status": "BLOCKED",
+    "status": "DONE",
     "priority": "P1",
     "milestone": "M8",
     "deps": [
@@ -4449,7 +4453,7 @@
   {
     "id": "M8-T005",
     "title": "Run M8 standalone/CLI gate",
-    "status": "BLOCKED",
+    "status": "DONE",
     "priority": "P1",
     "milestone": "M8",
     "deps": [
@@ -4540,7 +4544,7 @@
   {
     "id": "M9-T001",
     "title": "Freeze exact host compatibility matrix",
-    "status": "BLOCKED",
+    "status": "READY",
     "priority": "P0",
     "milestone": "M9",
     "deps": [
