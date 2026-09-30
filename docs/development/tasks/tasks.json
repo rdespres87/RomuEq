@@ -5122,7 +5122,7 @@
   {
     "id": "M10-T002",
     "title": "Run CPU/memory/allocation benchmarks",
-    "status": "BLOCKED",
+    "status": "DONE",
     "priority": "P0",
     "milestone": "M10",
     "deps": [
