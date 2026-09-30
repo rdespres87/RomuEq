@@ -4738,7 +4738,7 @@
   {
     "id": "M9-T003",
     "title": "Execute automation/state/bypass matrix",
-    "status": "BLOCKED",
+    "status": "DONE",
     "priority": "P0",
     "milestone": "M9",
     "deps": [
@@ -4837,7 +4837,7 @@
   {
     "id": "M9-T004",
     "title": "Execute hostile block/rate/offline scenarios",
-    "status": "BLOCKED",
+    "status": "READY",
     "priority": "P0",
     "milestone": "M9",
     "deps": [
