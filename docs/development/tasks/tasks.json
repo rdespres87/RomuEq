@@ -4837,7 +4837,7 @@
   {
     "id": "M9-T004",
     "title": "Execute hostile block/rate/offline scenarios",
-    "status": "READY",
+    "status": "DONE",
     "priority": "P0",
     "milestone": "M9",
     "deps": [

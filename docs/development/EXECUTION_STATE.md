@@ -1,6 +1,6 @@
 # Execution State
 
-**State:** M0-M8 complete; M9-T001 DONE, M9-T002 DONE, M9-T003 DONE, M9-T004 READY. Next actionable task is M9-T004 (execute hostile block/rate/offline scenarios).
+**State:** M0-M8 complete; M9-T001 DONE, M9-T002 DONE, M9-T003 DONE, M9-T004 DONE, M9-T005 READY. Next actionable task is M9-T005 (execute final compatibility gate).
 
 ## Current milestone
 
