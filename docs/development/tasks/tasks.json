@@ -4641,7 +4641,7 @@
   {
     "id": "M9-T002",
     "title": "Execute scan/instantiate/lifecycle matrix",
-    "status": "READY",
+    "status": "DONE",
     "priority": "P0",
     "milestone": "M9",
     "deps": [

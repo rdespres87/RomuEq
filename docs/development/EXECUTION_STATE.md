@@ -1,6 +1,6 @@
 # Execution State
 
-**State:** M0-M8 complete; M9-T001 DONE, M9-T002 READY. Next actionable task is M9-T002 (execute scan/instantiate/lifecycle matrix).
+**State:** M0-M8 complete; M9-T001 DONE, M9-T002 DONE, M9-T003 READY. Next actionable task is M9-T003 (execute automation/state/bypass matrix).
 
 ## Current milestone
 
