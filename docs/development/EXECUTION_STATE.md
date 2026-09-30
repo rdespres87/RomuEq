@@ -1,6 +1,6 @@
 # Execution State
 
-**State:** M0-M8 complete; M9-T001 DONE, M9-T002 DONE, M9-T003 DONE, M9-T004 DONE, M9-T005 READY. Next actionable task is M9-T005 (execute final compatibility gate).
+**State:** M0-M9 complete; M10-T001 DONE, M10-T002 READY. Next actionable task is M10-T002 (measure CPU, memory and allocation behavior against budget).
 
 ## Current milestone
 

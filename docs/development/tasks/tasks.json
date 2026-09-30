@@ -5027,7 +5027,7 @@
   {
     "id": "M10-T001",
     "title": "Freeze performance reference environment",
-    "status": "BLOCKED",
+    "status": "DONE",
     "priority": "P0",
     "milestone": "M10",
     "deps": [
