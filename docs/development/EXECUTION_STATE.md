@@ -1,6 +1,6 @@
 # Execution State
 
-**State:** M0-M9 complete; M10-T001 DONE, M10-T002 DONE, M10-T003 READY. Next actionable task is M10-T003 (run CPU/memory/allocation benchmarks against budget).
+**State:** M0-M9 complete; M10-T001 DONE, M10-T002 DONE, M10-T003 DONE, M10-T004 READY. Next actionable task is M10-T004 (run CPU/memory/allocation benchmarks against PERFORMANCE_BUDGET).
 
 ## Current milestone
 
