@@ -5425,7 +5425,7 @@
   {
     "id": "M10-T005",
     "title": "Run M10 hardening gate",
-    "status": "BLOCKED",
+    "status": "DONE",
     "priority": "P0",
     "milestone": "M10",
     "deps": [
