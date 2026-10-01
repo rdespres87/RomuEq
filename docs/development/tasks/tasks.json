@@ -5526,7 +5526,7 @@
   {
     "id": "M11-T001",
     "title": "Assemble release artifacts",
-    "status": "BLOCKED",
+    "status": "DONE",
     "priority": "P0",
     "milestone": "M11",
     "deps": [
