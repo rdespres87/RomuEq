@@ -5623,7 +5623,7 @@
   {
     "id": "M11-T002",
     "title": "Run clean-machine smoke tests",
-    "status": "BLOCKED",
+    "status": "DONE",
     "priority": "P0",
     "milestone": "M11",
     "deps": [
