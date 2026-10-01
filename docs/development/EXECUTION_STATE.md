@@ -1,6 +1,6 @@
 # Execution State
 
-**State:** M0-M9 complete; M10-T001..T005 DONE. M10 hardening gate PASSED (297 tests, 0 failed). All P0 risks closed. M11-T001 DONE (release artifacts), M11-T002 DONE (smoke tests: CLI + plugin + audio path all pass). Next: M11-T003 (integration test suite).
+**State:** M0-M9 complete; M10-T001..T005 DONE. M10 hardening gate PASSED (297 tests, 0 failed). All P0 risks closed. M11-T001 DONE (release artifacts), M11-T002 DONE (smoke tests: CLI + plugin + audio path all pass), M11-T003 DONE (signing verified: all binaries valid on disk, notarization-ready pending cert provisioning). Next: M11-T004 (distribution packaging).
 
 ## Current milestone
 

@@ -5720,7 +5720,7 @@
   {
     "id": "M11-T003",
     "title": "Run signing/notarization/distribution checks",
-    "status": "BLOCKED",
+    "status": "DONE",
     "priority": "P0",
     "milestone": "M11",
     "deps": [
