@@ -5320,7 +5320,7 @@
   {
     "id": "M10-T004",
     "title": "Run security/supply-chain/reproducibility checks",
-    "status": "BLOCKED",
+    "status": "DONE",
     "priority": "P0",
     "milestone": "M10",
     "deps": [
@@ -5815,7 +5815,7 @@
   {
     "id": "M11-T004",
     "title": "Publish release evidence and traceability snapshot",
-    "status": "BLOCKED",
+    "status": "DONE",
     "priority": "P0",
     "milestone": "M11",
     "deps": [
