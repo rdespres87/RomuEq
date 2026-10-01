@@ -5914,7 +5914,7 @@
   {
     "id": "M11-T005",
     "title": "Run final 99% release gate",
-    "status": "BLOCKED",
+    "status": "DONE",
     "priority": "P0",
     "milestone": "M11",
     "deps": [
