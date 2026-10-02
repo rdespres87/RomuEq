@@ -1806,7 +1806,7 @@ If acceptance fails, return to TESTING or create a DR; do not widen scope.
 
 ### M6-T003 — Implement graph/spectrum presentation
 
-- **Status:** `BLOCKED`
+- **Status:** `DONE`
 - **Priority:** `P1`
 - **Milestone:** `M6`
 - **Dependencies:** M6-T002
@@ -1851,7 +1851,7 @@ If acceptance fails, return to TESTING or create a DR; do not widen scope.
 
 ### M6-T004 — Implement preset/state UI interactions
 
-- **Status:** `BLOCKED`
+- **Status:** `DONE`
 - **Priority:** `P1`
 - **Milestone:** `M6`
 - **Dependencies:** M6-T003

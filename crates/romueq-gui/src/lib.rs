@@ -879,9 +879,7 @@ pub mod standalone {
                         .collect();
 
                     egui::ComboBox::new("preset_select", "")
-                        .selected_text(
-                            presets.first().map(|s| s.as_str()).unwrap_or("No presets"),
-                        )
+                        .selected_text(presets.first().map(|s| s.as_str()).unwrap_or("No presets"))
                         .show_ui(ui, |ui| {
                             for name in &presets {
                                 ui.selectable_value(
@@ -1637,8 +1635,10 @@ mod tests {
         assert!(!snap.dropped);
 
         // Verify the dropped flag can be set
-        let mut snap = AnalysisSnapshot::default();
-        snap.dropped = true;
+        let snap = AnalysisSnapshot {
+            dropped: true,
+            ..Default::default()
+        };
         assert!(snap.dropped);
     }
 
@@ -1699,8 +1699,7 @@ mod tests {
             // frequency_hz() returns ParamId - verify it's a valid positive ID
             assert!(
                 bp.frequency_hz().0 > 0,
-                "Band {} frequency param ID should be positive",
-                i
+                "Band {i} frequency param ID should be positive"
             );
         }
     }
