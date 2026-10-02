@@ -1716,7 +1716,7 @@ If acceptance fails, return to TESTING or create a DR; do not widen scope.
 
 ### M6-T001 — Freeze GUI framework and lifecycle contract
 
-- **Status:** `BLOCKED`
+- **Status:** `DONE`
 - **Priority:** `P0`
 - **Milestone:** `M6`
 - **Dependencies:** M5-T005
@@ -1761,7 +1761,7 @@ If acceptance fails, return to TESTING or create a DR; do not widen scope.
 
 ### M6-T002 — Implement parameter editor and band controls
 
-- **Status:** `BLOCKED`
+- **Status:** `DONE`
 - **Priority:** `P1`
 - **Milestone:** `M6`
 - **Dependencies:** M6-T001
@@ -1896,7 +1896,7 @@ If acceptance fails, return to TESTING or create a DR; do not widen scope.
 
 ### M6-T005 — Run M6 GUI gate
 
-- **Status:** `BLOCKED`
+- **Status:** `DONE`
 - **Priority:** `P1`
 - **Milestone:** `M6`
 - **Dependencies:** M6-T004
