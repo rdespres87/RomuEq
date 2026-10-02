@@ -51,7 +51,7 @@
 | M7-T002 | DONE | P0 | Implement VST3 adapter | M7-T001 | DR-2026-003 | YES | M7 |
 | M7-T003 | DONE | P0 | Implement plugin state/automation mapping | M7-T002 | — | NO | M7 |
 | M7-T004 | DONE | P0 | Validate plugin lifecycle and editor embedding | M7-T003 | — | NO | M7 |
-| M7-T005 | BLOCKED | P0 | Run M7 plugin gate | M7-T004 | — | NO | M7 |
+| M7-T005 | DONE | P0 | Run M7 plugin gate | M7-T004 | — | NO | M7 |
 | M8-T001 | BLOCKED | P1 | Implement standalone host wrapper | M7-T005 | — | NO | M8 |
 | M8-T002 | BLOCKED | P1 | Implement CLI offline renderer | M8-T001 | — | NO | M8 |
 | M8-T003 | BLOCKED | P1 | Implement offline reference comparisons | M8-T002 | — | NO | M8 |
@@ -2121,7 +2121,7 @@ If acceptance fails, return to TESTING or create a DR; do not widen scope.
 
 ### M7-T005 — Run M7 plugin gate
 
-- **Status:** `BLOCKED`
+- **Status:** `DONE`
 - **Priority:** `P0`
 - **Milestone:** `M7`
 - **Dependencies:** M7-T004
