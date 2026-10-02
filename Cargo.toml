@@ -30,5 +30,5 @@ romueq-gui = { path = "crates/romueq-gui" }
 romueq-plugin = { path = "crates/romueq-plugin" }
 
 rustfft = "6.2"
-eframe = { version = "0.31", features = ["default_fonts"] }
+eframe = { version = "0.36", features = ["default_fonts"] }
 hound = "3.5"
