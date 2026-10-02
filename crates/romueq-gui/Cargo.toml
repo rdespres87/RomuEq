@@ -9,6 +9,7 @@ repository.workspace = true
 [dependencies]
 romueq-common.workspace = true
 romueq-dsp.workspace = true
+romueq-engine.workspace = true
 romueq-analysis.workspace = true
 egui = { version = "0.31" }
 egui_plot = { version = "0.31" }

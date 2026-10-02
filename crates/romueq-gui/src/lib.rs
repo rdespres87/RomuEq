@@ -323,7 +323,8 @@ impl Default for BandControls {
 /// Render a single band's controls.
 ///
 /// Each control maps to exactly one stable ParamId and validates/clamps values
-/// before emitting commands through the batch.
+/// before emitting commands through the batch. Only pushes a command when the
+/// value actually changes (tracked via egui response.changed()).
 pub fn render_band(
     ui: &mut egui::Ui,
     band_index: usize,
@@ -331,124 +332,112 @@ pub fn render_band(
     snapshot: &ParamSnapshot,
     batch: &mut GuiCommandBatch,
 ) {
-    // Band header with enable checkbox.
-    ui.horizontal(|ui| {
+    ui.group(|ui| {
+        // Band header with enable checkbox.
         let enabled_val = snapshot.get(params.enabled()).unwrap_or(1.0);
         let mut enabled = enabled_val >= 0.5;
 
-        egui::Checkbox::new(&mut enabled, "")
-            .ui(ui)
-            .on_hover_text("Enable/disable band");
+        ui.horizontal(|ui| {
+            if ui.checkbox(&mut enabled, "").changed() {
+                batch.push(params.enabled(), if enabled { 1.0 } else { 0.0 });
+            }
 
-        if enabled {
-            batch.push(params.enabled(), 0.0);
-        } else {
-            batch.push(params.enabled(), 1.0);
-        }
+            ui.label(params.label());
 
-        ui.label(params.label());
+            // Enable/disable button as alternative.
+            if ui
+                .button(if enabled { "Disable" } else { "Enable" })
+                .clicked()
+            {
+                let new_val = if enabled { 0.0 } else { 1.0 };
+                batch.push(params.enabled(), new_val);
+                enabled = !enabled;
+            }
 
-        // Enable/disable button.
-        if ui
-            .button(if enabled { "Disable" } else { "Enable" })
-            .clicked()
+            ui.separator();
+        });
+
+        // Filter type dropdown (enum, 0–4).
+        let ft_val = snapshot.get(params.filter_type()).unwrap_or(2.0);
+        let filter_types = ["Low Shelf", "High Shelf", "Bell", "Low Pass", "High Pass"];
+        let ft_idx = (ft_val as usize).min(filter_types.len() - 1);
+        let mut ft_idx = ft_idx;
+
+        let ft_selected = filter_types[ft_idx].to_string();
+        if egui::ComboBox::from_id_salt(format!("ft_{band_index}"))
+            .selected_text(ft_selected)
+            .show_index(ui, &mut ft_idx, filter_types.len(), |idx| {
+                filter_types[idx].to_string()
+            })
+            .changed()
         {
-            let new_val = if enabled { 0.0 } else { 1.0 };
-            batch.push(params.enabled(), new_val);
+            batch.push(params.filter_type(), ft_idx as f32);
         }
 
-        ui.separator();
-    });
-
-    // Filter type dropdown (enum, 0–4).
-    let mut filter_type_val = snapshot.get(params.filter_type()).unwrap_or(0.0);
-    ui.horizontal(|ui| {
-        let filter_types = ["Lowpass", "Highpass", "Peaking", "Lowshelf", "Highshelf"];
-        let idx = filter_type_val as usize;
-        let selected = if idx < filter_types.len() {
-            filter_types[idx]
-        } else {
-            "?"
-        };
-
-        egui::ComboBox::from_id_salt(format!("filter_type_{band_index}"))
-            .selected_text(selected)
-            .show_ui(ui, |ui| {
-                for (i, name) in filter_types.iter().enumerate() {
-                    if ui
-                        .selectable_label(filter_type_val == i as f32, *name)
-                        .clicked()
-                    {
-                        filter_type_val = i as f32;
-                        batch.push(params.filter_type(), filter_type_val);
-                    }
-                }
-            });
-    });
-
-    // Frequency slider (logarithmic scale, 20–20000 Hz).
-    let mut freq_val: f32 = snapshot.get(params.frequency_hz()).unwrap_or(1000.0);
-    ui.horizontal(|ui| {
+        // Frequency slider (logarithmic scale, 20–20000 Hz).
+        let freq_val = snapshot.get(params.frequency_hz()).unwrap_or(1000.0);
         let freq_min: f32 = 20.0;
         let freq_max: f32 = 20_000.0;
+        let mut freq_log = freq_val.log10().clamp(freq_min.log10(), freq_max.log10());
 
-        // Use logarithmic scale for better UX.
-        let log_min = freq_val.log10().clamp(freq_min.log10(), freq_max.log10());
-        let mut display_log = log_min;
+        if ui
+            .add(
+                egui::Slider::new(&mut freq_log, freq_min.log10()..=freq_max.log10())
+                    .logarithmic(true)
+                    .suffix(" Hz")
+                    .text("Frequency"),
+            )
+            .changed()
+        {
+            let new_freq = 10.0_f32.powf(freq_log);
+            batch.push(params.frequency_hz(), new_freq);
+        }
 
-        egui::Slider::new(&mut display_log, freq_min.log10()..=freq_max.log10())
-            .suffix(" Hz")
-            .ui(ui);
+        // Gain slider (-24 to +24 dB).
+        let mut gain_val = snapshot.get(params.gain_db()).unwrap_or(0.0);
 
-        // Update value on change.
-        let new_val = 10.0_f32.powf(display_log);
-        if new_val != freq_val {
-            freq_val = new_val;
-            batch.push(params.frequency_hz(), freq_val);
+        if ui
+            .add(
+                egui::Slider::new(&mut gain_val, -24.0..=24.0)
+                    .suffix(" dB")
+                    .text("Gain"),
+            )
+            .changed()
+        {
+            batch.push(params.gain_db(), gain_val);
+        }
+
+        // Q slider (0.1 to 20).
+        let mut q_val = snapshot.get(params.q()).unwrap_or(0.707);
+
+        if ui
+            .add(
+                egui::Slider::new(&mut q_val, 0.1..=20.0)
+                    .suffix(" Q")
+                    .text("Q"),
+            )
+            .changed()
+        {
+            batch.push(params.q(), q_val);
+        }
+
+        // Slope dropdown (enum, 0–3: 6/12/24/48 dB/oct).
+        let slope_val = snapshot.get(params.slope()).unwrap_or(1.0);
+        let slopes = ["6", "12", "24", "48"];
+        let sl_idx = (slope_val as usize).min(slopes.len() - 1);
+        let mut sl_idx = sl_idx;
+
+        let sl_selected = format!("{} dB/oct", slopes[sl_idx]);
+        if egui::ComboBox::from_id_salt(format!("slope_{band_index}"))
+            .selected_text(sl_selected)
+            .show_index(ui, &mut sl_idx, slopes.len(), |idx| {
+                format!("{} dB/oct", slopes[idx])
+            })
+            .changed()
+        {
+            batch.push(params.slope(), sl_idx as f32);
         }
     });
-
-    // Gain slider (-24 to +24 dB).
-    let mut gain_val: f32 = snapshot.get(params.gain_db()).unwrap_or(0.0);
-    ui.horizontal(|ui| {
-        egui::Slider::new(&mut gain_val, -24.0..=24.0)
-            .suffix(" dB")
-            .ui(ui);
-        batch.push(params.gain_db(), gain_val);
-    });
-
-    // Q slider (0.1 to 20).
-    let mut q_val: f32 = snapshot.get(params.q()).unwrap_or(0.707);
-    ui.horizontal(|ui| {
-        egui::Slider::new(&mut q_val, 0.1..=20.0)
-            .suffix(" Q")
-            .ui(ui);
-        batch.push(params.q(), q_val);
-    });
-
-    // Slope dropdown (enum, 0–3: 6/12/24/48 dB/oct).
-    let mut slope_val = snapshot.get(params.slope()).unwrap_or(1.0);
-    ui.horizontal(|ui| {
-        let slopes = ["6", "12", "24", "48"];
-        let idx = slope_val as usize;
-        let selected = if idx < slopes.len() { slopes[idx] } else { "?" };
-
-        egui::ComboBox::from_id_salt(format!("slope_{band_index}"))
-            .selected_text(format!("{selected} dB/oct"))
-            .show_ui(ui, |ui| {
-                for (i, label) in slopes.iter().enumerate() {
-                    if ui
-                        .selectable_label(slope_val == i as f32, format!("{label} dB/oct"))
-                        .clicked()
-                    {
-                        slope_val = i as f32;
-                        batch.push(params.slope(), slope_val);
-                    }
-                }
-            });
-    });
-
-    ui.separator();
 }
 
 // ---------------------------------------------------------------------------
@@ -852,6 +841,22 @@ pub mod standalone {
             egui::CentralPanel::default().show(ctx, |ui| {
                 ui.heading("RomuEq — EQ Parameter Editor");
 
+                // Build a batch of commands from user interaction.
+                let mut batch = GuiCommandBatch::new();
+
+                // Render all 8 band controls.
+                let band_controls = BandControls::new();
+                for i in 0..romueq_common::MAX_BANDS {
+                    let bp = band_controls.params(i);
+                    render_band(ui, i, &bp, &self.client.snapshot, &mut batch);
+                }
+
+                // Process the batch through the engine client.
+                if !batch.is_empty() {
+                    self.client.apply_commands(batch.clone());
+                    self.client.apply_params_from_batch(&batch);
+                }
+
                 // Frequency response plot (real DSP data).
                 ui.separator();
                 render_frequency_response_plot(
@@ -882,12 +887,14 @@ pub mod standalone {
         }
     }
 
-    /// A minimal engine client that satisfies GuiClient for standalone mode.
-    ///
-    /// In production, this would be wrapped around the actual romueq-engine.
+    use romueq_analysis::AnalysisEngine;
+    use romueq_engine::EngineLifecycle;
+
+    /// A real engine client that wraps the actual romueq-engine.
     struct EngineClient {
+        engine: Option<EngineLifecycle>,
+        analysis_engine: AnalysisEngine,
         snapshot: ParamSnapshot,
-        analysis: AnalysisSnapshot,
         pending_commands: GuiCommandBatch,
         preset_manager: PresetManager,
         egui_context: Option<egui::Context>,
@@ -900,8 +907,9 @@ pub mod standalone {
     impl EngineClient {
         fn new() -> Self {
             Self {
+                engine: None,
+                analysis_engine: AnalysisEngine::new(),
                 snapshot: ParamSnapshot::new(Vec::new()),
-                analysis: AnalysisSnapshot::default(),
                 pending_commands: GuiCommandBatch::new(),
                 preset_manager: PresetManager::new(),
                 egui_context: None,
@@ -938,31 +946,302 @@ pub mod standalone {
                 }
             }
         }
+
+        /// Map a float value to a FilterType enum variant.
+        fn filter_type_from_f32(v: f32) -> romueq_common::FilterType {
+            match v as i32 {
+                0 => romueq_common::FilterType::LowShelf,
+                1 => romueq_common::FilterType::HighShelf,
+                2 => romueq_common::FilterType::Bell,
+                3 => romueq_common::FilterType::LowPass,
+                4 => romueq_common::FilterType::HighPass,
+                _ => romueq_common::FilterType::Bell,
+            }
+        }
+
+        /// Map a float value to a Slope enum variant.
+        fn slope_from_f32(v: f32) -> romueq_common::Slope {
+            match v as i32 {
+                0 => romueq_common::Slope::Db6,
+                1 => romueq_common::Slope::Db12,
+                2 => romueq_common::Slope::Db18,
+                3 => romueq_common::Slope::Db24,
+                _ => romueq_common::Slope::Db12,
+            }
+        }
+
+        /// Map a FilterType enum to a float value (for snapshot encoding).
+        fn filter_type_to_f32(ft: romueq_common::FilterType) -> f32 {
+            match ft {
+                romueq_common::FilterType::LowShelf => 0.0,
+                romueq_common::FilterType::HighShelf => 1.0,
+                romueq_common::FilterType::Bell => 2.0,
+                romueq_common::FilterType::LowPass => 3.0,
+                romueq_common::FilterType::HighPass => 4.0,
+            }
+        }
+
+        /// Map a Slope enum to a float value (for snapshot encoding).
+        fn slope_to_f32(sl: romueq_common::Slope) -> f32 {
+            match sl {
+                romueq_common::Slope::Db6 => 0.0,
+                romueq_common::Slope::Db12 => 1.0,
+                romueq_common::Slope::Db18 => 2.0,
+                romueq_common::Slope::Db24 => 3.0,
+            }
+        }
+
+        /// Map a ProcessingMode enum to a float value (for snapshot encoding).
+        fn processing_mode_to_f32(_pm: romueq_common::ProcessingMode) -> f32 {
+            0.0
+        }
+
+        /// Map a StereoMode enum to a float value (for snapshot encoding).
+        fn stereo_mode_to_f32(_sm: romueq_common::StereoMode) -> f32 {
+            0.0
+        }
+
+        /// Encode the current EqParameters into a ParamSnapshot for widget sync.
+        fn encode_snapshot(&self) -> Vec<ParamValue> {
+            let mut values: Vec<ParamValue> = Vec::new();
+
+            if let Some(ref eng) = self.engine {
+                let params = eng.eq_parameters();
+
+                // Global parameters
+                values.push(ParamValue {
+                    param_id: ParamId(1),
+                    value: if params.global.bypass { 1.0 } else { 0.0 },
+                });
+                values.push(ParamValue {
+                    param_id: ParamId(2),
+                    value: params.global.output_gain_db,
+                });
+                values.push(ParamValue {
+                    param_id: ParamId(3),
+                    value: if params.global.auto_gain { 1.0 } else { 0.0 },
+                });
+                values.push(ParamValue {
+                    param_id: ParamId(4),
+                    value: Self::processing_mode_to_f32(params.global.processing_mode),
+                });
+                values.push(ParamValue {
+                    param_id: ParamId(5),
+                    value: Self::stereo_mode_to_f32(params.global.stereo_mode),
+                });
+
+                // Band parameters
+                for band_idx in 0..romueq_common::MAX_BANDS {
+                    let base = 100u32 + band_idx as u32 * 100;
+                    let band = &params.bands[band_idx];
+                    values.push(ParamValue {
+                        param_id: ParamId(base),
+                        value: if band.enabled { 1.0 } else { 0.0 },
+                    });
+                    values.push(ParamValue {
+                        param_id: ParamId(base + 1),
+                        value: Self::filter_type_to_f32(band.filter_type),
+                    });
+                    values.push(ParamValue {
+                        param_id: ParamId(base + 2),
+                        value: band.frequency_hz,
+                    });
+                    values.push(ParamValue {
+                        param_id: ParamId(base + 3),
+                        value: band.gain_db,
+                    });
+                    values.push(ParamValue {
+                        param_id: ParamId(base + 4),
+                        value: band.q,
+                    });
+                    values.push(ParamValue {
+                        param_id: ParamId(base + 5),
+                        value: Self::slope_to_f32(band.slope),
+                    });
+                }
+            }
+
+            values
+        }
+
+        /// Apply a single GuiCommand to EqParameters.
+        fn apply_command_to_params(params: &mut romueq_common::EqParameters, cmd: &GuiCommand) {
+            let pid = cmd.param_id.0;
+            if (1..=99).contains(&pid) {
+                // Global parameters
+                match pid {
+                    1 => params.global.bypass = cmd.value > 0.5,
+                    2 => params.global.output_gain_db = cmd.value.clamp(-24.0, 24.0),
+                    3 => params.global.auto_gain = cmd.value > 0.5,
+                    4 => {
+                        params.global.processing_mode = romueq_common::ProcessingMode::MinimumPhase;
+                    }
+                    5 => {
+                        params.global.stereo_mode = romueq_common::StereoMode::Stereo;
+                    }
+                    _ => {}
+                }
+            } else if pid >= 100 {
+                // Band parameters: band_idx = (pid - 100) / 100
+                let band_idx = ((pid - 100) / 100) as usize;
+                if band_idx >= romueq_common::MAX_BANDS {
+                    return;
+                }
+                let offset = ((pid - 100) % 100) as usize;
+                let band = &mut params.bands[band_idx];
+                match offset {
+                    0 => band.enabled = cmd.value > 0.5,
+                    1 => band.filter_type = Self::filter_type_from_f32(cmd.value),
+                    2 => band.frequency_hz = cmd.value,
+                    3 => band.gain_db = cmd.value.clamp(-24.0, 24.0),
+                    4 => band.q = cmd.value.clamp(0.1, 20.0),
+                    5 => band.slope = Self::slope_from_f32(cmd.value),
+                    _ => {}
+                }
+            }
+        }
+
+        /// Drain analysis frames from the engine into the analysis engine.
+        fn drain_analysis_frames(&mut self) {
+            if let Some(ref mut eng) = self.engine {
+                let abuf = eng.analysis_buffer();
+                while let Some(frame) = abuf.pop() {
+                    self.analysis_engine.push(frame);
+                }
+            }
+        }
     }
 
     impl GuiClient for EngineClient {
-        fn prepare(&mut self, _sample_rate: f32, _block_size: usize, _channels: usize) {}
-        fn process(&mut self, _input: &[f32], _output: &mut [f32]) {}
+        fn prepare(&mut self, sample_rate: f32, block_size: usize, channels: usize) {
+            // Destroy existing engine if present.
+            if let Some(ref mut eng) = self.engine {
+                eng.destroy();
+            }
+
+            // Create a new engine.
+            let mut eng = EngineLifecycle::new();
+            if eng.prepare(sample_rate as f64, block_size, channels) {
+                self.engine = Some(eng);
+
+                // Reset band_params to defaults.
+                for bp in &mut self.band_params {
+                    *bp = Default::default();
+                }
+
+                // Update snapshot from engine params.
+                self.snapshot = ParamSnapshot::new(self.encode_snapshot());
+            } else {
+                self.engine = None;
+            }
+
+            self.sample_rate = sample_rate;
+        }
+
+        fn process(&mut self, input: &[f32], output: &mut [f32]) {
+            let eng = match self.engine.as_mut() {
+                Some(e) => e,
+                None => return,
+            };
+
+            // Apply pending commands first.
+            if !self.pending_commands.is_empty() {
+                let batch = std::mem::take(&mut self.pending_commands);
+                let mut params = *eng.eq_parameters();
+                for cmd in batch.commands() {
+                    Self::apply_command_to_params(&mut params, cmd);
+                }
+                eng.set_parameters(params);
+            }
+
+            // Convert flat interleaved → planar for engine.
+            let channels = 2; // stereo default
+            let block_size = input.len() / channels;
+            let input_planar: [&[f32]; 2] = [&input[0..block_size], &input[block_size..]];
+            let (lo, hi) = output.split_at_mut(block_size);
+            let mut output_planar: [&mut [f32]; 2] = [lo, hi];
+
+            let _ = eng.process(&input_planar, &mut output_planar);
+
+            // Update snapshot and band_params from engine before releasing borrow.
+            let eq_params = *eng.eq_parameters();
+
+            // Drain analysis frames.
+            self.drain_analysis_frames();
+
+            // Update snapshot from engine params.
+            self.snapshot = ParamSnapshot::new(self.encode_snapshot());
+
+            // Update band_params from engine.
+            for i in 0..romueq_common::MAX_BANDS {
+                self.band_params[i] = eq_params.bands[i];
+            }
+        }
+
         fn snapshot(&self) -> ParamSnapshot {
             self.snapshot.clone()
         }
+
         fn analysis_snapshot(&self) -> AnalysisSnapshot {
-            self.analysis.clone()
-        }
-        fn apply_commands(&mut self, batch: GuiCommandBatch) {
-            // Store commands for later processing.
-            for cmd in batch.into_commands() {
-                self.pending_commands.push(cmd.param_id, cmd.value);
+            if let Some(frame) = self.analysis_engine.latest_snapshot() {
+                let mut rms = [f32::NEG_INFINITY; romueq_common::ANALYSIS_MAX_CHANNELS];
+                let mut peak = [f32::NEG_INFINITY; romueq_common::ANALYSIS_MAX_CHANNELS];
+                for (i, &v) in frame.rms.iter().enumerate() {
+                    if i < romueq_common::ANALYSIS_MAX_CHANNELS {
+                        rms[i] = v;
+                        peak[i] = frame.peak[i];
+                    }
+                }
+                AnalysisSnapshot {
+                    rms,
+                    peak,
+                    dropped: frame.dropped,
+                    spectrum_data: Vec::new(),
+                }
+            } else {
+                AnalysisSnapshot::default()
             }
         }
-        fn destroy(&mut self) {}
+
+        fn apply_commands(&mut self, batch: GuiCommandBatch) {
+            // Apply commands directly to engine params if available.
+            if let Some(ref mut eng) = self.engine {
+                let mut params = *eng.eq_parameters();
+                for cmd in batch.commands() {
+                    Self::apply_command_to_params(&mut params, cmd);
+                }
+                eng.set_parameters(params);
+            } else {
+                // Store for later when engine is prepared.
+                for cmd in batch.commands() {
+                    self.pending_commands.push(cmd.param_id, cmd.value);
+                }
+            }
+        }
+
+        fn destroy(&mut self) {
+            if let Some(ref mut eng) = self.engine {
+                eng.destroy();
+            }
+            self.engine = None;
+        }
+
         fn is_prepared(&self) -> bool {
-            false // Placeholder
+            self.engine.is_some()
         }
 
         fn create_preset(&mut self, name: &str) -> Result<String, String> {
-            // Create a default preset from the current state.
-            let preset = Preset::new(name);
+            let _params = self
+                .engine
+                .as_ref()
+                .map(|e| *e.eq_parameters())
+                .unwrap_or_default();
+
+            let mut preset = Preset::new(name);
+            for pv in self.encode_snapshot().into_iter() {
+                preset.parameter_values.set(pv.param_id.0, pv.value);
+            }
+
             self.preset_manager
                 .add(name.to_string(), preset)
                 .map_err(|e| format!("create preset: {e}"))?;
@@ -975,10 +1254,32 @@ pub mod standalone {
                 .get(name)
                 .ok_or_else(|| format!("preset '{name}' not found"))?;
 
-            // Apply preset values to the current snapshot.
-            for (id, value) in preset.preset.parameter_values.iter() {
-                self.snapshot.set(ParamId(id), value);
+            if let Some(ref mut eng) = self.engine {
+                let mut params = *eng.eq_parameters();
+                for (id, value) in preset.preset.parameter_values.iter() {
+                    let pid = ParamId(id);
+                    Self::apply_command_to_params(
+                        &mut params,
+                        &GuiCommand {
+                            param_id: pid,
+                            value,
+                        },
+                    );
+                }
+                eng.set_parameters(params);
             }
+
+            // Update snapshot and band_params locally.
+            self.snapshot = ParamSnapshot::new(self.encode_snapshot());
+            let eq_params = self
+                .engine
+                .as_ref()
+                .map(|e| *e.eq_parameters())
+                .unwrap_or_default();
+            for i in 0..romueq_common::MAX_BANDS {
+                self.band_params[i] = eq_params.bands[i];
+            }
+
             Ok(())
         }
 
@@ -1001,6 +1302,33 @@ pub mod standalone {
                 .preset_manager
                 .load_from_file(path)
                 .map_err(|e| format!("load preset: {e}"))?;
+
+            if let Some(ref mut eng) = self.engine {
+                let mut params = *eng.eq_parameters();
+                for (id, value) in named.preset.parameter_values.iter() {
+                    let pid = ParamId(id);
+                    Self::apply_command_to_params(
+                        &mut params,
+                        &GuiCommand {
+                            param_id: pid,
+                            value,
+                        },
+                    );
+                }
+                eng.set_parameters(params);
+            }
+
+            // Update snapshot and band_params locally.
+            self.snapshot = ParamSnapshot::new(self.encode_snapshot());
+            let eq_params = self
+                .engine
+                .as_ref()
+                .map(|e| *e.eq_parameters())
+                .unwrap_or_default();
+            for i in 0..romueq_common::MAX_BANDS {
+                self.band_params[i] = eq_params.bands[i];
+            }
+
             Ok(named.name)
         }
 
@@ -1009,31 +1337,20 @@ pub mod standalone {
         }
 
         fn next_auto_name(&self) -> String {
-            let count = self.list_presets().len() + 1;
-            format!("Preset {count}")
+            self.preset_manager.next_auto_name()
         }
 
-        fn band_parameters(&self, _band_index: usize) -> Option<BandParameters> {
-            // Build BandParameters from the snapshot values for this band.
-            let base_id = 100;
-            let default_bp = BandParameters::default();
-            let gain_db = self
-                .snapshot
-                .get(ParamId(base_id + 3))
-                .unwrap_or(default_bp.gain_db);
-            let frequency_hz = self
-                .snapshot
-                .get(ParamId(base_id + 2))
-                .unwrap_or(default_bp.frequency_hz);
-            Some(BandParameters {
-                gain_db,
-                frequency_hz,
-                ..default_bp
-            })
+        fn band_parameters(&self, band_index: usize) -> Option<BandParameters> {
+            if band_index < romueq_common::MAX_BANDS {
+                Some(self.band_params[band_index])
+            } else {
+                None
+            }
         }
 
         fn spectrum_data(&self) -> &[[f64; 2]] {
-            &self.analysis.spectrum_data
+            static EMPTY: &[[f64; 2]] = &[];
+            EMPTY
         }
     }
 }
