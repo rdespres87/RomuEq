@@ -624,12 +624,22 @@ dependencies = [
 ]
 
 [[package]]
-name = "clack-plugin"
-version = "0.1.1"
+name = "clack-common"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2fa04a5185c367bfd5566e616c9c20cec2abaee9bf8a6060a3f6e44b505d5f32"
+checksum = "0ca905d78f46117492bce49e64a765f8b3f5c71794486a1369242721860e2640"
 dependencies = [
- "clack-common",
+ "bitflags 2.13.2",
+ "clap-sys",
+]
+
+[[package]]
+name = "clack-plugin"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d36954ed91d485b42f8329b12618e6ec398cc806a8e1f5ae8a50ccaba1d9b94f"
+dependencies = [
+ "clack-common 0.2.0",
  "clap-sys",
 ]
 
@@ -2649,7 +2659,7 @@ dependencies = [
 name = "romueq-plugin"
 version = "0.1.0"
 dependencies = [
- "clack-common",
+ "clack-common 0.1.1",
  "clack-plugin",
  "clap-sys",
  "egui",
