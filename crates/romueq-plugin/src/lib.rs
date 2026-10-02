@@ -17,7 +17,10 @@ use clack_plugin::prelude::*;
 use clap_sys::ext::state::{CLAP_EXT_STATE, clap_plugin_state};
 use clap_sys::plugin::clap_plugin;
 use clap_sys::stream::{clap_istream, clap_ostream};
+use egui::Widget;
+use romueq_common::ParamId;
 use romueq_engine::lifecycle::EngineLifecycle;
+use romueq_gui::ParamValue;
 
 // ---------------------------------------------------------------------------
 // Plugin metadata / descriptor
@@ -245,6 +248,97 @@ impl Plugin for RomuEqPlugin {
         _shared: Option<&Self::Shared<'_>>,
     ) {
         // Register CLAP extensions here (e.g. parameter, state, audio ports).
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Plugin editor — UI widget for plugin host embedding
+// ---------------------------------------------------------------------------
+
+/// Editor widget that bridges the RomuEq GUI with the CLAP plugin host.
+///
+/// Provides the standard lifecycle hooks (on_open/on_close) and renders
+/// the RomuEq band editor using egui inside a window.
+pub struct RomuEqEditor {
+    /// Current parameter values for rendering.
+    param_values: Vec<ParamValue>,
+    /// Whether the editor is currently visible/active.
+    active: bool,
+}
+
+impl Default for RomuEqEditor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RomuEqEditor {
+    /// Create a new editor with default parameter values.
+    pub fn new() -> Self {
+        let param_values = (0..8)
+            .map(|i| ParamValue {
+                param_id: ParamId(102 + i * 100),
+                value: 0.0,
+            })
+            .collect();
+        Self {
+            param_values,
+            active: false,
+        }
+    }
+
+    /// Called when the editor is opened by the host.
+    pub fn on_open(&mut self) {
+        self.active = true;
+    }
+
+    /// Called when the editor is closed by the host.
+    pub fn on_close(&mut self) {
+        self.active = false;
+    }
+
+    /// Returns whether the editor is currently active.
+    pub fn is_active(&self) -> bool {
+        self.active
+    }
+
+    /// Get the current parameter values.
+    pub fn param_values(&self) -> &[ParamValue] {
+        &self.param_values
+    }
+
+    /// Update a parameter value.
+    pub fn set_param(&mut self, param_id: ParamId, value: f32) {
+        match self
+            .param_values
+            .iter_mut()
+            .find(|v| v.param_id == param_id)
+        {
+            Some(v) => v.value = value,
+            None => self.param_values.push(ParamValue { param_id, value }),
+        }
+    }
+
+    /// Render the editor UI.
+    pub fn render(&mut self, ctx: &egui::Context) {
+        if !self.active {
+            return;
+        }
+        egui::Window::new("RomuEq EQ").show(ctx, |ui| {
+            for i in 0..8 {
+                let band_id = ParamId(102 + i * 100);
+                let mut val = self
+                    .param_values
+                    .iter()
+                    .find(|v| v.param_id == band_id)
+                    .map(|v| v.value)
+                    .unwrap_or(0.0);
+                egui::Slider::new(&mut val, -100.0..=100.0)
+                    .text(format!("Band {}", i + 1))
+                    .ui(ui);
+                self.set_param(band_id, val);
+            }
+        });
     }
 }
 

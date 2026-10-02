@@ -1,0 +1,14 @@
+[package]
+name = "romueq-vst3"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+romueq-engine = { path = "../romueq-engine" }
+romueq-common = { path = "../romueq-common" }
+vst3 = "0.3.0"
+
+[dev-dependencies]

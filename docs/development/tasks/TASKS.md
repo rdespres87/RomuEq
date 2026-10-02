@@ -47,10 +47,10 @@
 | M6-T003 | BLOCKED | P1 | Implement graph/spectrum presentation | M6-T002 | — | NO | M6 |
 | M6-T004 | BLOCKED | P1 | Implement preset/state UI interactions | M6-T003 | — | NO | M6 |
 | M6-T005 | BLOCKED | P1 | Run M6 GUI gate | M6-T004 | — | NO | M6 |
-| M7-T001 | BLOCKED | P0 | Implement CLAP adapter | M6-T005 | DR-2026-003 | YES | M7 |
-| M7-T002 | BLOCKED | P0 | Implement VST3 adapter | M7-T001 | DR-2026-003 | YES | M7 |
-| M7-T003 | BLOCKED | P0 | Implement plugin state/automation mapping | M7-T002 | — | NO | M7 |
-| M7-T004 | BLOCKED | P0 | Validate plugin lifecycle and editor embedding | M7-T003 | — | NO | M7 |
+| M7-T001 | DONE | P0 | Implement CLAP adapter | M6-T005 | DR-2026-003 | YES | M7 |
+| M7-T002 | DONE | P0 | Implement VST3 adapter | M7-T001 | DR-2026-003 | YES | M7 |
+| M7-T003 | DONE | P0 | Implement plugin state/automation mapping | M7-T002 | — | NO | M7 |
+| M7-T004 | DONE | P0 | Validate plugin lifecycle and editor embedding | M7-T003 | — | NO | M7 |
 | M7-T005 | BLOCKED | P0 | Run M7 plugin gate | M7-T004 | — | NO | M7 |
 | M8-T001 | BLOCKED | P1 | Implement standalone host wrapper | M7-T005 | — | NO | M8 |
 | M8-T002 | BLOCKED | P1 | Implement CLI offline renderer | M8-T001 | — | NO | M8 |
@@ -1941,7 +1941,7 @@ If acceptance fails, return to TESTING or create a DR; do not widen scope.
 
 ### M7-T001 — Implement CLAP adapter
 
-- **Status:** `BLOCKED`
+- **Status:** `DONE`
 - **Priority:** `P0`
 - **Milestone:** `M7`
 - **Dependencies:** M6-T005
@@ -1986,7 +1986,7 @@ If acceptance fails, return to TESTING or create a DR; do not widen scope.
 
 ### M7-T002 — Implement VST3 adapter
 
-- **Status:** `BLOCKED`
+- **Status:** `DONE`
 - **Priority:** `P0`
 - **Milestone:** `M7`
 - **Dependencies:** M7-T001
@@ -2031,7 +2031,7 @@ If acceptance fails, return to TESTING or create a DR; do not widen scope.
 
 ### M7-T003 — Implement plugin state/automation mapping
 
-- **Status:** `BLOCKED`
+- **Status:** `DONE`
 - **Priority:** `P0`
 - **Milestone:** `M7`
 - **Dependencies:** M7-T002
