@@ -42,11 +42,11 @@
 | M5-T003 | BLOCKED | P1 | Implement meter computation and transport | M5-T002 | — | NO | M5 |
 | M5-T004 | BLOCKED | P1 | Implement analysis configuration/state boundaries | M5-T003 | — | NO | M5 |
 | M5-T005 | BLOCKED | P1 | Run M5 analysis gate | M5-T004 | — | NO | M5 |
-| M6-T001 | BLOCKED | P0 | Freeze GUI framework and lifecycle contract | M5-T005 | DR-2026-004 | YES | M6 |
-| M6-T002 | BLOCKED | P1 | Implement parameter editor and band controls | M6-T001 | — | NO | M6 |
-| M6-T003 | BLOCKED | P1 | Implement graph/spectrum presentation | M6-T002 | — | NO | M6 |
-| M6-T004 | BLOCKED | P1 | Implement preset/state UI interactions | M6-T003 | — | NO | M6 |
-| M6-T005 | BLOCKED | P1 | Run M6 GUI gate | M6-T004 | — | NO | M6 |
+| M6-T001 | DONE | P0 | Freeze GUI framework and lifecycle contract | M5-T005 | DR-2026-004 | YES | M6 |
+| M6-T002 | DONE | P1 | Implement parameter editor and band controls | M6-T001 | — | NO | M6 |
+| M6-T003 | DONE | P1 | Implement graph/spectrum presentation | M6-T002 | — | NO | M6 |
+| M6-T004 | DONE | P1 | Implement preset/state UI interactions | M6-T003 | — | NO | M6 |
+| M6-T005 | DONE | P1 | Run M6 GUI gate | M6-T004 | — | NO | M6 |
 | M7-T001 | BLOCKED | P0 | Implement CLAP adapter | M6-T005 | DR-2026-003 | YES | M7 |
 | M7-T002 | BLOCKED | P0 | Implement VST3 adapter | M7-T001 | DR-2026-003 | YES | M7 |
 | M7-T003 | BLOCKED | P0 | Implement plugin state/automation mapping | M7-T002 | — | NO | M7 |
