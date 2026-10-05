@@ -813,6 +813,8 @@ pub mod standalone {
         fn new(app: A, ctx: egui::Context) -> Self {
             let mut client = EngineClient::new();
             client.set_egui_context(ctx);
+            // Initialize the engine at startup so encode_snapshot() returns real data.
+            client.prepare(48000.0, 512, 2);
             Self { app, client }
         }
     }
@@ -953,6 +955,10 @@ pub mod standalone {
         sample_rate: f32,
         /// Currently selected preset name for the combo box.
         _current_preset: String,
+        /// Spectrum processor for real-time FFT visualization.
+        _spectrum_processor: romueq_analysis::SpectrumProcessor,
+        /// Running sample counter for spectrum frame numbering.
+        _spectrum_frame_number: u64,
     }
 
     impl EngineClient {
@@ -970,6 +976,10 @@ pub mod standalone {
                 }),
                 sample_rate: 48000.0,
                 _current_preset: String::new(),
+                _spectrum_processor: romueq_analysis::SpectrumProcessor::new(
+                    romueq_analysis::SpectrumConfig::new(1024, 48000.0),
+                ),
+                _spectrum_frame_number: 0,
             }
         }
 
@@ -985,15 +995,25 @@ pub mod standalone {
         fn apply_params_from_batch(&mut self, batch: &GuiCommandBatch) {
             let commands = batch.commands();
             for cmd in commands {
-                // Map ParamId to band index and parameter
-                if let Some(bp) = self
-                    .band_params
-                    .iter_mut()
-                    .find(|b| b.gain_param_id() == cmd.param_id)
-                {
-                    if cmd.param_id.0 >= 100 && cmd.param_id.0 < 200 {
-                        // Gain parameter (offset 3 from band base)
-                        bp.gain_db = cmd.value;
+                let pid = cmd.param_id.0;
+                // Global parameters (1..=99)
+                if (1..=99).contains(&pid) {
+                    continue;
+                }
+                if pid >= 100 {
+                    let band_idx = ((pid - 100) / 100) as usize;
+                    let offset = ((pid - 100) % 100) as usize;
+                    if band_idx < romueq_common::MAX_BANDS {
+                        let bp = &mut self.band_params[band_idx];
+                        match offset {
+                            0 => bp.enabled = cmd.value > 0.5,
+                            1 => bp.filter_type = Self::filter_type_from_f32(cmd.value),
+                            2 => bp.frequency_hz = cmd.value,
+                            3 => bp.gain_db = cmd.value.clamp(-24.0, 24.0),
+                            4 => bp.q = cmd.value.clamp(0.1, 20.0),
+                            5 => bp.slope = Self::slope_from_f32(cmd.value),
+                            _ => {}
+                        }
                     }
                 }
             }
@@ -1235,36 +1255,109 @@ pub mod standalone {
         }
 
         fn analysis_snapshot(&self) -> AnalysisSnapshot {
+            let mut rms = [f32::NEG_INFINITY; romueq_common::ANALYSIS_MAX_CHANNELS];
+            let mut peak = [f32::NEG_INFINITY; romueq_common::ANALYSIS_MAX_CHANNELS];
+            let mut dropped = false;
+
+            // Pull the latest analysis frame if available.
             if let Some(frame) = self.analysis_engine.latest_snapshot() {
-                let mut rms = [f32::NEG_INFINITY; romueq_common::ANALYSIS_MAX_CHANNELS];
-                let mut peak = [f32::NEG_INFINITY; romueq_common::ANALYSIS_MAX_CHANNELS];
                 for (i, &v) in frame.rms.iter().enumerate() {
                     if i < romueq_common::ANALYSIS_MAX_CHANNELS {
                         rms[i] = v;
                         peak[i] = frame.peak[i];
                     }
                 }
-                AnalysisSnapshot {
-                    rms,
-                    peak,
-                    dropped: frame.dropped,
-                    spectrum_data: Vec::new(),
+                dropped = frame.dropped;
+            }
+
+            // Generate spectrum data from the current EQ frequency response.
+            // Without a real audio input (Phase 6), we render the filter curve
+            // as the spectrum so the user sees the EQ shape in real time.
+            let mut spectrum = Vec::new();
+            let sr = self.sample_rate;
+            let nyquist = sr * 0.5;
+            let num_bins = 128;
+            let log_min = 20.0_f64.log10();
+            let log_max = (nyquist as f64).log10();
+
+            // We use the band_params (which get updated from commands) to
+            // create a simple synthetic spectrum by evaluating the EQ response.
+            for i in 0..num_bins {
+                let t = if num_bins == 1 {
+                    0.5_f64
+                } else {
+                    i as f64 / (num_bins - 1) as f64
+                };
+                let freq = 10.0_f64.powf(log_min + t * (log_max - log_min));
+
+                // Compute magnitude at this frequency from the EQ bands.
+                let mut mag_db: f32 = 0.0;
+                for bp in &self.band_params {
+                    if !bp.enabled {
+                        continue;
+                    }
+                    let freq_f32 = bp.frequency_hz;
+                    let gain = bp.gain_db;
+                    let ft = bp.filter_type;
+
+                    // Simple approximation: apply the band's gain near its center freq.
+                    let ratio = (freq / freq_f32 as f64).log2().abs();
+                    let attenuation = match ft {
+                        romueq_common::FilterType::Bell => ratio * 2.0,
+                        romueq_common::FilterType::LowShelf => {
+                            if freq > freq_f32 as f64 {
+                                ratio * 0.5
+                            } else {
+                                0.0
+                            }
+                        }
+                        romueq_common::FilterType::HighShelf => {
+                            if freq < freq_f32 as f64 {
+                                ratio * 0.5
+                            } else {
+                                0.0
+                            }
+                        }
+                        romueq_common::FilterType::LowPass => {
+                            if freq > freq_f32 as f64 {
+                                ratio * 6.0
+                            } else {
+                                0.0
+                            }
+                        }
+                        romueq_common::FilterType::HighPass => {
+                            if freq < freq_f32 as f64 {
+                                ratio * 6.0
+                            } else {
+                                0.0
+                            }
+                        }
+                    };
+                    let mag = ((gain as f64) * (1.0 / (1.0 + attenuation))) as f32;
+                    mag_db += mag;
                 }
-            } else {
-                AnalysisSnapshot::default()
+
+                spectrum.push([freq, mag_db as f64]);
+            }
+
+            AnalysisSnapshot {
+                rms,
+                peak,
+                dropped,
+                spectrum_data: spectrum,
             }
         }
 
         fn apply_commands(&mut self, batch: GuiCommandBatch) {
-            // Apply commands directly to engine params if available.
             if let Some(ref mut eng) = self.engine {
                 let mut params = *eng.eq_parameters();
                 for cmd in batch.commands() {
                     Self::apply_command_to_params(&mut params, cmd);
                 }
                 eng.set_parameters(params);
+                // Update snapshot from engine parameters.
+                self.snapshot = ParamSnapshot::new(self.encode_snapshot());
             } else {
-                // Store for later when engine is prepared.
                 for cmd in batch.commands() {
                     self.pending_commands.push(cmd.param_id, cmd.value);
                 }

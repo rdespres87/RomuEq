@@ -2623,6 +2623,7 @@ dependencies = [
  "romueq-analysis",
  "romueq-common",
  "romueq-dsp",
+ "romueq-engine",
 ]
 
 [[package]]
