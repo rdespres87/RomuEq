@@ -12,3 +12,4 @@ romueq-gui = { workspace = true, features = ["standalone"] }
 romueq-common.workspace = true
 eframe.workspace = true
 egui = "0.31"
+cpal = "0.15"

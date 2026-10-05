@@ -40,6 +40,9 @@ use egui::Widget;
 use egui_plot::{Line, Plot};
 use romueq_common::BandParameters;
 
+#[cfg(feature = "standalone")]
+pub mod audio;
+
 /// A command from the GUI to the engine.
 ///
 /// Each command targets exactly one parameter and carries the new value.
@@ -807,6 +810,9 @@ pub mod standalone {
     struct StandaloneRunner<A: GuiApp> {
         app: A,
         client: EngineClient,
+        audio_stream: Option<audio::AudioStream>,
+        audio_active: bool,
+        cpal_stream: Option<cpal::Stream>,
     }
 
     impl<A: GuiApp> StandaloneRunner<A> {
@@ -815,7 +821,13 @@ pub mod standalone {
             client.set_egui_context(ctx);
             // Initialize the engine at startup so encode_snapshot() returns real data.
             client.prepare(48000.0, 512, 2);
-            Self { app, client }
+            let audio_stream = Some(audio::AudioStream::new());
+            Self {
+                app,
+                client,
+                audio_stream,
+                audio_active: false,
+            }
         }
     }
 
@@ -842,6 +854,34 @@ pub mod standalone {
             // Render the UI.
             egui::CentralPanel::default().show(ctx, |ui| {
                 ui.heading("RomuEq — EQ Parameter Editor");
+
+                // Audio playback controls.
+                ui.horizontal(|ui| {
+                    if ui
+                        .button(if self.audio_active { "Stop" } else { "Play" })
+                        .clicked()
+                    {
+                        if let Some(ref mut audio) = self.audio_stream {
+                            if self.audio_active {
+                                let _ = audio.stop();
+                            } else {
+                                // Sync current engine params to audio thread.
+                                let params =
+                                    *self.client.engine.as_ref().map(|e| *e.eq_parameters());
+                                let _ = audio.set_parameters(params);
+                                let _ = audio.start();
+                            }
+                            self.audio_active = !self.audio_active;
+                        }
+                    }
+                    ui.label(if self.audio_active {
+                        "▶ Audio active"
+                    } else {
+                        "○ Audio stopped"
+                    });
+                });
+
+                ui.separator();
 
                 // Build a batch of commands from user interaction.
                 let mut batch = GuiCommandBatch::new();
