@@ -42,7 +42,7 @@
 - **Phase 3** — Interactive widgets (sliders, knobs) — widgets exist but need drag interaction
 - **Phase 4** — Preset save/load from disk
 - **Phase 5** — Band-to-engine synchronization (partially done via apply_params_from_batch)
-- **Phase 6** — Audio backend with `cpal`
+- **Phase 6** — Audio backend with `cpal` (implemented, CI validated)
 
 ### Notes
 
