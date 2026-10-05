@@ -1361,6 +1361,11 @@ pub mod standalone {
                     Self::apply_command_to_params(&mut params, cmd);
                 }
                 eng.set_parameters(params);
+                // Sync band_params from engine so the UI always reflects engine state.
+                let eq_params = *eng.eq_parameters();
+                for i in 0..romueq_common::MAX_BANDS {
+                    self.band_params[i] = eq_params.bands[i];
+                }
                 // Update snapshot from engine parameters.
                 self.snapshot = ParamSnapshot::new(self.encode_snapshot());
             } else {
