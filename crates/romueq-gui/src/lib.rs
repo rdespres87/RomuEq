@@ -812,7 +812,6 @@ pub mod standalone {
         client: EngineClient,
         audio_stream: Option<audio::AudioStream>,
         audio_active: bool,
-        cpal_stream: Option<cpal::Stream>,
     }
 
     impl<A: GuiApp> StandaloneRunner<A> {
@@ -866,8 +865,12 @@ pub mod standalone {
                                 let _ = audio.stop();
                             } else {
                                 // Sync current engine params to audio thread.
-                                let params =
-                                    *self.client.engine.as_ref().map(|e| *e.eq_parameters());
+                                let params = self
+                                    .client
+                                    .engine
+                                    .as_ref()
+                                    .map(|e| *e.eq_parameters())
+                                    .unwrap_or_default();
                                 let _ = audio.set_parameters(params);
                                 let _ = audio.start();
                             }

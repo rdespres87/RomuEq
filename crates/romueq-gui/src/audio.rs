@@ -39,9 +39,9 @@ impl AudioStream {
 
         let handle = thread::spawn(move || {
             let mut engine = EngineLifecycle::new();
-            let mut sample_rate = 48000.0;
-            let mut block_size = 512;
-            let mut channels = 2;
+            let sample_rate = 48000.0;
+            let block_size = 512;
+            let channels = 2;
             let mut running = false;
             let mut params = EqParameters::default();
 
@@ -60,7 +60,7 @@ impl AudioStream {
                         }
                     }
                     Ok(AudioMessage::Start) => {
-                        if !engine.is_prepared() {
+                        if engine.state() != romueq_engine::lifecycle::LifecycleState::Ready {
                             if engine.prepare(sample_rate, block_size, channels) {
                                 engine.set_parameters(params);
                                 running = true;
@@ -128,6 +128,12 @@ impl AudioStream {
         if let Some(handle) = self.thread_handle.take() {
             handle.join().ok();
         }
+    }
+}
+
+impl Default for AudioStream {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

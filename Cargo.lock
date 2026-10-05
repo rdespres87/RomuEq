@@ -2880,6 +2880,7 @@ dependencies = [
 name = "romueq-gui"
 version = "0.1.0"
 dependencies = [
+ "cpal",
  "eframe",
  "egui",
  "egui_plot",
