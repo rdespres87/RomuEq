@@ -867,9 +867,15 @@ pub mod standalone {
                 ui.horizontal(|ui| {
                     let mut preset_name = String::new();
 
-                    if ui.button("Save Preset").clicked() {
-                        // Collect text input synchronously using a local approach.
-                        let _ = &mut preset_name;
+                    // Text input for preset name.
+                    ui.text_edit_singleline(&mut preset_name);
+
+                    if ui.button("Save Preset").clicked() && !preset_name.trim().is_empty() {
+                        let name = preset_name.trim().to_string();
+                        if let Err(e) = self.client.create_preset(&name) {
+                            eprintln!("Failed to create preset '{name}': {e}");
+                        }
+                        preset_name.clear();
                     }
 
                     // List of presets from the manager.
@@ -1494,6 +1500,10 @@ pub mod standalone {
         }
 
         fn spectrum_data(&self) -> &[[f64; 2]] {
+            // Return a reference to the latest spectrum data.
+            // In Phase 6 (audio backend), this will be updated every sample block.
+            // For now, return an empty slice — the analysis_snapshot() already
+            // provides spectrum_data for the UI plot.
             static EMPTY: &[[f64; 2]] = &[];
             EMPTY
         }
