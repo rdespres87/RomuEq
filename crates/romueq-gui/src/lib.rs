@@ -378,22 +378,20 @@ pub fn render_band(
         }
 
         // Frequency slider (logarithmic scale, 20–20000 Hz).
-        let freq_val = snapshot.get(params.frequency_hz()).unwrap_or(1000.0);
+        let mut freq_val = snapshot.get(params.frequency_hz()).unwrap_or(1000.0);
         let freq_min: f32 = 20.0;
         let freq_max: f32 = 20_000.0;
-        let mut freq_log = freq_val.log10().clamp(freq_min.log10(), freq_max.log10());
 
         if ui
             .add(
-                egui::Slider::new(&mut freq_log, freq_min.log10()..=freq_max.log10())
+                egui::Slider::new(&mut freq_val, freq_min..=freq_max)
                     .logarithmic(true)
                     .suffix(" Hz")
                     .text("Frequency"),
             )
             .changed()
         {
-            let new_freq = 10.0_f32.powf(freq_log);
-            batch.push(params.frequency_hz(), new_freq);
+            batch.push(params.frequency_hz(), freq_val);
         }
 
         // Gain slider (-24 to +24 dB).
@@ -812,6 +810,10 @@ pub mod standalone {
         client: EngineClient,
         audio_stream: Option<audio::AudioStream>,
         audio_active: bool,
+        preset_name_input: String,
+        spectrum_processor: romueq_analysis::SpectrumProcessor,
+        spectrum_frame_num: u64,
+        status_message: Option<String>,
     }
 
     impl<A: GuiApp> StandaloneRunner<A> {
@@ -821,11 +823,17 @@ pub mod standalone {
             // Initialize the engine at startup so encode_snapshot() returns real data.
             client.prepare(48000.0, 512, 2);
             let audio_stream = Some(audio::AudioStream::new());
+            let spectrum_config = romueq_analysis::SpectrumConfig::new(1024, 48000.0);
+            let spectrum_processor = romueq_analysis::SpectrumProcessor::new(spectrum_config);
             Self {
                 app,
                 client,
                 audio_stream,
                 audio_active: false,
+                preset_name_input: String::new(),
+                spectrum_processor,
+                spectrum_frame_num: 0,
+                status_message: None,
             }
         }
     }
@@ -837,7 +845,26 @@ pub mod standalone {
 
             // Query engine state.
             let _snapshot = self.client.snapshot();
-            let analysis = self.client.analysis_snapshot();
+            let mut analysis = self.client.analysis_snapshot();
+
+            // Compute real FFT spectrum from audio stream if running
+            if self.audio_active {
+                if let Some(ref audio) = self.audio_stream {
+                    let samples = audio.get_latest_output_samples();
+                    if !samples.is_empty() {
+                        let sr = audio.sample_rate();
+                        let frame = self.spectrum_processor.process(
+                            &samples,
+                            sr as f64,
+                            self.spectrum_frame_num,
+                        );
+                        self.spectrum_frame_num += 1;
+                        analysis.spectrum_data = (0..frame.num_bins)
+                            .map(|b| [frame.bin_frequency(b), frame.magnitudes_db[b] as f64])
+                            .collect();
+                    }
+                }
+            }
 
             // Process any pending commands.
             let batch = self.client.take_pending_commands();
@@ -845,6 +872,12 @@ pub mod standalone {
                 self.client.apply_commands(batch.clone());
                 // Update band parameters from commands for real-time FR plot.
                 self.client.apply_params_from_batch(&batch);
+                // Synchronize live parameters with audio thread
+                if let Some(ref mut audio) = self.audio_stream {
+                    if let Some(ref engine) = self.client.engine {
+                        let _ = audio.set_parameters(*engine.eq_parameters());
+                    }
+                }
             }
 
             // Update GUI app with current state.
@@ -852,17 +885,21 @@ pub mod standalone {
 
             // Render the UI.
             egui::CentralPanel::default().show(ctx, |ui| {
-                ui.heading("RomuEq — EQ Parameter Editor");
+                ui.heading("RomuEq — Égaliseur Paramétrique PC");
 
                 // Audio playback controls.
                 ui.horizontal(|ui| {
-                    if ui
-                        .button(if self.audio_active { "Stop" } else { "Play" })
-                        .clicked()
-                    {
+                    let play_label = if self.audio_active {
+                        "⏹ Stop Audio"
+                    } else {
+                        "▶ Play Audio"
+                    };
+                    if ui.button(play_label).clicked() {
                         if let Some(ref mut audio) = self.audio_stream {
                             if self.audio_active {
                                 let _ = audio.stop();
+                                self.audio_active = false;
+                                self.status_message = Some("Audio arrêté".to_string());
                             } else {
                                 // Sync current engine params to audio thread.
                                 let params = self
@@ -872,35 +909,73 @@ pub mod standalone {
                                     .map(|e| *e.eq_parameters())
                                     .unwrap_or_default();
                                 let _ = audio.set_parameters(params);
-                                let _ = audio.start();
+                                match audio.start() {
+                                    Ok(()) => {
+                                        self.audio_active = true;
+                                        self.status_message =
+                                            Some("Audio actif — Sortie CPAL connectée".to_string());
+                                    }
+                                    Err(err) => {
+                                        self.status_message = Some(format!("Erreur audio: {err}"));
+                                    }
+                                }
                             }
-                            self.audio_active = !self.audio_active;
                         }
                     }
-                    ui.label(if self.audio_active {
-                        "▶ Audio active"
-                    } else {
-                        "○ Audio stopped"
-                    });
+
+                    if let Some(ref mut audio) = self.audio_stream {
+                        let cur_mode = audio.source_mode();
+                        let mut selected_mode = cur_mode;
+                        egui::ComboBox::from_id_salt("source_select")
+                            .selected_text(match cur_mode {
+                                audio::AudioSourceMode::TestSignal => {
+                                    "🎵 Signal Démo (Accord + Harmoniques)"
+                                }
+                                audio::AudioSourceMode::PassThrough => {
+                                    "🎙️ Pass-Through (Entrée Micro / Loopback)"
+                                }
+                            })
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut selected_mode,
+                                    audio::AudioSourceMode::TestSignal,
+                                    "🎵 Signal Démo (Accord + Harmoniques)",
+                                );
+                                ui.selectable_value(
+                                    &mut selected_mode,
+                                    audio::AudioSourceMode::PassThrough,
+                                    "🎙️ Pass-Through (Entrée Micro / Loopback)",
+                                );
+                            });
+
+                        if selected_mode != cur_mode {
+                            audio.set_source_mode(selected_mode);
+                        }
+
+                        let (pl, pr) = audio.peak_levels_db();
+                        ui.label(format!("Crête: L {pl:.1} dB | R {pr:.1} dB"));
+                    }
                 });
+
+                if let Some(ref status) = self.status_message {
+                    ui.label(egui::RichText::new(status).small());
+                }
 
                 ui.separator();
 
                 // Build a batch of commands from user interaction.
                 let mut batch = GuiCommandBatch::new();
 
-                // Render all 8 band controls.
-                let band_controls = BandControls::new();
-                for i in 0..romueq_common::MAX_BANDS {
-                    let bp = band_controls.params(i);
-                    render_band(ui, i, &bp, &self.client.snapshot, &mut batch);
-                }
+                // Frequency response plot (real DSP data).
+                render_frequency_response_plot(
+                    ui,
+                    &self.client.band_params,
+                    self.client.sample_rate,
+                    512,
+                );
 
-                // Process the batch through the engine client.
-                if !batch.is_empty() {
-                    self.client.apply_commands(batch.clone());
-                    self.client.apply_params_from_batch(&batch);
-                }
+                // Spectrum analyzer (FFT data).
+                render_spectrum_analyzer(ui, &analysis, self.client.sample_rate, 128);
 
                 // Master section (bypass, output gain, auto-gain).
                 render_master_section(ui, &self.client.snapshot, &mut batch);
@@ -908,17 +983,19 @@ pub mod standalone {
                 // Preset management UI.
                 ui.separator();
                 ui.horizontal(|ui| {
-                    let mut preset_name = String::new();
+                    ui.label("Preset:");
+                    ui.text_edit_singleline(&mut self.preset_name_input);
 
-                    // Text input for preset name.
-                    ui.text_edit_singleline(&mut preset_name);
-
-                    if ui.button("Save Preset").clicked() && !preset_name.trim().is_empty() {
-                        let name = preset_name.trim().to_string();
+                    if ui.button("Sauvegarder").clicked()
+                        && !self.preset_name_input.trim().is_empty()
+                    {
+                        let name = self.preset_name_input.trim().to_string();
                         if let Err(e) = self.client.create_preset(&name) {
-                            eprintln!("Failed to create preset '{name}': {e}");
+                            self.status_message = Some(format!("Erreur preset '{name}': {e}"));
+                        } else {
+                            self.status_message = Some(format!("Preset '{name}' sauvegardé"));
+                            self.preset_name_input.clear();
                         }
-                        preset_name.clear();
                     }
 
                     // List of presets from the manager.
@@ -929,8 +1006,14 @@ pub mod standalone {
                         .map(|p| p.name.clone())
                         .collect();
 
+                    let selected_text = if self.client._current_preset.is_empty() {
+                        "Choisir un preset"
+                    } else {
+                        self.client._current_preset.as_str()
+                    };
+
                     egui::ComboBox::new("preset_select", "")
-                        .selected_text(presets.first().map(|s| s.as_str()).unwrap_or("No presets"))
+                        .selected_text(selected_text)
                         .show_ui(ui, |ui| {
                             for name in &presets {
                                 ui.selectable_value(
@@ -941,39 +1024,47 @@ pub mod standalone {
                             }
                         });
 
-                    if ui.button("Load Preset").clicked() {
+                    if ui.button("Charger").clicked() {
                         let sel = self.client._current_preset.clone();
                         if !sel.is_empty() {
                             let _ = self.client.apply_preset(&sel);
+                            self.status_message = Some(format!("Preset '{sel}' chargé"));
                         }
                     }
 
-                    if ui.button("Remove Preset").clicked() {
+                    if ui.button("Supprimer").clicked() {
                         let rem = self.client._current_preset.clone();
                         if !rem.is_empty() {
                             let _ = self.client.remove_preset(&rem);
                             self.client._current_preset.clear();
+                            self.status_message = Some(format!("Preset '{rem}' supprimé"));
                         }
                     }
                 });
 
-                // Frequency response plot (real DSP data).
                 ui.separator();
-                render_frequency_response_plot(
-                    ui,
-                    &self.client.band_params,
-                    self.client.sample_rate,
-                    512,
-                );
+                ui.heading("Bandes d'Égalisation");
 
-                // Spectrum analyzer (FFT data).
-                ui.separator();
-                render_spectrum_analyzer(ui, &analysis, self.client.sample_rate, 128);
+                // Render 8 bands in a scrollable area
+                egui::ScrollArea::vertical()
+                    .max_height(260.0)
+                    .show(ui, |ui| {
+                        let band_controls = BandControls::new();
+                        for i in 0..romueq_common::MAX_BANDS {
+                            let bp = band_controls.params(i);
+                            render_band(ui, i, &bp, &self.client.snapshot, &mut batch);
+                        }
+                    });
 
-                ui.separator();
-                ui.label("Analysis:");
-                if analysis.dropped {
-                    ui.colored_label(egui::Color32::RED, "Dropped frames detected");
+                // Process the batch through the engine client.
+                if !batch.is_empty() {
+                    self.client.apply_commands(batch.clone());
+                    self.client.apply_params_from_batch(&batch);
+                    if let Some(ref mut audio) = self.audio_stream {
+                        if let Some(ref engine) = self.client.engine {
+                            let _ = audio.set_parameters(*engine.eq_parameters());
+                        }
+                    }
                 }
             });
 
