@@ -518,6 +518,128 @@ pub fn render_frequency_response_plot(
     let _ = plot;
 }
 
+/// Renders the interactive frequency response plot allowing direct mouse node dragging.
+pub fn render_interactive_frequency_response_plot(
+    ui: &mut egui::Ui,
+    bands: &[romueq_common::BandParameters; romueq_common::MAX_BANDS],
+    sample_rate: f32,
+    width: usize,
+    dragged_band: &mut Option<usize>,
+    batch: &mut GuiCommandBatch,
+) {
+    use romueq_dsp::compute_response;
+
+    let response = compute_response(sample_rate, bands, width);
+
+    let points: Vec<[f64; 2]> = response
+        .iter()
+        .map(|p| [p.frequency_hz as f64, p.magnitude_db as f64])
+        .collect();
+
+    let line = Line::new(points)
+        .color(egui::Color32::from_rgb(0, 180, 255))
+        .stroke(egui::Stroke::new(2.5, egui::Color32::from_rgb(0, 180, 255)))
+        .fill(-60.0)
+        .name("EQ Response");
+
+    let is_primary_down = ui.ctx().input(|i| i.pointer.primary_down());
+    let mut local_dragged = *dragged_band;
+    let mut coord_under_pointer = None;
+
+    let plot = Plot::new("eq_response_interactive")
+        .include_x(20.0)
+        .include_x(20000.0)
+        .include_y(-24.0)
+        .include_y(24.0)
+        .height(210.0)
+        .allow_drag(false)
+        .allow_zoom(false)
+        .allow_scroll(false)
+        .show(ui, |plot_ui| {
+            plot_ui.line(line);
+
+            if let Some(coord) = plot_ui.pointer_coordinate() {
+                coord_under_pointer = Some((coord.x, coord.y));
+            }
+
+            for (i, band) in bands.iter().enumerate() {
+                if band.enabled {
+                    let color = match i % 8 {
+                        0 => egui::Color32::from_rgb(255, 80, 80),   // Red
+                        1 => egui::Color32::from_rgb(255, 160, 40),  // Orange
+                        2 => egui::Color32::from_rgb(255, 220, 50),  // Yellow
+                        3 => egui::Color32::from_rgb(50, 220, 100),  // Green
+                        4 => egui::Color32::from_rgb(40, 200, 220),  // Cyan
+                        5 => egui::Color32::from_rgb(80, 140, 255),  // Blue
+                        6 => egui::Color32::from_rgb(180, 90, 255),  // Purple
+                        _ => egui::Color32::from_rgb(255, 100, 200), // Magenta
+                    };
+                    let node_y = match band.filter_type {
+                        romueq_common::FilterType::LowPass | romueq_common::FilterType::HighPass => 0.0,
+                        _ => band.gain_db as f64,
+                    };
+                    let is_active_node = local_dragged == Some(i);
+                    let radius = if is_active_node { 8.0 } else { 6.0 };
+                    plot_ui.points(
+                        Points::new(vec![[band.frequency_hz as f64, node_y]])
+                            .color(color)
+                            .radius(radius)
+                            .name(format!("Bande {}", i + 1)),
+                    );
+                }
+            }
+        });
+
+    if is_primary_down {
+        if let Some((px, py)) = coord_under_pointer {
+            if local_dragged.is_none() {
+                let mut closest = None;
+                let mut min_dist = f64::MAX;
+                for (i, band) in bands.iter().enumerate() {
+                    if band.enabled {
+                        let node_y = match band.filter_type {
+                            romueq_common::FilterType::LowPass | romueq_common::FilterType::HighPass => 0.0,
+                            _ => band.gain_db as f64,
+                        };
+                        let dx = (px.log10() - (band.frequency_hz as f64).log10()).abs();
+                        let dy = ((py - node_y) / 24.0).abs();
+                        let dist = dx * dx + dy * dy;
+                        if dist < 0.04 && dist < min_dist {
+                            min_dist = dist;
+                            closest = Some(i);
+                        }
+                    }
+                }
+                local_dragged = closest;
+            }
+
+            if let Some(band_idx) = local_dragged {
+                let params = BandParams::new(band_idx, (band_idx as u32 + 1) * 100);
+                let new_freq = (px as f32).clamp(20.0, 20_000.0);
+                let new_gain = (py as f32).clamp(-24.0, 24.0);
+                batch.push(params.frequency_hz(), new_freq);
+                match bands[band_idx].filter_type {
+                    romueq_common::FilterType::LowPass | romueq_common::FilterType::HighPass => {}
+                    _ => batch.push(params.gain_db(), new_gain),
+                }
+            }
+        }
+    } else {
+        local_dragged = None;
+    }
+
+    *dragged_band = local_dragged;
+
+    ui.horizontal(|ui| {
+        ui.label("Fréquence (Hz) — Glissez les points colorés pour ajuster");
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label("Gain (dB)");
+        });
+    });
+
+    let _ = plot;
+}
+
 // ---------------------------------------------------------------------------
 // Spectrum analyzer widget
 // ---------------------------------------------------------------------------
@@ -844,6 +966,7 @@ pub mod standalone {
         spectrum_processor: romueq_analysis::SpectrumProcessor,
         spectrum_frame_num: u64,
         status_message: Option<String>,
+        dragged_band: Option<usize>,
     }
 
     impl<A: GuiApp> StandaloneRunner<A> {
@@ -922,6 +1045,7 @@ pub mod standalone {
                 spectrum_processor,
                 spectrum_frame_num: 0,
                 status_message,
+                dragged_band: None,
             }
         }
     }
@@ -1116,12 +1240,14 @@ pub mod standalone {
                 // Build a batch of commands from user interaction.
                 let mut batch = GuiCommandBatch::new();
 
-                // Frequency response plot (real DSP data).
-                render_frequency_response_plot(
+                // Interactive frequency response plot (draggable band nodes + real DSP curve).
+                render_interactive_frequency_response_plot(
                     ui,
                     &self.client.band_params,
                     self.client.sample_rate,
                     512,
+                    &mut self.dragged_band,
+                    &mut batch,
                 );
 
                 // Spectrum analyzer (FFT data).

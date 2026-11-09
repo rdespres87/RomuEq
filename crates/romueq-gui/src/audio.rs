@@ -46,8 +46,8 @@ impl AudioFifo {
         if self.buffer.len() < 32768 {
             self.buffer.push_back((l, r));
         }
-        // Pre-buffer ~1536 frames (~32 ms at 48kHz) to eliminate underruns
-        if !self.is_prebuffered && self.buffer.len() >= 1536 {
+        // Once 1024 frames (~23 ms) are buffered, start playback
+        if !self.is_prebuffered && self.buffer.len() >= 1024 {
             self.is_prebuffered = true;
         }
     }
@@ -59,11 +59,10 @@ impl AudioFifo {
             return;
         }
 
-        // Smooth clock drift: if queue exceeds 3500 frames (~73 ms),
-        // gently drain at most 32 frames at a time
-        if self.buffer.len() > 3500 {
-            let drop_count = (self.buffer.len() - 2500).min(32);
-            self.buffer.drain(0..drop_count);
+        // Clock drift control: keep buffer around 1024-2048 frames (~20-45 ms).
+        // If buffer grows too full, smoothly drop one sample per block to resync
+        if self.buffer.len() > 3000 {
+            let _ = self.buffer.pop_front();
         }
 
         for i in 0..count {
@@ -73,12 +72,11 @@ impl AudioFifo {
                 left[i] = l;
                 right[i] = r;
             } else {
-                // Soft fade to prevent hard digital pop if starving
-                self.last_l *= 0.85;
-                self.last_r *= 0.85;
+                // Buffer momentary empty: smoothly decay previous sample without dropping into silence
+                self.last_l *= 0.95;
+                self.last_r *= 0.95;
                 left[i] = self.last_l;
                 right[i] = self.last_r;
-                self.is_prebuffered = false;
             }
         }
     }
@@ -381,7 +379,12 @@ impl AudioStream {
                     println!("[AudioStream] Input config: {in_config:?}");
                     let in_channels = in_config.channels() as usize;
                     let in_sample_format = in_config.sample_format();
-                    let in_stream_config: StreamConfig = in_config.into();
+                    // Lock input sample rate to match the output hardware sample rate (e.g. 44100 Hz)
+                    let in_stream_config = StreamConfig {
+                        channels: in_channels as u16,
+                        sample_rate: cpal::SampleRate(sample_rate as u32),
+                        buffer_size: cpal::BufferSize::Default,
+                    };
                     let fifo_in = Arc::clone(&self.fifo);
 
                     let in_res = match in_sample_format {

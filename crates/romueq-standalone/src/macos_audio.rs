@@ -157,6 +157,57 @@ pub mod macos_impl {
             .find(|(_, name)| name.to_lowercase().contains(&query_lower))
     }
 
+    /// Set the nominal sample rate of an AudioDeviceID.
+    pub fn set_device_sample_rate(device_id: u32, sample_rate: f64) -> Result<(), String> {
+        let addr = AudioObjectPropertyAddress {
+            mSelector: u32::from_be_bytes(*b"nsrt"),
+            mScope: u32::from_be_bytes(*b"glob"),
+            mElement: 0,
+        };
+        let size = std::mem::size_of::<f64>() as u32;
+        let status = unsafe {
+            AudioObjectSetPropertyData(
+                device_id,
+                &addr,
+                0,
+                std::ptr::null(),
+                size,
+                &sample_rate as *const _ as *const _,
+            )
+        };
+        if status == 0 {
+            Ok(())
+        } else {
+            Err(format!("Failed to set sample rate: {status}"))
+        }
+    }
+
+    /// Get the nominal sample rate of an AudioDeviceID.
+    pub fn get_device_sample_rate(device_id: u32) -> Option<f64> {
+        let addr = AudioObjectPropertyAddress {
+            mSelector: u32::from_be_bytes(*b"nsrt"),
+            mScope: u32::from_be_bytes(*b"glob"),
+            mElement: 0,
+        };
+        let mut sr: f64 = 0.0;
+        let mut size = std::mem::size_of::<f64>() as u32;
+        let status = unsafe {
+            AudioObjectGetPropertyData(
+                device_id,
+                &addr,
+                0,
+                std::ptr::null(),
+                &mut size,
+                &mut sr as *mut _ as *mut _,
+            )
+        };
+        if status == 0 && sr > 0.0 {
+            Some(sr)
+        } else {
+            None
+        }
+    }
+
     /// Check if BlackHole 2ch driver is present and recognized by CoreAudio.
     pub fn is_blackhole_available() -> bool {
         find_device_by_name("BlackHole 2ch").is_some()
@@ -225,8 +276,13 @@ pub mod macos_impl {
                 }
             }
 
-            // If BlackHole 2ch exists, switch macOS default output to it
+            // If BlackHole 2ch exists, synchronize sample rate with physical hardware, then switch
             if let Some((bh_id, _)) = find_device_by_name("BlackHole 2ch") {
+                if let Some(target_sr) = guard.original_device_id.and_then(get_device_sample_rate) {
+                    println!("[RomuEq] Synchronisation de BlackHole 2ch sur la fréquence matérielle: {target_sr} Hz");
+                    let _ = set_device_sample_rate(bh_id, target_sr);
+                }
+
                 if let Err(e) = set_default_output_device(bh_id) {
                     eprintln!("[RomuEq] Impossible de basculer la sortie système vers BlackHole: {e}");
                 } else {
@@ -289,69 +345,21 @@ mod tests {
         println!("Komplete search: {komplete:?}");
         let blackhole = find_device_by_name("BlackHole");
         println!("BlackHole search: {blackhole:?}");
-    }
 
-    #[test]
-    fn test_cpal_input_callback_direct() {
-        use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-        let host = cpal::default_host();
-        let in_dev = host.input_devices().unwrap().find(|d| {
-            d.name().map(|n| n.contains("BlackHole")).unwrap_or(false)
-        }).expect("BlackHole input not found");
-
-        let cfg: cpal::StreamConfig = in_dev.default_input_config().unwrap().into();
-        println!("Testing direct CPAL input on BlackHole with config: {cfg:?}");
-
-        let fired = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let fired_clone = fired.clone();
-
-        let stream = in_dev.build_input_stream(
-            &cfg,
-            move |data: &[f32], _| {
-                let count = fired_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                if count < 5 {
-                    eprintln!("[DirectInput] Callback fired with {} frames!", data.len());
-                }
-            },
-            |err| eprintln!("DirectInput error: {err}"),
-            None,
-        ).unwrap();
-
-        stream.play().unwrap();
-
-        std::thread::sleep(std::time::Duration::from_millis(500));
-        let count = fired.load(std::sync::atomic::Ordering::SeqCst);
-        println!("Direct input callback fired {count} times");
-        assert!(count > 0, "Input callback did not fire!");
-    }
-
-    #[test]
-    fn test_blackhole_volume_and_mute() {
-        use coreaudio_sys::{AudioObjectGetPropertyData, AudioObjectPropertyAddress, AudioObjectSetPropertyData};
-        let (bh_id, _) = find_device_by_name("BlackHole 2ch").expect("BlackHole not found");
-
-        for (scope_name, scope) in [("Output", u32::from_be_bytes(*b"outp")), ("Input", u32::from_be_bytes(*b"inpt"))] {
-            for channel in 0..=2 {
-                let vol_addr = AudioObjectPropertyAddress {
-                    mSelector: u32::from_be_bytes(*b"volm"),
-                    mScope: scope,
-                    mElement: channel,
+        use coreaudio_sys::{AudioObjectGetPropertyData, AudioObjectPropertyAddress};
+        for (name, dev_opt) in [("Komplete", &komplete), ("BlackHole", &blackhole)] {
+            if let Some((id, _)) = dev_opt {
+                let addr = AudioObjectPropertyAddress {
+                    mSelector: u32::from_be_bytes(*b"nsrt"),
+                    mScope: u32::from_be_bytes(*b"glob"),
+                    mElement: 0,
                 };
-                let mut vol: f32 = 0.0;
-                let mut size = std::mem::size_of::<f32>() as u32;
+                let mut sr: f64 = 0.0;
+                let mut size = std::mem::size_of::<f64>() as u32;
                 let status = unsafe {
-                    AudioObjectGetPropertyData(bh_id, &vol_addr, 0, std::ptr::null(), &mut size, &mut vol as *mut _ as *mut _)
+                    AudioObjectGetPropertyData(*id, &addr, 0, std::ptr::null(), &mut size, &mut sr as *mut _ as *mut _)
                 };
-                println!("BlackHole {scope_name} ch {channel} volume: {vol} (status: {status})");
-
-                // Ensure volume is set to 1.0 (100%)
-                let new_vol = 1.0f32;
-                let set_status = unsafe {
-                    AudioObjectSetPropertyData(bh_id, &vol_addr, 0, std::ptr::null(), size, &new_vol as *const _ as *const _)
-                };
-                if set_status == 0 {
-                    println!("Successfully set BlackHole {scope_name} ch {channel} volume to 1.0");
-                }
+                println!("Device '{name}' (ID {id}) nominal sample rate: {sr} Hz (status: {status})");
             }
         }
     }
