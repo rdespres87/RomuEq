@@ -26,7 +26,7 @@ pub enum AudioSourceMode {
 }
 
 struct AudioInternal {
-    engine: EngineLifecycle,
+    engine: Box<EngineLifecycle>,
     params: EqParameters,
     source_mode: AudioSourceMode,
     sample_rate: f32,
@@ -40,9 +40,19 @@ struct AudioInternal {
     peak_r: f32,
 }
 
+fn create_boxed_engine() -> Box<EngineLifecycle> {
+    std::thread::Builder::new()
+        .name("romueq-engine-init".to_string())
+        .stack_size(8 * 1024 * 1024)
+        .spawn(move || Box::new(EngineLifecycle::new()))
+        .expect("failed to spawn engine init thread")
+        .join()
+        .expect("engine init panicked")
+}
+
 impl AudioInternal {
     fn new(sample_rate: f32, block_size: usize) -> Self {
-        let mut engine = EngineLifecycle::new();
+        let mut engine = create_boxed_engine();
         let _ = engine.prepare(sample_rate as f64, block_size, 2);
         Self {
             engine,
@@ -530,3 +540,30 @@ impl Drop for AudioStream {
         self.stop_and_cleanup();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_audio_stream_start_diagnostic() {
+        println!("Available outputs: {:?}", AudioStream::available_output_devices());
+        println!("Available inputs: {:?}", AudioStream::available_input_devices());
+        let mut stream = AudioStream::new();
+        match stream.start() {
+            Ok(()) => {
+                println!("Audio stream started successfully! Active: {}", stream.is_active());
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                let samples = stream.get_latest_output_samples();
+                println!("Captured {} output samples", samples.len());
+                let (pl, pr) = stream.peak_levels_db();
+                println!("Peaks: L={pl} dB, R={pr} dB");
+                stream.stop().unwrap();
+            }
+            Err(e) => {
+                println!("Audio stream failed to start: {e}");
+            }
+        }
+    }
+}
+

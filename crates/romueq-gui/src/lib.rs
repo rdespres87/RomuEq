@@ -1283,7 +1283,7 @@ pub mod standalone {
 
     /// A real engine client that wraps the actual romueq-engine.
     struct EngineClient {
-        engine: Option<EngineLifecycle>,
+        engine: Option<Box<EngineLifecycle>>,
         analysis_engine: AnalysisEngine,
         snapshot: ParamSnapshot,
         pending_commands: GuiCommandBatch,
@@ -1531,8 +1531,15 @@ pub mod standalone {
                 eng.destroy();
             }
 
-            // Create a new engine.
-            let mut eng = EngineLifecycle::new();
+            // Create a new engine safely on the heap to avoid stack overflow.
+            let mut eng = std::thread::Builder::new()
+                .name("engine-client-init".to_string())
+                .stack_size(8 * 1024 * 1024)
+                .spawn(|| Box::new(EngineLifecycle::new()))
+                .expect("spawn engine thread")
+                .join()
+                .expect("engine init panicked");
+
             if eng.prepare(sample_rate as f64, block_size, channels) {
                 self.engine = Some(eng);
 
