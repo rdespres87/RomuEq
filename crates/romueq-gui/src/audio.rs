@@ -288,71 +288,94 @@ impl AudioStream {
         let input_device_opt = if let Some(ref name) = self.selected_input_device {
             host.input_devices()
                 .ok()
-                .and_then(|mut devs| devs.find(|d| d.name().map(|n| n == *name).unwrap_or(false)))
+                .and_then(|mut devs| {
+                    devs.find(|d| {
+                        d.name()
+                            .map(|n| n.trim() == name.trim() || n.contains(name))
+                            .unwrap_or(false)
+                    })
+                })
                 .or_else(|| host.default_input_device())
         } else {
             host.default_input_device()
         };
 
+        println!("[AudioStream] Input device resolved: {:?}", input_device_opt.as_ref().and_then(|d| d.name().ok()));
+
         if let Some(input_device) = input_device_opt {
-            if let Ok(in_config) = input_device.default_input_config() {
-                let in_channels = in_config.channels() as usize;
-                let in_sample_format = in_config.sample_format();
-                let in_stream_config: StreamConfig = in_config.into();
-                let internal_in = Arc::clone(&self.internal);
+            match input_device.default_input_config() {
+                Ok(in_config) => {
+                    println!("[AudioStream] Input config: {in_config:?}");
+                    let in_channels = in_config.channels() as usize;
+                    let in_sample_format = in_config.sample_format();
+                    let in_stream_config: StreamConfig = in_config.into();
+                    let internal_in = Arc::clone(&self.internal);
 
-                let in_res = match in_sample_format {
-                    SampleFormat::F32 => input_device.build_input_stream(
-                        &in_stream_config,
-                        move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                            if let Ok(mut g) = internal_in.try_lock() {
-                                if g.source_mode == AudioSourceMode::PassThrough {
-                                    for frame in data.chunks(in_channels) {
-                                        let l = frame.first().copied().unwrap_or(0.0);
-                                        let r = if in_channels > 1 {
-                                            frame.get(1).copied().unwrap_or(l)
-                                        } else {
-                                            l
-                                        };
-                                        if g.input_queue.len() < 16384 {
-                                            g.input_queue.push_back((l, r));
+                    let in_res = match in_sample_format {
+                        SampleFormat::F32 => input_device.build_input_stream(
+                            &in_stream_config,
+                            move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                                if let Ok(mut g) = internal_in.lock() {
+                                    if g.source_mode == AudioSourceMode::PassThrough {
+                                        for frame in data.chunks(in_channels) {
+                                            let l = frame.first().copied().unwrap_or(0.0);
+                                            let r = if in_channels > 1 {
+                                                frame.get(1).copied().unwrap_or(l)
+                                            } else {
+                                                l
+                                            };
+                                            if g.input_queue.len() < 16384 {
+                                                g.input_queue.push_back((l, r));
+                                            }
                                         }
                                     }
                                 }
-                            }
-                        },
-                        |err| eprintln!("Audio input stream error: {err}"),
-                        None,
-                    ),
-                    SampleFormat::I16 => input_device.build_input_stream(
-                        &in_stream_config,
-                        move |data: &[i16], _: &cpal::InputCallbackInfo| {
-                            if let Ok(mut g) = internal_in.try_lock() {
-                                if g.source_mode == AudioSourceMode::PassThrough {
-                                    for frame in data.chunks(in_channels) {
-                                        let l =
-                                            frame.first().copied().unwrap_or(0) as f32 / 32768.0;
-                                        let r = if in_channels > 1 {
-                                            frame.get(1).copied().unwrap_or(0) as f32 / 32768.0
-                                        } else {
-                                            l
-                                        };
-                                        if g.input_queue.len() < 16384 {
-                                            g.input_queue.push_back((l, r));
+                            },
+                            |err| eprintln!("Audio input stream error: {err}"),
+                            None,
+                        ),
+                        SampleFormat::I16 => input_device.build_input_stream(
+                            &in_stream_config,
+                            move |data: &[i16], _: &cpal::InputCallbackInfo| {
+                                if let Ok(mut g) = internal_in.lock() {
+                                    if g.source_mode == AudioSourceMode::PassThrough {
+                                        for frame in data.chunks(in_channels) {
+                                            let l =
+                                                frame.first().copied().unwrap_or(0) as f32 / 32768.0;
+                                            let r = if in_channels > 1 {
+                                                frame.get(1).copied().unwrap_or(0) as f32 / 32768.0
+                                            } else {
+                                                l
+                                            };
+                                            if g.input_queue.len() < 16384 {
+                                                g.input_queue.push_back((l, r));
+                                            }
                                         }
                                     }
                                 }
-                            }
-                        },
-                        |err| eprintln!("Audio input stream error: {err}"),
-                        None,
-                    ),
-                    _ => Err(cpal::BuildStreamError::StreamConfigNotSupported),
-                };
+                            },
+                            |err| eprintln!("Audio input stream error: {err}"),
+                            None,
+                        ),
+                        _ => Err(cpal::BuildStreamError::StreamConfigNotSupported),
+                    };
 
-                if let Ok(stream) = in_res {
-                    let _ = stream.play();
-                    input_stream = Some(stream);
+                    match in_res {
+                        Ok(stream) => {
+                            if let Err(e) = stream.play() {
+                                eprintln!("[AudioStream] Failed to play input stream: {e}");
+                            } else {
+                                println!("[AudioStream] Input stream started successfully!");
+                                input_stream = Some(stream);
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("[AudioStream] Failed to build input stream: {e}");
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[AudioStream] Failed to get default input config: {e}");
                 }
             }
         }

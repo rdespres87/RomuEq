@@ -36,7 +36,7 @@
 pub use romueq_common::parameter::ParamId;
 
 /// egui Widget trait for `.ui()` method on sliders, checkboxes, etc.
-use egui_plot::{Line, Plot};
+use egui_plot::{Line, Plot, Points};
 use romueq_common::BandParameters;
 
 #[cfg(feature = "standalone")]
@@ -474,10 +474,38 @@ pub fn render_frequency_response_plot(
     let plot = Plot::new("eq_response")
         .include_x(20.0)
         .include_x(24000.0)
-        .include_y(-60.0)
-        .include_y(30.0)
+        .include_y(-30.0)
+        .include_y(24.0)
         .height(200.0)
-        .show(ui, |plot_ui| plot_ui.line(line));
+        .show(ui, |plot_ui| {
+            plot_ui.line(line);
+
+            // Render interactive visual nodes for each enabled band
+            for (i, band) in bands.iter().enumerate() {
+                if band.enabled {
+                    let color = match i % 8 {
+                        0 => egui::Color32::from_rgb(255, 80, 80),   // Red
+                        1 => egui::Color32::from_rgb(255, 160, 40),  // Orange
+                        2 => egui::Color32::from_rgb(255, 220, 50),  // Yellow
+                        3 => egui::Color32::from_rgb(50, 220, 100),  // Green
+                        4 => egui::Color32::from_rgb(40, 200, 220),  // Cyan
+                        5 => egui::Color32::from_rgb(80, 140, 255),  // Blue
+                        6 => egui::Color32::from_rgb(180, 90, 255),  // Purple
+                        _ => egui::Color32::from_rgb(255, 100, 200), // Magenta
+                    };
+                    let node_y = match band.filter_type {
+                        romueq_common::FilterType::LowPass | romueq_common::FilterType::HighPass => 0.0,
+                        _ => band.gain_db as f64,
+                    };
+                    plot_ui.points(
+                        Points::new(vec![[band.frequency_hz as f64, node_y]])
+                            .color(color)
+                            .radius(5.5)
+                            .name(format!("Bande {}", i + 1)),
+                    );
+                }
+            }
+        });
 
     // Show axis labels
     ui.horizontal(|ui| {

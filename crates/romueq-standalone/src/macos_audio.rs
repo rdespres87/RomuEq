@@ -290,4 +290,69 @@ mod tests {
         let blackhole = find_device_by_name("BlackHole");
         println!("BlackHole search: {blackhole:?}");
     }
+
+    #[test]
+    fn test_cpal_input_callback_direct() {
+        use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+        let host = cpal::default_host();
+        let in_dev = host.input_devices().unwrap().find(|d| {
+            d.name().map(|n| n.contains("BlackHole")).unwrap_or(false)
+        }).expect("BlackHole input not found");
+
+        let cfg: cpal::StreamConfig = in_dev.default_input_config().unwrap().into();
+        println!("Testing direct CPAL input on BlackHole with config: {cfg:?}");
+
+        let fired = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let fired_clone = fired.clone();
+
+        let stream = in_dev.build_input_stream(
+            &cfg,
+            move |data: &[f32], _| {
+                let count = fired_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if count < 5 {
+                    eprintln!("[DirectInput] Callback fired with {} frames!", data.len());
+                }
+            },
+            |err| eprintln!("DirectInput error: {err}"),
+            None,
+        ).unwrap();
+
+        stream.play().unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let count = fired.load(std::sync::atomic::Ordering::SeqCst);
+        println!("Direct input callback fired {count} times");
+        assert!(count > 0, "Input callback did not fire!");
+    }
+
+    #[test]
+    fn test_blackhole_volume_and_mute() {
+        use coreaudio_sys::{AudioObjectGetPropertyData, AudioObjectPropertyAddress, AudioObjectSetPropertyData};
+        let (bh_id, _) = find_device_by_name("BlackHole 2ch").expect("BlackHole not found");
+
+        for (scope_name, scope) in [("Output", u32::from_be_bytes(*b"outp")), ("Input", u32::from_be_bytes(*b"inpt"))] {
+            for channel in 0..=2 {
+                let vol_addr = AudioObjectPropertyAddress {
+                    mSelector: u32::from_be_bytes(*b"volm"),
+                    mScope: scope,
+                    mElement: channel,
+                };
+                let mut vol: f32 = 0.0;
+                let mut size = std::mem::size_of::<f32>() as u32;
+                let status = unsafe {
+                    AudioObjectGetPropertyData(bh_id, &vol_addr, 0, std::ptr::null(), &mut size, &mut vol as *mut _ as *mut _)
+                };
+                println!("BlackHole {scope_name} ch {channel} volume: {vol} (status: {status})");
+
+                // Ensure volume is set to 1.0 (100%)
+                let new_vol = 1.0f32;
+                let set_status = unsafe {
+                    AudioObjectSetPropertyData(bh_id, &vol_addr, 0, std::ptr::null(), size, &new_vol as *const _ as *const _)
+                };
+                if set_status == 0 {
+                    println!("Successfully set BlackHole {scope_name} ch {channel} volume to 1.0");
+                }
+            }
+        }
+    }
 }
