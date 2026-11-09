@@ -467,6 +467,7 @@ pub fn render_frequency_response_plot(
     let line = Line::new(points)
         .color(egui::Color32::from_rgb(0, 180, 255))
         .stroke(egui::Stroke::new(2.0, egui::Color32::from_rgb(0, 180, 255)))
+        .fill(-60.0)
         .name("EQ Response");
 
     // Clamp to a reasonable dB range for display
@@ -849,14 +850,8 @@ pub mod standalone {
                 .cloned()
                 .or_else(|| out_devices.first().cloned());
 
-            // If virtual bridge is found, default directly to PassThrough mode
-            if detected_in
-                .as_ref()
-                .map(|s| s.contains("eqMac") || s.contains("BlackHole"))
-                .unwrap_or(false)
-            {
-                audio_stream.set_source_mode(audio::AudioSourceMode::PassThrough);
-            }
+            // Default to TestSignal mode so the user hears sound immediately on Play
+            audio_stream.set_source_mode(audio::AudioSourceMode::TestSignal);
 
             audio_stream.set_input_device(detected_in);
             audio_stream.set_output_device(detected_out);

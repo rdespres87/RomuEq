@@ -547,13 +547,38 @@ mod tests {
 
     #[test]
     fn test_audio_stream_start_diagnostic() {
-        println!("Available outputs: {:?}", AudioStream::available_output_devices());
-        println!("Available inputs: {:?}", AudioStream::available_input_devices());
+        let host = cpal::default_host();
+        if let Some(out) = host.default_output_device() {
+            println!(
+                "Default output: {:?}, config: {:?}",
+                out.name(),
+                out.default_output_config()
+            );
+        }
+        if let Some(inp) = host.default_input_device() {
+            println!(
+                "Default input: {:?}, config: {:?}",
+                inp.name(),
+                inp.default_input_config()
+            );
+        }
+        println!(
+            "Available outputs: {:?}",
+            AudioStream::available_output_devices()
+        );
+        println!(
+            "Available inputs: {:?}",
+            AudioStream::available_input_devices()
+        );
         let mut stream = AudioStream::new();
+        stream.set_output_device(Some("Komplete Audio 6 MK2".to_string()));
         match stream.start() {
             Ok(()) => {
-                println!("Audio stream started successfully! Active: {}", stream.is_active());
-                std::thread::sleep(std::time::Duration::from_millis(100));
+                println!(
+                    "Audio stream to Komplete Audio 6 MK2 started successfully! Active: {}",
+                    stream.is_active()
+                );
+                std::thread::sleep(std::time::Duration::from_millis(200));
                 let samples = stream.get_latest_output_samples();
                 println!("Captured {} output samples", samples.len());
                 let (pl, pr) = stream.peak_levels_db();
@@ -561,9 +586,8 @@ mod tests {
                 stream.stop().unwrap();
             }
             Err(e) => {
-                println!("Audio stream failed to start: {e}");
+                println!("Audio stream to Komplete Audio 6 MK2 failed to start: {e}");
             }
         }
     }
 }
-
