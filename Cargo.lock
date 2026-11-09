@@ -2920,6 +2920,7 @@ dependencies = [
 name = "romueq-standalone"
 version = "0.1.0"
 dependencies = [
+ "coreaudio-sys",
  "cpal",
  "eframe",
  "egui",

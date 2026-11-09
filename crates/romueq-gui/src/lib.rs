@@ -831,10 +831,11 @@ pub mod standalone {
             let in_devices = audio::AudioStream::available_input_devices();
             let out_devices = audio::AudioStream::available_output_devices();
 
-            // Detect virtual input bridge (eqMac Export, BlackHole, or system default)
+            // Detect virtual input bridge (BlackHole prioritized, then eqMac Export, or fallback)
             let detected_in = in_devices
                 .iter()
-                .find(|d| d.contains("eqMac Export") || d.contains("BlackHole"))
+                .find(|d| d.contains("BlackHole"))
+                .or_else(|| in_devices.iter().find(|d| d.contains("eqMac Export")))
                 .cloned()
                 .or_else(|| in_devices.first().cloned());
 
@@ -850,11 +851,33 @@ pub mod standalone {
                 .cloned()
                 .or_else(|| out_devices.first().cloned());
 
-            // Default to TestSignal mode so the user hears sound immediately on Play
-            audio_stream.set_source_mode(audio::AudioSourceMode::TestSignal);
+            let is_virtual_bridge = detected_in
+                .as_ref()
+                .map(|d| d.contains("BlackHole") || d.contains("eqMac"))
+                .unwrap_or(false);
 
-            audio_stream.set_input_device(detected_in);
-            audio_stream.set_output_device(detected_out);
+            let initial_mode = if is_virtual_bridge {
+                audio::AudioSourceMode::PassThrough
+            } else {
+                audio::AudioSourceMode::TestSignal
+            };
+
+            audio_stream.set_source_mode(initial_mode);
+            audio_stream.set_input_device(detected_in.clone());
+            audio_stream.set_output_device(detected_out.clone());
+
+            let mut audio_active = false;
+            let mut status_message = Some("Prêt — Périphériques audio configurés".to_string());
+
+            if initial_mode == audio::AudioSourceMode::PassThrough {
+                if let Err(e) = audio_stream.start() {
+                    status_message = Some(format!("Erreur démarrage flux: {e}"));
+                } else {
+                    audio_active = true;
+                    let out_name = detected_out.as_deref().unwrap_or("Sortie");
+                    status_message = Some(format!("Égaliseur actif → {out_name}"));
+                }
+            }
 
             let spectrum_config = romueq_analysis::SpectrumConfig::new(1024, 48000.0);
             let spectrum_processor = romueq_analysis::SpectrumProcessor::new(spectrum_config);
@@ -866,11 +889,11 @@ pub mod standalone {
                 app,
                 client,
                 audio_stream: Some(audio_stream),
-                audio_active: false,
+                audio_active,
                 preset_name_input: String::new(),
                 spectrum_processor,
                 spectrum_frame_num: 0,
-                status_message: Some("Prêt — Périphériques audio configurés".to_string()),
+                status_message,
             }
         }
     }
