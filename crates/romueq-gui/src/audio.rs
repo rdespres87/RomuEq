@@ -6,8 +6,8 @@
 //! It supports two operational modes:
 //! 1. `TestSignal` — Generates a musical chord + harmonic overtone spectrum so users
 //!    can immediately audition EQ cuts and boosts on headphones or speakers.
-//! 2. `PassThrough` — Captures live audio from the default input device (microphone or loopback)
-//!    and plays it back processed through the EQ.
+//! 2. `PassThrough` — Captures live audio from an input device (microphone, loopback,
+//!    eqMac Export, or BlackHole) and plays it back processed through the EQ.
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, Stream, StreamConfig};
@@ -19,9 +19,9 @@ use std::sync::{Arc, Mutex};
 /// Source of audio input for the equalizer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AudioSourceMode {
-    /// Internal harmonic audio generator (ideal for testing EQ on any PC without cables).
+    /// Internal harmonic audio generator (ideal for auditioning EQ on any PC without cables).
     TestSignal,
-    /// Live input pass-through (captures from system microphone or loopback device).
+    /// Live input pass-through (captures from system loopback, BlackHole, or microphone).
     PassThrough,
 }
 
@@ -33,7 +33,8 @@ struct AudioInternal {
     block_size: usize,
     phase: f64,
     noise_state: u32,
-    input_queue: VecDeque<f32>,
+    /// Stereo input queue: pairs of (left, right)
+    input_queue: VecDeque<(f32, f32)>,
     latest_output: Vec<f32>,
     peak_l: f32,
     peak_r: f32,
@@ -74,6 +75,8 @@ pub struct AudioStream {
     _input_stream: Option<Stream>,
     is_active: bool,
     sample_rate: f32,
+    selected_input_device: Option<String>,
+    selected_output_device: Option<String>,
 }
 
 impl AudioStream {
@@ -89,12 +92,50 @@ impl AudioStream {
             _input_stream: None,
             is_active: false,
             sample_rate,
+            selected_input_device: None,
+            selected_output_device: None,
         }
+    }
+
+    /// Returns the list of all available input device names on the system.
+    pub fn available_input_devices() -> Vec<String> {
+        let host = cpal::default_host();
+        host.input_devices()
+            .map(|devices| devices.filter_map(|d| d.name().ok()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Returns the list of all available output device names on the system.
+    pub fn available_output_devices() -> Vec<String> {
+        let host = cpal::default_host();
+        host.output_devices()
+            .map(|devices| devices.filter_map(|d| d.name().ok()).collect())
+            .unwrap_or_default()
     }
 
     /// Returns whether the audio stream is currently active and playing.
     pub fn is_active(&self) -> bool {
         self.is_active
+    }
+
+    /// Returns the currently configured input device name, if any.
+    pub fn selected_input_device(&self) -> Option<&str> {
+        self.selected_input_device.as_deref()
+    }
+
+    /// Sets the target input device name. If active, call restart or stop/start.
+    pub fn set_input_device(&mut self, name: Option<String>) {
+        self.selected_input_device = name;
+    }
+
+    /// Returns the currently configured output device name, if any.
+    pub fn selected_output_device(&self) -> Option<&str> {
+        self.selected_output_device.as_deref()
+    }
+
+    /// Sets the target output device name. If active, call restart or stop/start.
+    pub fn set_output_device(&mut self, name: Option<String>) {
+        self.selected_output_device = name;
     }
 
     /// Returns the current audio source mode.
@@ -136,7 +177,7 @@ impl AudioStream {
         Ok(())
     }
 
-    /// Start audio processing and playback through default audio devices.
+    /// Start audio processing and playback through configured or default audio devices.
     pub fn start(&mut self) -> Result<(), String> {
         if self.is_active {
             return Ok(());
@@ -144,10 +185,16 @@ impl AudioStream {
 
         let host = cpal::default_host();
 
-        // 1. Setup Output Device
-        let output_device = host
-            .default_output_device()
-            .ok_or_else(|| "No default audio output device found on system".to_string())?;
+        // 1. Locate Output Device
+        let output_device = if let Some(ref name) = self.selected_output_device {
+            host.output_devices()
+                .ok()
+                .and_then(|mut devs| devs.find(|d| d.name().map(|n| n == *name).unwrap_or(false)))
+                .or_else(|| host.default_output_device())
+        } else {
+            host.default_output_device()
+        }
+        .ok_or_else(|| "No audio output device found on system".to_string())?;
 
         let supported_config = output_device
             .default_output_config()
@@ -170,7 +217,6 @@ impl AudioStream {
         let stream_config: StreamConfig = supported_config.clone().into();
         let internal_out = Arc::clone(&self.internal);
 
-        // Buffers for scratch processing
         let mut left_in = vec![0.0f32; 2048];
         let mut right_in = vec![0.0f32; 2048];
         let mut left_out = vec![0.0f32; 2048];
@@ -234,31 +280,73 @@ impl AudioStream {
             }
         };
 
-        // 2. Setup Optional Input Device (for pass-through)
+        // 2. Locate Input Device (for pass-through loopback / microphone)
         let mut input_stream = None;
-        if let Some(input_device) = host.default_input_device() {
+        let input_device_opt = if let Some(ref name) = self.selected_input_device {
+            host.input_devices()
+                .ok()
+                .and_then(|mut devs| devs.find(|d| d.name().map(|n| n == *name).unwrap_or(false)))
+                .or_else(|| host.default_input_device())
+        } else {
+            host.default_input_device()
+        };
+
+        if let Some(input_device) = input_device_opt {
             if let Ok(in_config) = input_device.default_input_config() {
                 let in_channels = in_config.channels() as usize;
+                let in_sample_format = in_config.sample_format();
                 let in_stream_config: StreamConfig = in_config.into();
                 let internal_in = Arc::clone(&self.internal);
 
-                let in_res = input_device.build_input_stream(
-                    &in_stream_config,
-                    move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                        if let Ok(mut g) = internal_in.try_lock() {
-                            if g.source_mode == AudioSourceMode::PassThrough {
-                                for frame in data.chunks(in_channels) {
-                                    let sample = frame.first().copied().unwrap_or(0.0);
-                                    if g.input_queue.len() < 32768 {
-                                        g.input_queue.push_back(sample);
+                let in_res = match in_sample_format {
+                    SampleFormat::F32 => input_device.build_input_stream(
+                        &in_stream_config,
+                        move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                            if let Ok(mut g) = internal_in.try_lock() {
+                                if g.source_mode == AudioSourceMode::PassThrough {
+                                    for frame in data.chunks(in_channels) {
+                                        let l = frame.first().copied().unwrap_or(0.0);
+                                        let r = if in_channels > 1 {
+                                            frame.get(1).copied().unwrap_or(l)
+                                        } else {
+                                            l
+                                        };
+                                        if g.input_queue.len() < 16384 {
+                                            g.input_queue.push_back((l, r));
+                                        }
                                     }
                                 }
                             }
-                        }
-                    },
-                    |err| eprintln!("Audio input stream error: {err}"),
-                    None,
-                );
+                        },
+                        |err| eprintln!("Audio input stream error: {err}"),
+                        None,
+                    ),
+                    SampleFormat::I16 => input_device.build_input_stream(
+                        &in_stream_config,
+                        move |data: &[i16], _: &cpal::InputCallbackInfo| {
+                            if let Ok(mut g) = internal_in.try_lock() {
+                                if g.source_mode == AudioSourceMode::PassThrough {
+                                    for frame in data.chunks(in_channels) {
+                                        let l =
+                                            frame.first().copied().unwrap_or(0) as f32 / 32768.0;
+                                        let r = if in_channels > 1 {
+                                            frame.get(1).copied().unwrap_or(0) as f32 / 32768.0
+                                        } else {
+                                            l
+                                        };
+                                        if g.input_queue.len() < 16384 {
+                                            g.input_queue.push_back((l, r));
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        |err| eprintln!("Audio input stream error: {err}"),
+                        None,
+                    ),
+                    _ => Err(cpal::BuildStreamError::StreamConfigNotSupported),
+                };
+
                 if let Ok(stream) = in_res {
                     let _ = stream.play();
                     input_stream = Some(stream);
@@ -340,7 +428,6 @@ fn process_output_f32(
     }
 
     let Ok(mut g) = internal.try_lock() else {
-        // Under contention, output silence rather than blocking
         data.fill(0.0);
         return;
     };
@@ -352,8 +439,6 @@ fn process_output_f32(
             let sr = sample_rate as f64;
             for i in 0..frames {
                 let t = g.phase / sr;
-                // Rich harmonic pad chord (C3, G3, B3, E4, C5) + faint overtone noise
-                // Perfect for hearing sub-bass, mid presence, and high sheen EQ changes!
                 let s = 0.12 * (t * 130.81 * pi2).sin()
                     + 0.10 * (t * 196.00 * pi2).sin()
                     + 0.08 * (t * 246.94 * pi2).sin()
@@ -369,10 +454,20 @@ fn process_output_f32(
             }
         }
         AudioSourceMode::PassThrough => {
+            // Latency drift control: keep buffer between 256 and 1024 frames (~5 to 20 ms)
+            if g.input_queue.len() > 2048 {
+                let excess = g.input_queue.len() - 1024;
+                g.input_queue.drain(0..excess);
+            }
+
             for i in 0..frames {
-                let sample = g.input_queue.pop_front().unwrap_or(0.0);
-                left_in[i] = sample;
-                right_in[i] = sample;
+                if let Some((l, r)) = g.input_queue.pop_front() {
+                    left_in[i] = l;
+                    right_in[i] = r;
+                } else {
+                    left_in[i] = 0.0;
+                    right_in[i] = 0.0;
+                }
             }
         }
     }

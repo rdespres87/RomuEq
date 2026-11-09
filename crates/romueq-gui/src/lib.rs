@@ -822,18 +822,59 @@ pub mod standalone {
             client.set_egui_context(ctx);
             // Initialize the engine at startup so encode_snapshot() returns real data.
             client.prepare(48000.0, 512, 2);
-            let audio_stream = Some(audio::AudioStream::new());
+
+            let mut audio_stream = audio::AudioStream::new();
+
+            // Auto-detect audio devices for seamless macOS EQ replacement
+            let in_devices = audio::AudioStream::available_input_devices();
+            let out_devices = audio::AudioStream::available_output_devices();
+
+            // Detect virtual input bridge (eqMac Export, BlackHole, or system default)
+            let detected_in = in_devices
+                .iter()
+                .find(|d| d.contains("eqMac Export") || d.contains("BlackHole"))
+                .cloned()
+                .or_else(|| in_devices.first().cloned());
+
+            // Detect real hardware output (Komplete Audio 6 MK2 or built-in speakers)
+            let detected_out = out_devices
+                .iter()
+                .find(|d| d.contains("Komplete Audio") && !d.contains("eqMac"))
+                .or_else(|| {
+                    out_devices
+                        .iter()
+                        .find(|d| d.contains("Haut-parleurs") || d.contains("MacBook Pro"))
+                })
+                .cloned()
+                .or_else(|| out_devices.first().cloned());
+
+            // If virtual bridge is found, default directly to PassThrough mode
+            if detected_in
+                .as_ref()
+                .map(|s| s.contains("eqMac") || s.contains("BlackHole"))
+                .unwrap_or(false)
+            {
+                audio_stream.set_source_mode(audio::AudioSourceMode::PassThrough);
+            }
+
+            audio_stream.set_input_device(detected_in);
+            audio_stream.set_output_device(detected_out);
+
             let spectrum_config = romueq_analysis::SpectrumConfig::new(1024, 48000.0);
             let spectrum_processor = romueq_analysis::SpectrumProcessor::new(spectrum_config);
+
+            // Populate built-in presets
+            populate_factory_presets(&mut client);
+
             Self {
                 app,
                 client,
-                audio_stream,
+                audio_stream: Some(audio_stream),
                 audio_active: false,
                 preset_name_input: String::new(),
                 spectrum_processor,
                 spectrum_frame_num: 0,
-                status_message: None,
+                status_message: Some("Prêt — Périphériques audio configurés".to_string()),
             }
         }
     }
@@ -957,6 +998,68 @@ pub mod standalone {
                     }
                 });
 
+                // Device selection UI
+                ui.horizontal(|ui| {
+                    if let Some(ref mut audio) = self.audio_stream {
+                        let out_devices = audio::AudioStream::available_output_devices();
+                        let current_out =
+                            audio.selected_output_device().unwrap_or("Défaut Système");
+                        let mut chosen_out = current_out.to_string();
+
+                        ui.label("🔊 Sortie:");
+                        egui::ComboBox::from_id_salt("output_device_select")
+                            .selected_text(current_out)
+                            .show_ui(ui, |ui| {
+                                for dev in &out_devices {
+                                    if ui
+                                        .selectable_value(
+                                            &mut chosen_out,
+                                            dev.clone(),
+                                            dev.as_str(),
+                                        )
+                                        .clicked()
+                                    {
+                                        audio.set_output_device(Some(dev.clone()));
+                                        if self.audio_active {
+                                            let _ = audio.stop();
+                                            let _ = audio.start();
+                                        }
+                                    }
+                                }
+                            });
+
+                        if audio.source_mode() == audio::AudioSourceMode::PassThrough {
+                            let in_devices = audio::AudioStream::available_input_devices();
+                            let current_in =
+                                audio.selected_input_device().unwrap_or("Défaut Système");
+                            let mut chosen_in = current_in.to_string();
+
+                            ui.separator();
+                            ui.label("🎙️ Entrée (Loopback):");
+                            egui::ComboBox::from_id_salt("input_device_select")
+                                .selected_text(current_in)
+                                .show_ui(ui, |ui| {
+                                    for dev in &in_devices {
+                                        if ui
+                                            .selectable_value(
+                                                &mut chosen_in,
+                                                dev.clone(),
+                                                dev.as_str(),
+                                            )
+                                            .clicked()
+                                        {
+                                            audio.set_input_device(Some(dev.clone()));
+                                            if self.audio_active {
+                                                let _ = audio.stop();
+                                                let _ = audio.start();
+                                            }
+                                        }
+                                    }
+                                });
+                        }
+                    }
+                });
+
                 if let Some(ref status) = self.status_message {
                     ui.label(egui::RichText::new(status).small());
                 }
@@ -1016,11 +1119,22 @@ pub mod standalone {
                         .selected_text(selected_text)
                         .show_ui(ui, |ui| {
                             for name in &presets {
-                                ui.selectable_value(
-                                    &mut self.client._current_preset,
-                                    name.clone(),
-                                    name.as_str(),
-                                );
+                                if ui
+                                    .selectable_value(
+                                        &mut self.client._current_preset,
+                                        name.clone(),
+                                        name.as_str(),
+                                    )
+                                    .clicked()
+                                {
+                                    let _ = self.client.apply_preset(name);
+                                    if let Some(ref mut audio) = self.audio_stream {
+                                        if let Some(ref engine) = self.client.engine {
+                                            let _ = audio.set_parameters(*engine.eq_parameters());
+                                        }
+                                    }
+                                    self.status_message = Some(format!("Preset '{name}' appliqué"));
+                                }
                             }
                         });
 
@@ -1028,6 +1142,11 @@ pub mod standalone {
                         let sel = self.client._current_preset.clone();
                         if !sel.is_empty() {
                             let _ = self.client.apply_preset(&sel);
+                            if let Some(ref mut audio) = self.audio_stream {
+                                if let Some(ref engine) = self.client.engine {
+                                    let _ = audio.set_parameters(*engine.eq_parameters());
+                                }
+                            }
                             self.status_message = Some(format!("Preset '{sel}' chargé"));
                         }
                     }
@@ -1076,6 +1195,86 @@ pub mod standalone {
             // Light theme background.
             [0.95, 0.95, 0.95, 1.0]
         }
+    }
+
+    fn populate_factory_presets(client: &mut EngineClient) {
+        let mut add = |name: &str, configure: fn(&mut romueq_common::EqParameters)| {
+            if let Some(ref mut eng) = client.engine {
+                let mut params = romueq_common::EqParameters::default();
+                configure(&mut params);
+                eng.set_parameters(params);
+                let _ = client.create_preset(name);
+            }
+        };
+
+        add("Flat", |_| {});
+        add("Bass Boost (+6 dB)", |p| {
+            p.bands[0].enabled = true;
+            p.bands[0].filter_type = romueq_common::FilterType::LowShelf;
+            p.bands[0].frequency_hz = 80.0;
+            p.bands[0].gain_db = 6.0;
+            p.bands[0].q = 0.707;
+        });
+        add("Acoustic Clarity", |p| {
+            p.bands[1].enabled = true;
+            p.bands[1].filter_type = romueq_common::FilterType::Bell;
+            p.bands[1].frequency_hz = 250.0;
+            p.bands[1].gain_db = -2.0;
+            p.bands[1].q = 1.0;
+
+            p.bands[4].enabled = true;
+            p.bands[4].filter_type = romueq_common::FilterType::Bell;
+            p.bands[4].frequency_hz = 3000.0;
+            p.bands[4].gain_db = 3.0;
+            p.bands[4].q = 1.2;
+
+            p.bands[7].enabled = true;
+            p.bands[7].filter_type = romueq_common::FilterType::HighShelf;
+            p.bands[7].frequency_hz = 10000.0;
+            p.bands[7].gain_db = 4.0;
+            p.bands[7].q = 0.707;
+        });
+        add("Vocal Air", |p| {
+            p.bands[1].enabled = true;
+            p.bands[1].filter_type = romueq_common::FilterType::Bell;
+            p.bands[1].frequency_hz = 200.0;
+            p.bands[1].gain_db = -3.0;
+            p.bands[1].q = 1.0;
+
+            p.bands[3].enabled = true;
+            p.bands[3].filter_type = romueq_common::FilterType::Bell;
+            p.bands[3].frequency_hz = 2500.0;
+            p.bands[3].gain_db = 3.0;
+            p.bands[3].q = 1.0;
+
+            p.bands[7].enabled = true;
+            p.bands[7].filter_type = romueq_common::FilterType::HighShelf;
+            p.bands[7].frequency_hz = 12000.0;
+            p.bands[7].gain_db = 4.0;
+            p.bands[7].q = 0.707;
+        });
+        add("Loudness", |p| {
+            p.bands[0].enabled = true;
+            p.bands[0].filter_type = romueq_common::FilterType::LowShelf;
+            p.bands[0].frequency_hz = 60.0;
+            p.bands[0].gain_db = 5.0;
+            p.bands[0].q = 0.707;
+
+            p.bands[2].enabled = true;
+            p.bands[2].filter_type = romueq_common::FilterType::Bell;
+            p.bands[2].frequency_hz = 800.0;
+            p.bands[2].gain_db = -2.5;
+            p.bands[2].q = 1.0;
+
+            p.bands[7].enabled = true;
+            p.bands[7].filter_type = romueq_common::FilterType::HighShelf;
+            p.bands[7].frequency_hz = 12000.0;
+            p.bands[7].gain_db = 4.0;
+            p.bands[7].q = 0.707;
+        });
+
+        let _ = client.apply_preset("Flat");
+        client._current_preset = "Flat".to_string();
     }
 
     use romueq_analysis::AnalysisEngine;
