@@ -628,10 +628,49 @@ pub fn render_interactive_frequency_response_plot(
         local_dragged = None;
     }
 
+    // Handle mouse scroll wheel to adjust Q factor of the hovered or dragged band
+    let scroll_delta = ui.ctx().input(|i| i.raw_scroll_delta.y);
+    if scroll_delta.abs() > 0.1 {
+        let target_band = local_dragged.or_else(|| {
+            if let Some((px, py)) = coord_under_pointer {
+                let mut closest = None;
+                let mut min_dist = f64::MAX;
+                for (i, band) in bands.iter().enumerate() {
+                    if band.enabled {
+                        let node_y = match band.filter_type {
+                            romueq_common::FilterType::LowPass
+                            | romueq_common::FilterType::HighPass => 0.0,
+                            _ => band.gain_db as f64,
+                        };
+                        let dx = (px.log10() - (band.frequency_hz as f64).log10()).abs();
+                        let dy = ((py - node_y) / 24.0).abs();
+                        let dist = dx * dx + dy * dy;
+                        if dist < 0.06 && dist < min_dist {
+                            min_dist = dist;
+                            closest = Some(i);
+                        }
+                    }
+                }
+                closest
+            } else {
+                None
+            }
+        });
+
+        if let Some(band_idx) = target_band {
+            let params = BandParams::new(band_idx, (band_idx as u32 + 1) * 100);
+            let current_q = bands[band_idx].q;
+            // Scroll up -> narrower / higher Q; Scroll down -> wider / lower Q
+            let factor = if scroll_delta > 0.0 { 1.10 } else { 0.90 };
+            let new_q = (current_q * factor).clamp(0.1, 30.0);
+            batch.push(params.q(), new_q);
+        }
+    }
+
     *dragged_band = local_dragged;
 
     ui.horizontal(|ui| {
-        ui.label("Fréquence (Hz) — Glissez les points colorés pour ajuster");
+        ui.label("Fréquence (Hz) — Glissez pour ajuster Freq/Gain, Molette pour le facteur Q");
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.label("Gain (dB)");
         });
@@ -982,13 +1021,12 @@ pub mod standalone {
             let in_devices = audio::AudioStream::available_input_devices();
             let out_devices = audio::AudioStream::available_output_devices();
 
-            // Detect virtual input bridge (BlackHole prioritized, then eqMac Export, or fallback)
+            // Detect virtual input bridge (BlackHole prioritized, then eqMac Export)
             let detected_in = in_devices
                 .iter()
                 .find(|d| d.contains("BlackHole"))
                 .or_else(|| in_devices.iter().find(|d| d.contains("eqMac Export")))
-                .cloned()
-                .or_else(|| in_devices.first().cloned());
+                .cloned();
 
             // Detect real hardware output (Komplete Audio 6 MK2 or built-in speakers)
             let detected_out = out_devices
