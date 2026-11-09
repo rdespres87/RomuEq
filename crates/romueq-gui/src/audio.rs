@@ -32,12 +32,12 @@ struct AudioInternal {
     sample_rate: f32,
     block_size: usize,
     phase: f64,
-    noise_state: u32,
     /// Stereo input queue: pairs of (left, right)
     input_queue: VecDeque<(f32, f32)>,
     latest_output: Vec<f32>,
     peak_l: f32,
     peak_r: f32,
+    is_running: bool,
 }
 
 fn create_boxed_engine() -> Box<EngineLifecycle> {
@@ -61,20 +61,12 @@ impl AudioInternal {
             sample_rate,
             block_size,
             phase: 0.0,
-            noise_state: 0x1234_5678,
             input_queue: VecDeque::with_capacity(32768),
             latest_output: Vec::with_capacity(2048),
             peak_l: 0.0,
             peak_r: 0.0,
+            is_running: false,
         }
-    }
-
-    fn lfsr_noise(&mut self) -> f32 {
-        self.noise_state = self
-            .noise_state
-            .wrapping_mul(1664525)
-            .wrapping_add(1013904223);
-        ((self.noise_state >> 16) as i16 as f32) / 32768.0
     }
 }
 
@@ -214,11 +206,12 @@ impl AudioStream {
         let sample_rate = supported_config.sample_rate().0 as f32;
         self.sample_rate = sample_rate;
 
-        let block_size = 512;
+        let block_size = 4096;
         {
             let mut g = self.internal.lock().unwrap();
             g.sample_rate = sample_rate;
             g.block_size = block_size;
+            g.is_running = true;
             let _ = g.engine.prepare(sample_rate as f64, block_size, 2);
             let p = g.params;
             g.engine.set_parameters(p);
@@ -376,6 +369,15 @@ impl AudioStream {
 
     /// Stop audio processing and release hardware streams.
     pub fn stop(&mut self) -> Result<(), String> {
+        if let Ok(mut g) = self.internal.lock() {
+            g.is_running = false;
+        }
+        if let Some(ref s) = self._output_stream {
+            let _ = s.pause();
+        }
+        if let Some(ref s) = self._input_stream {
+            let _ = s.pause();
+        }
         self._output_stream = None;
         self._input_stream = None;
         self.is_active = false;
@@ -442,6 +444,11 @@ fn process_output_f32(
         return;
     };
 
+    if !g.is_running {
+        data.fill(0.0);
+        return;
+    }
+
     // 1. Generate or fetch input samples
     match g.source_mode {
         AudioSourceMode::TestSignal => {
@@ -449,18 +456,16 @@ fn process_output_f32(
             let sr = sample_rate as f64;
             for i in 0..frames {
                 let t = g.phase / sr;
-                let s = 0.12 * (t * 130.81 * pi2).sin()
-                    + 0.10 * (t * 196.00 * pi2).sin()
-                    + 0.08 * (t * 246.94 * pi2).sin()
+                // Warm, mellow musical chord: A220 + C#277 + E330 + A440 (pure, harmonious, no harsh noise)
+                let s = 0.14 * (t * 220.00 * pi2).sin()
+                    + 0.10 * (t * 277.18 * pi2).sin()
                     + 0.08 * (t * 329.63 * pi2).sin()
-                    + 0.05 * (t * 523.25 * pi2).sin()
-                    + 0.03 * (t * 1046.50 * pi2).sin()
-                    + 0.015 * g.lfsr_noise() as f64;
+                    + 0.06 * (t * 440.00 * pi2).sin();
 
                 let sample_f32 = s as f32;
                 left_in[i] = sample_f32;
                 right_in[i] = sample_f32;
-                g.phase += 1.0;
+                g.phase = (g.phase + 1.0) % (sr * 60.0);
             }
         }
         AudioSourceMode::PassThrough => {
