@@ -36,7 +36,6 @@
 pub use romueq_common::parameter::ParamId;
 
 /// egui Widget trait for `.ui()` method on sliders, checkboxes, etc.
-use egui::Widget;
 use egui_plot::{Line, Plot};
 use romueq_common::BandParameters;
 
@@ -622,35 +621,37 @@ pub fn render_master_section(
         let bypass_val = snapshot.get(ParamId(1)).unwrap_or(0.0);
         let mut bypass = bypass_val >= 0.5;
 
-        egui::Checkbox::new(&mut bypass, "Bypass")
-            .ui(ui)
-            .on_hover_text("Bypass the entire EQ");
-
-        if bypass {
-            batch.push(ParamId(1), 1.0);
-        } else {
-            batch.push(ParamId(1), 0.0);
+        if ui
+            .checkbox(&mut bypass, "Bypass")
+            .on_hover_text("Bypass the entire EQ")
+            .changed()
+        {
+            batch.push(ParamId(1), if bypass { 1.0 } else { 0.0 });
         }
 
         // Output gain slider.
         let mut output_gain = snapshot.get(ParamId(2)).unwrap_or(0.0);
-        egui::Slider::new(&mut output_gain, -24.0..=24.0)
-            .suffix(" dB")
-            .ui(ui);
-        batch.push(ParamId(2), output_gain);
+        if ui
+            .add(
+                egui::Slider::new(&mut output_gain, -24.0..=24.0)
+                    .suffix(" dB")
+                    .text("Gain Master"),
+            )
+            .changed()
+        {
+            batch.push(ParamId(2), output_gain);
+        }
 
         // Auto-gain checkbox.
         let auto_gain_val = snapshot.get(ParamId(3)).unwrap_or(0.0);
         let mut auto_gain = auto_gain_val >= 0.5;
 
-        egui::Checkbox::new(&mut auto_gain, "Auto Gain")
-            .ui(ui)
-            .on_hover_text("Enable auto-gain compensation");
-
-        if auto_gain {
-            batch.push(ParamId(3), 1.0);
-        } else {
-            batch.push(ParamId(3), 0.0);
+        if ui
+            .checkbox(&mut auto_gain, "Auto Gain")
+            .on_hover_text("Enable auto-gain compensation")
+            .changed()
+        {
+            batch.push(ParamId(3), if auto_gain { 1.0 } else { 0.0 });
         }
     });
 
