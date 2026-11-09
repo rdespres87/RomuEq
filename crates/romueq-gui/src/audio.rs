@@ -25,6 +25,72 @@ pub enum AudioSourceMode {
     PassThrough,
 }
 
+struct AudioFifo {
+    buffer: VecDeque<(f32, f32)>,
+    is_prebuffered: bool,
+    last_l: f32,
+    last_r: f32,
+}
+
+impl AudioFifo {
+    fn new() -> Self {
+        Self {
+            buffer: VecDeque::with_capacity(32768),
+            is_prebuffered: false,
+            last_l: 0.0,
+            last_r: 0.0,
+        }
+    }
+
+    fn push(&mut self, l: f32, r: f32) {
+        if self.buffer.len() < 32768 {
+            self.buffer.push_back((l, r));
+        }
+        // Pre-buffer ~1536 frames (~32 ms at 48kHz) to eliminate underruns
+        if !self.is_prebuffered && self.buffer.len() >= 1536 {
+            self.is_prebuffered = true;
+        }
+    }
+
+    fn pop_into(&mut self, left: &mut [f32], right: &mut [f32], count: usize) {
+        if !self.is_prebuffered {
+            left[..count].fill(0.0);
+            right[..count].fill(0.0);
+            return;
+        }
+
+        // Smooth clock drift: if queue exceeds 3500 frames (~73 ms),
+        // gently drain at most 32 frames at a time
+        if self.buffer.len() > 3500 {
+            let drop_count = (self.buffer.len() - 2500).min(32);
+            self.buffer.drain(0..drop_count);
+        }
+
+        for i in 0..count {
+            if let Some((l, r)) = self.buffer.pop_front() {
+                self.last_l = l;
+                self.last_r = r;
+                left[i] = l;
+                right[i] = r;
+            } else {
+                // Soft fade to prevent hard digital pop if starving
+                self.last_l *= 0.85;
+                self.last_r *= 0.85;
+                left[i] = self.last_l;
+                right[i] = self.last_r;
+                self.is_prebuffered = false;
+            }
+        }
+    }
+
+    fn clear(&mut self) {
+        self.buffer.clear();
+        self.is_prebuffered = false;
+        self.last_l = 0.0;
+        self.last_r = 0.0;
+    }
+}
+
 struct AudioInternal {
     engine: Box<EngineLifecycle>,
     params: EqParameters,
@@ -32,8 +98,6 @@ struct AudioInternal {
     sample_rate: f32,
     block_size: usize,
     phase: f64,
-    /// Stereo input queue: pairs of (left, right)
-    input_queue: VecDeque<(f32, f32)>,
     latest_output: Vec<f32>,
     peak_l: f32,
     peak_r: f32,
@@ -61,7 +125,6 @@ impl AudioInternal {
             sample_rate,
             block_size,
             phase: 0.0,
-            input_queue: VecDeque::with_capacity(32768),
             latest_output: Vec::with_capacity(2048),
             peak_l: 0.0,
             peak_r: 0.0,
@@ -73,6 +136,7 @@ impl AudioInternal {
 /// Real-time audio stream wrapper using CPAL.
 pub struct AudioStream {
     internal: Arc<Mutex<AudioInternal>>,
+    fifo: Arc<Mutex<AudioFifo>>,
     _output_stream: Option<Stream>,
     _input_stream: Option<Stream>,
     is_active: bool,
@@ -87,9 +151,11 @@ impl AudioStream {
         let sample_rate = 48000.0;
         let block_size = 512;
         let internal = Arc::new(Mutex::new(AudioInternal::new(sample_rate, block_size)));
+        let fifo = Arc::new(Mutex::new(AudioFifo::new()));
 
         Self {
             internal,
+            fifo,
             _output_stream: None,
             _input_stream: None,
             is_active: false,
@@ -152,6 +218,9 @@ impl AudioStream {
     pub fn set_source_mode(&mut self, mode: AudioSourceMode) {
         if let Ok(mut g) = self.internal.lock() {
             g.source_mode = mode;
+        }
+        if let Ok(mut q) = self.fifo.lock() {
+            q.clear();
         }
     }
 
@@ -219,6 +288,7 @@ impl AudioStream {
 
         let stream_config: StreamConfig = supported_config.clone().into();
         let internal_out = Arc::clone(&self.internal);
+        let fifo_out = Arc::clone(&self.fifo);
 
         let mut left_in = vec![0.0f32; 2048];
         let mut right_in = vec![0.0f32; 2048];
@@ -238,6 +308,7 @@ impl AudioStream {
                             sample_rate,
                             block_size,
                             &internal_out,
+                            &fifo_out,
                             &mut left_in,
                             &mut right_in,
                             &mut left_out,
@@ -250,6 +321,7 @@ impl AudioStream {
                 .map_err(|e| format!("Failed to build F32 output stream: {e}"))?,
             SampleFormat::I16 => {
                 let mut float_scratch = vec![0.0f32; 4096];
+                let fifo_out_i16 = Arc::clone(&self.fifo);
                 output_device
                     .build_output_stream(
                         &stream_config,
@@ -264,6 +336,7 @@ impl AudioStream {
                                 sample_rate,
                                 block_size,
                                 &internal_out,
+                                &fifo_out_i16,
                                 &mut left_in,
                                 &mut right_in,
                                 &mut left_out,
@@ -309,25 +382,21 @@ impl AudioStream {
                     let in_channels = in_config.channels() as usize;
                     let in_sample_format = in_config.sample_format();
                     let in_stream_config: StreamConfig = in_config.into();
-                    let internal_in = Arc::clone(&self.internal);
+                    let fifo_in = Arc::clone(&self.fifo);
 
                     let in_res = match in_sample_format {
                         SampleFormat::F32 => input_device.build_input_stream(
                             &in_stream_config,
                             move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                                if let Ok(mut g) = internal_in.lock() {
-                                    if g.source_mode == AudioSourceMode::PassThrough {
-                                        for frame in data.chunks(in_channels) {
-                                            let l = frame.first().copied().unwrap_or(0.0);
-                                            let r = if in_channels > 1 {
-                                                frame.get(1).copied().unwrap_or(l)
-                                            } else {
-                                                l
-                                            };
-                                            if g.input_queue.len() < 16384 {
-                                                g.input_queue.push_back((l, r));
-                                            }
-                                        }
+                                if let Ok(mut q) = fifo_in.lock() {
+                                    for frame in data.chunks(in_channels) {
+                                        let l = frame.first().copied().unwrap_or(0.0);
+                                        let r = if in_channels > 1 {
+                                            frame.get(1).copied().unwrap_or(l)
+                                        } else {
+                                            l
+                                        };
+                                        q.push(l, r);
                                     }
                                 }
                             },
@@ -337,20 +406,16 @@ impl AudioStream {
                         SampleFormat::I16 => input_device.build_input_stream(
                             &in_stream_config,
                             move |data: &[i16], _: &cpal::InputCallbackInfo| {
-                                if let Ok(mut g) = internal_in.lock() {
-                                    if g.source_mode == AudioSourceMode::PassThrough {
-                                        for frame in data.chunks(in_channels) {
-                                            let l =
-                                                frame.first().copied().unwrap_or(0) as f32 / 32768.0;
-                                            let r = if in_channels > 1 {
-                                                frame.get(1).copied().unwrap_or(0) as f32 / 32768.0
-                                            } else {
-                                                l
-                                            };
-                                            if g.input_queue.len() < 16384 {
-                                                g.input_queue.push_back((l, r));
-                                            }
-                                        }
+                                if let Ok(mut q) = fifo_in.lock() {
+                                    for frame in data.chunks(in_channels) {
+                                        let l =
+                                            frame.first().copied().unwrap_or(0) as f32 / 32768.0;
+                                        let r = if in_channels > 1 {
+                                            frame.get(1).copied().unwrap_or(0) as f32 / 32768.0
+                                        } else {
+                                            l
+                                        };
+                                        q.push(l, r);
                                     }
                                 }
                             },
@@ -394,6 +459,9 @@ impl AudioStream {
     pub fn stop(&mut self) -> Result<(), String> {
         if let Ok(mut g) = self.internal.lock() {
             g.is_running = false;
+        }
+        if let Ok(mut q) = self.fifo.lock() {
+            q.clear();
         }
         if let Some(ref s) = self._output_stream {
             let _ = s.pause();
@@ -445,6 +513,7 @@ fn process_output_f32(
     sample_rate: f32,
     block_size: usize,
     internal: &Arc<Mutex<AudioInternal>>,
+    fifo: &Arc<Mutex<AudioFifo>>,
     left_in: &mut Vec<f32>,
     right_in: &mut Vec<f32>,
     left_out: &mut Vec<f32>,
@@ -462,99 +531,107 @@ fn process_output_f32(
         right_out.resize(frames, 0.0);
     }
 
-    let Ok(mut g) = internal.try_lock() else {
-        data.fill(0.0);
-        return;
+    let mode = {
+        if let Ok(g) = internal.try_lock() {
+            if !g.is_running {
+                data.fill(0.0);
+                return;
+            }
+            g.source_mode
+        } else {
+            AudioSourceMode::PassThrough
+        }
     };
 
-    if !g.is_running {
-        data.fill(0.0);
-        return;
-    }
-
-    // 1. Generate or fetch input samples
-    match g.source_mode {
+    // 1. Fetch input samples or generate test signal
+    match mode {
         AudioSourceMode::TestSignal => {
-            let pi2 = std::f64::consts::PI * 2.0;
-            let sr = sample_rate as f64;
-            for i in 0..frames {
-                let t = g.phase / sr;
-                // Warm, mellow musical chord: A220 + C#277 + E330 + A440 (pure, harmonious, no harsh noise)
-                let s = 0.14 * (t * 220.00 * pi2).sin()
-                    + 0.10 * (t * 277.18 * pi2).sin()
-                    + 0.08 * (t * 329.63 * pi2).sin()
-                    + 0.06 * (t * 440.00 * pi2).sin();
+            if let Ok(mut g) = internal.lock() {
+                let pi2 = std::f64::consts::PI * 2.0;
+                let sr = sample_rate as f64;
+                for i in 0..frames {
+                    let t = g.phase / sr;
+                    // Warm, mellow musical chord: A220 + C#277 + E330 + A440
+                    let s = 0.14 * (t * 220.00 * pi2).sin()
+                        + 0.10 * (t * 277.18 * pi2).sin()
+                        + 0.08 * (t * 329.63 * pi2).sin()
+                        + 0.06 * (t * 440.00 * pi2).sin();
 
-                let sample_f32 = s as f32;
-                left_in[i] = sample_f32;
-                right_in[i] = sample_f32;
-                g.phase = (g.phase + 1.0) % (sr * 60.0);
+                    let sample_f32 = s as f32;
+                    left_in[i] = sample_f32;
+                    right_in[i] = sample_f32;
+                    g.phase = (g.phase + 1.0) % (sr * 60.0);
+                }
+            } else {
+                left_in[..frames].fill(0.0);
+                right_in[..frames].fill(0.0);
             }
         }
         AudioSourceMode::PassThrough => {
-            // Latency drift control: keep buffer between 256 and 1024 frames (~5 to 20 ms)
-            if g.input_queue.len() > 2048 {
-                let excess = g.input_queue.len() - 1024;
-                g.input_queue.drain(0..excess);
-            }
-
-            for i in 0..frames {
-                if let Some((l, r)) = g.input_queue.pop_front() {
-                    left_in[i] = l;
-                    right_in[i] = r;
-                } else {
-                    left_in[i] = 0.0;
-                    right_in[i] = 0.0;
-                }
+            if let Ok(mut q) = fifo.lock() {
+                q.pop_into(left_in, right_in, frames);
+            } else {
+                left_in[..frames].fill(0.0);
+                right_in[..frames].fill(0.0);
             }
         }
     }
 
     // 2. Process audio through the engine in blocks
     let mut offset = 0;
-    while offset < frames {
-        let chunk = (frames - offset).min(block_size);
-        let in_slices: [&[f32]; 2] = [
-            &left_in[offset..offset + chunk],
-            &right_in[offset..offset + chunk],
-        ];
-        let mut out_slices: [&mut [f32]; 2] = [
-            &mut left_out[offset..offset + chunk],
-            &mut right_out[offset..offset + chunk],
-        ];
+    if let Ok(mut g) = internal.lock() {
+        while offset < frames {
+            let chunk = (frames - offset).min(block_size);
+            let in_slices: [&[f32]; 2] = [
+                &left_in[offset..offset + chunk],
+                &right_in[offset..offset + chunk],
+            ];
+            let mut out_slices: [&mut [f32]; 2] = [
+                &mut left_out[offset..offset + chunk],
+                &mut right_out[offset..offset + chunk],
+            ];
 
-        let _ = g.engine.process(&in_slices, &mut out_slices);
-        offset += chunk;
-    }
-
-    // 3. Interleave output into CPAL buffer & compute peaks
-    let mut max_l = 0.0f32;
-    let mut max_r = 0.0f32;
-
-    for i in 0..frames {
-        let l = left_out[i];
-        let r = right_out[i];
-        max_l = max_l.max(l.abs());
-        max_r = max_r.max(r.abs());
-
-        let out_idx = i * channels;
-        data[out_idx] = l;
-        if channels > 1 {
-            data[out_idx + 1] = r;
+            let _ = g.engine.process(&in_slices, &mut out_slices);
+            offset += chunk;
         }
-        for c in 2..channels {
-            data[out_idx + c] = 0.0;
+
+        // 3. Interleave output into CPAL buffer & compute peaks
+        let mut max_l = 0.0f32;
+        let mut max_r = 0.0f32;
+
+        for i in 0..frames {
+            // Anti-distortion clamp: prevent DAC wrap-around or harsh digital folding
+            let l = left_out[i].clamp(-1.0, 1.0);
+            let r = right_out[i].clamp(-1.0, 1.0);
+            max_l = max_l.max(l.abs());
+            max_r = max_r.max(r.abs());
+
+            let out_idx = i * channels;
+            data[out_idx] = l;
+            if channels > 1 {
+                data[out_idx + 1] = r;
+            }
+            // Mirror to channels 3/4 for Komplete Audio 6 headphone 2 / line out 3-4
+            if channels >= 4 {
+                data[out_idx + 2] = l;
+                data[out_idx + 3] = r;
+            }
+            for c in 4..channels {
+                data[out_idx + c] = 0.0;
+            }
         }
+
+        g.peak_l = max_l;
+        g.peak_r = max_r;
+
+        // 4. Save latest samples for GUI spectrum analysis
+        g.latest_output.clear();
+        let capture_count = frames.min(1024);
+        g.latest_output
+            .extend_from_slice(&left_out[frames - capture_count..frames]);
+    } else {
+        data.fill(0.0);
     }
-
-    g.peak_l = max_l;
-    g.peak_r = max_r;
-
-    // 4. Save latest samples for GUI spectrum analysis
-    g.latest_output.clear();
-    let capture_count = frames.min(1024);
-    g.latest_output
-        .extend_from_slice(&left_out[frames - capture_count..frames]);
 }
 
 impl Default for AudioStream {
