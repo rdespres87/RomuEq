@@ -4,6 +4,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+echo "==> Building native CoreAudio HAL driver..."
+chmod +x "$SCRIPT_DIR/build-driver.sh"
+"$SCRIPT_DIR/build-driver.sh"
+
 echo "==> Building romueq-standalone in release mode..."
 cargo build --package romueq-standalone --release --manifest-path "$ROOT_DIR/Cargo.toml"
 

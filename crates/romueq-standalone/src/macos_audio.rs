@@ -251,19 +251,25 @@ pub mod macos_impl {
         }
     }
 
-    /// Check if RomuEq driver is present and recognized by CoreAudio.
+    /// Check if the native RomuEq CoreAudio HAL driver (`RomuEqDriver_Create`) is installed and recognized by CoreAudio.
     pub fn is_romueq_driver_available() -> bool {
-        find_device_by_name("RomuEq").is_some()
+        let is_native_bundle = std::fs::read_to_string(
+            "/Library/Audio/Plug-Ins/HAL/RomuEq.driver/Contents/Info.plist",
+        )
+        .map(|plist| plist.contains("RomuEqDriver_Create"))
+        .unwrap_or(false);
+
+        is_native_bundle && find_device_by_name("RomuEq").is_some()
     }
 
-    /// Install RomuEq virtual audio driver via native macOS administrator dialog.
+    /// Install the native RomuEq virtual audio driver (and remove obsolete BlackHole/legacy bundles) via macOS administrator dialog.
     pub fn install_romueq_driver() -> Result<(), String> {
         let tmp_path = "/tmp/RomuEqDriver.pkg";
         std::fs::write(tmp_path, EMBEDDED_ROMUEQ_DRIVER_PKG)
             .map_err(|e| format!("Impossible d'écrire le paquet d'installation temporaire: {e}"))?;
 
         let script = format!(
-            "do shell script \"installer -pkg {tmp_path} -target / && killall -9 coreaudiod\" with administrator privileges with prompt \"RomuEq souhaite installer son pilote audio virtuel 'RomuEq' pour afficher 'RomuEq' dans le contrôle de volume macOS.\""
+            "do shell script \"rm -rf /Library/Audio/Plug-Ins/HAL/BlackHole2ch.driver /Library/Audio/Plug-Ins/HAL/RomuEq.driver && installer -pkg {tmp_path} -target / && killall coreaudiod\" with administrator privileges with prompt \"RomuEq souhaite installer son pilote CoreAudio natif 'RomuEq' (et supprimer l'ancien pilote BlackHole).\""
         );
 
         let output = std::process::Command::new("osascript")

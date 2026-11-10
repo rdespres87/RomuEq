@@ -686,7 +686,7 @@ pub fn render_interactive_frequency_response_plot(
         .map(|p| {
             [
                 (p.frequency_hz as f64).clamp(20.0, 20000.0).log10(),
-                (p.magnitude_db as f64).clamp(-24.0, 24.0),
+                (p.magnitude_db as f64).clamp(-40.0, 40.0),
             ]
         })
         .collect();
@@ -705,8 +705,8 @@ pub fn render_interactive_frequency_response_plot(
     let plot = Plot::new("eq_response_interactive")
         .include_x(log_min_x)
         .include_x(log_max_x)
-        .include_y(-24.0)
-        .include_y(24.0)
+        .include_y(-40.0)
+        .include_y(40.0)
         .height(165.0)
         .allow_drag(false)
         .allow_zoom(false)
@@ -720,26 +720,43 @@ pub fn render_interactive_frequency_response_plot(
             format!("Freq: {freq:.0} Hz\nGain EQ: {:+.1} dB", val.y)
         })
         .show(ui, |plot_ui| {
-            // Lock viewport bounds strictly to [20 Hz .. 20 kHz] x [-24 dB .. +24 dB] so it never slides
+            // Lock viewport bounds strictly to [20 Hz .. 20 kHz] x [-40 dB .. +40 dB] so it never slides or clips
             plot_ui.set_auto_bounds(egui::Vec2b::FALSE);
             plot_ui.set_plot_bounds(egui_plot::PlotBounds::from_min_max(
-                [log_min_x, -24.0],
-                [log_max_x, 24.0],
+                [log_min_x, -40.0],
+                [log_max_x, 40.0],
             ));
 
-            // 1. Subtle 0 dB reference line
+            // 1. Subtle 0 dB reference line and ±24 dB band limit reference lines
             plot_ui.hline(
                 HLine::new(0.0)
-                    .color(egui::Color32::from_rgba_unmultiplied(255, 255, 255, 35))
+                    .color(egui::Color32::from_rgba_unmultiplied(255, 255, 255, 40))
                     .stroke(egui::Stroke::new(
                         1.0,
-                        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 35),
+                        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 40),
                     )),
             );
+            for limit_y in [-24.0, 24.0] {
+                plot_ui.hline(
+                    HLine::new(limit_y)
+                        .color(egui::Color32::from_rgba_unmultiplied(255, 255, 255, 16))
+                        .stroke(egui::Stroke::new(
+                            0.8,
+                            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 16),
+                        )),
+                );
+            }
 
             // 2. Individual translucent band response curves for active boosted/cut bands
             for (i, band) in bands.iter().enumerate() {
-                if band.enabled && band.gain_db.abs() > 0.05 {
+                if band.enabled
+                    && (band.gain_db.abs() > 0.05
+                        || matches!(
+                            band.filter_type,
+                            romueq_common::FilterType::LowPass
+                                | romueq_common::FilterType::HighPass
+                        ))
+                {
                     let color = match i % 8 {
                         0 => egui::Color32::from_rgb(255, 80, 80),   // Red
                         1 => egui::Color32::from_rgb(255, 160, 40),  // Orange
@@ -771,7 +788,7 @@ pub fn render_interactive_frequency_response_plot(
                             );
                             [
                                 (f as f64).clamp(20.0, 20000.0).log10(),
-                                (db as f64).clamp(-24.0, 24.0),
+                                (db as f64).clamp(-40.0, 40.0),
                             ]
                         })
                         .collect();
@@ -845,9 +862,9 @@ pub fn render_interactive_frequency_response_plot(
 
                     if is_active_node {
                         let text_y = if node_y >= 0.0 {
-                            (node_y + 2.2).min(21.5)
+                            (node_y + 3.6).min(36.0)
                         } else {
-                            (node_y - 2.2).max(-21.5)
+                            (node_y - 3.6).max(-36.0)
                         };
                         plot_ui.text(
                             Text::new(
@@ -867,13 +884,16 @@ pub fn render_interactive_frequency_response_plot(
         });
 
     let plot_hovered = plot.response.hovered();
+    let plot_rect = plot.response.rect;
+    let plot_w = plot_rect.width().max(100.0) as f64;
+    let plot_h = plot_rect.height().max(50.0) as f64;
 
     if is_primary_down {
         if let Some((px, py)) = coord_under_pointer {
             // Only grab a node when pressing inside the plot
             if local_dragged.is_none() && is_primary_pressed && plot_hovered {
                 let mut closest = None;
-                let mut min_dist = f64::MAX;
+                let mut min_dist_px = f64::MAX;
                 for (i, band) in bands.iter().enumerate() {
                     if band.enabled {
                         let node_x = (band.frequency_hz as f64).clamp(20.0, 20000.0).log10();
@@ -882,11 +902,13 @@ pub fn render_interactive_frequency_response_plot(
                             | romueq_common::FilterType::HighPass => 0.0,
                             _ => band.gain_db as f64,
                         };
-                        let nx = (px - node_x) / 3.0;
-                        let ny = (py - node_y) / 48.0;
-                        let dist = nx * nx + ny * ny;
-                        if dist < 0.025 && dist < min_dist {
-                            min_dist = dist;
+                        // Calculate exact pixel distance using the plot widget's actual screen dimensions
+                        let dx_px = ((px - node_x) / (log_max_x - log_min_x)) * plot_w;
+                        let dy_px = ((py - node_y) / 80.0) * plot_h;
+                        let dist_px_sq = dx_px * dx_px + dy_px * dy_px;
+                        // Grab radius of 16 screen points (prevents hijacking adjacent bands)
+                        if dist_px_sq < 256.0 && dist_px_sq < min_dist_px {
+                            min_dist_px = dist_px_sq;
                             closest = Some(i);
                         }
                     }
@@ -896,8 +918,8 @@ pub fn render_interactive_frequency_response_plot(
 
             if let Some(band_idx) = local_dragged {
                 let params = BandParams::new(band_idx, (band_idx as u32 + 1) * 100);
-                let new_freq = (10.0_f64.powf(px.clamp(log_min_x, log_max_x)) as f32)
-                    .clamp(20.0, 20_000.0);
+                let new_freq =
+                    (10.0_f64.powf(px.clamp(log_min_x, log_max_x)) as f32).clamp(20.0, 20_000.0);
                 let new_gain = (py as f32).clamp(-24.0, 24.0);
                 batch.push(params.frequency_hz(), new_freq);
                 match bands[band_idx].filter_type {
@@ -916,7 +938,7 @@ pub fn render_interactive_frequency_response_plot(
         let target_band = local_dragged.or_else(|| {
             if let Some((px, py)) = coord_under_pointer {
                 let mut closest = None;
-                let mut min_dist = f64::MAX;
+                let mut min_dist_px = f64::MAX;
                 for (i, band) in bands.iter().enumerate() {
                     if band.enabled {
                         let node_x = (band.frequency_hz as f64).clamp(20.0, 20000.0).log10();
@@ -925,11 +947,12 @@ pub fn render_interactive_frequency_response_plot(
                             | romueq_common::FilterType::HighPass => 0.0,
                             _ => band.gain_db as f64,
                         };
-                        let nx = (px - node_x) / 3.0;
-                        let ny = (py - node_y) / 48.0;
-                        let dist = nx * nx + ny * ny;
-                        if dist < 0.035 && dist < min_dist {
-                            min_dist = dist;
+                        let dx_px = ((px - node_x) / (log_max_x - log_min_x)) * plot_w;
+                        let dy_px = ((py - node_y) / 80.0) * plot_h;
+                        let dist_px_sq = dx_px * dx_px + dy_px * dy_px;
+                        // Hover radius of 20 screen points for scroll wheel
+                        if dist_px_sq < 400.0 && dist_px_sq < min_dist_px {
+                            min_dist_px = dist_px_sq;
                             closest = Some(i);
                         }
                     }
