@@ -108,27 +108,29 @@ static Boolean RomuEq_IsValidSampleRate(Float64 sr) {
 }
 
 static Float32 RomuEq_ScalarToDb(Float32 scalar) {
-    if (scalar <= 0.00001f) {
+    if (isnan(scalar) || scalar <= 0.00001f) {
         return kMinVolumeDb;
     }
     if (scalar >= 1.0f) {
         return kMaxVolumeDb;
     }
-    // Studio perceptual curve (cubic mapping / 20*log10)
     Float32 db = 20.0f * log10f(scalar);
-    if (db < kMinVolumeDb) db = kMinVolumeDb;
+    if (isnan(db) || db < kMinVolumeDb) db = kMinVolumeDb;
     if (db > kMaxVolumeDb) db = kMaxVolumeDb;
     return db;
 }
 
 static Float32 RomuEq_DbToScalar(Float32 db) {
-    if (db <= kMinVolumeDb) {
+    if (isnan(db) || db <= kMinVolumeDb) {
         return 0.0f;
     }
     if (db >= kMaxVolumeDb) {
         return 1.0f;
     }
-    return powf(10.0f, db / 20.0f);
+    Float32 s = powf(10.0f, db / 20.0f);
+    if (isnan(s) || s < 0.0f) return 0.0f;
+    if (s > 1.0f) return 1.0f;
+    return s;
 }
 
 static void RomuEq_FillStreamBasicDescription(AudioStreamBasicDescription* outDesc, Float64 sampleRate) {
@@ -700,7 +702,7 @@ static OSStatus STDMETHODCALLTYPE RomuEq_GetPropertyData(AudioServerPlugInDriver
 
                 case kAudioObjectPropertyManufacturer:
                     if (inDataSize < sizeof(CFStringRef)) return kAudioHardwareBadPropertySizeError;
-                    *((CFStringRef*)outData) = CFSTR(kManufacturerName);
+                    *((CFStringRef*)outData) = CFStringCreateCopy(kCFAllocatorDefault, CFSTR(kManufacturerName));
                     *outDataSize = sizeof(CFStringRef);
                     return kAudioHardwareNoError;
 
@@ -731,7 +733,7 @@ static OSStatus STDMETHODCALLTYPE RomuEq_GetPropertyData(AudioServerPlugInDriver
 
                 case kAudioPlugInPropertyResourceBundle:
                     if (inDataSize < sizeof(CFStringRef)) return kAudioHardwareBadPropertySizeError;
-                    *((CFStringRef*)outData) = CFSTR("");
+                    *((CFStringRef*)outData) = CFStringCreateCopy(kCFAllocatorDefault, CFSTR(""));
                     *outDataSize = sizeof(CFStringRef);
                     return kAudioHardwareNoError;
 
@@ -764,25 +766,25 @@ static OSStatus STDMETHODCALLTYPE RomuEq_GetPropertyData(AudioServerPlugInDriver
 
                 case kAudioObjectPropertyName:
                     if (inDataSize < sizeof(CFStringRef)) return kAudioHardwareBadPropertySizeError;
-                    *((CFStringRef*)outData) = CFSTR(kDeviceName);
+                    *((CFStringRef*)outData) = CFStringCreateCopy(kCFAllocatorDefault, CFSTR(kDeviceName));
                     *outDataSize = sizeof(CFStringRef);
                     return kAudioHardwareNoError;
 
                 case kAudioObjectPropertyManufacturer:
                     if (inDataSize < sizeof(CFStringRef)) return kAudioHardwareBadPropertySizeError;
-                    *((CFStringRef*)outData) = CFSTR(kManufacturerName);
+                    *((CFStringRef*)outData) = CFStringCreateCopy(kCFAllocatorDefault, CFSTR(kManufacturerName));
                     *outDataSize = sizeof(CFStringRef);
                     return kAudioHardwareNoError;
 
                 case kAudioDevicePropertyDeviceUID:
                     if (inDataSize < sizeof(CFStringRef)) return kAudioHardwareBadPropertySizeError;
-                    *((CFStringRef*)outData) = CFSTR(kDeviceUID);
+                    *((CFStringRef*)outData) = CFStringCreateCopy(kCFAllocatorDefault, CFSTR(kDeviceUID));
                     *outDataSize = sizeof(CFStringRef);
                     return kAudioHardwareNoError;
 
                 case kAudioDevicePropertyModelUID:
                     if (inDataSize < sizeof(CFStringRef)) return kAudioHardwareBadPropertySizeError;
-                    *((CFStringRef*)outData) = CFSTR(kModelUID);
+                    *((CFStringRef*)outData) = CFStringCreateCopy(kCFAllocatorDefault, CFSTR(kModelUID));
                     *outDataSize = sizeof(CFStringRef);
                     return kAudioHardwareNoError;
 
@@ -800,10 +802,19 @@ static OSStatus STDMETHODCALLTYPE RomuEq_GetPropertyData(AudioServerPlugInDriver
 
                 case kAudioDevicePropertyClockDomain:
                 case kAudioDevicePropertyLatency:
-                case kAudioDevicePropertySafetyOffset:
                 case kAudioDevicePropertyIsHidden:
                     if (inDataSize < sizeof(UInt32)) return kAudioHardwareBadPropertySizeError;
                     *((UInt32*)outData) = 0;
+                    *outDataSize = sizeof(UInt32);
+                    return kAudioHardwareNoError;
+
+                case kAudioDevicePropertySafetyOffset:
+                    if (inDataSize < sizeof(UInt32)) return kAudioHardwareBadPropertySizeError;
+                    if (inAddress->mScope == kAudioObjectPropertyScopeInput) {
+                        *((UInt32*)outData) = 0;
+                    } else {
+                        *((UInt32*)outData) = 512;
+                    }
                     *outDataSize = sizeof(UInt32);
                     return kAudioHardwareNoError;
 
@@ -1191,8 +1202,8 @@ static OSStatus STDMETHODCALLTYPE RomuEq_SetPropertyData(AudioServerPlugInDriver
             if (inAddress->mSelector == kAudioLevelControlPropertyScalarValue) {
                 if (inDataSize < sizeof(Float32)) return kAudioHardwareBadPropertySizeError;
                 Float32 val = *((const Float32*)inData);
-                if (val < 0.0f) val = 0.0f;
-                if (val > 1.0f) val = 1.0f;
+                if (isnan(val) || val < 0.0f) val = 0.0f;
+                else if (val > 1.0f) val = 1.0f;
                 atomic_store_explicit(&gVolumeScalar, val, memory_order_release);
                 if (gPlugInHost != NULL) {
                     AudioObjectPropertyAddress addrs[] = {
@@ -1205,6 +1216,7 @@ static OSStatus STDMETHODCALLTYPE RomuEq_SetPropertyData(AudioServerPlugInDriver
             } else if (inAddress->mSelector == kAudioLevelControlPropertyDecibelValue) {
                 if (inDataSize < sizeof(Float32)) return kAudioHardwareBadPropertySizeError;
                 Float32 db = *((const Float32*)inData);
+                if (isnan(db)) db = kMinVolumeDb;
                 Float32 val = RomuEq_DbToScalar(db);
                 atomic_store_explicit(&gVolumeScalar, val, memory_order_release);
                 if (gPlugInHost != NULL) {
@@ -1372,6 +1384,8 @@ static OSStatus STDMETHODCALLTYPE RomuEq_DoIOOperation(AudioServerPlugInDriverRe
         UInt64 startSample = (UInt64)inIOCycleInfo->mOutputTime.mSampleTime;
         UInt32 muted = atomic_load_explicit(&gMuteValue, memory_order_relaxed);
         Float32 gain = muted ? 0.0f : atomic_load_explicit(&gVolumeScalar, memory_order_relaxed);
+        if (isnan(gain) || gain < 0.0f) gain = 0.0f;
+        else if (gain > 1.0f) gain = 1.0f;
 
         for (UInt32 i = 0; i < inIOBufferFrameSize; ++i) {
             UInt64 sampleTime = startSample + (UInt64)i;
@@ -1389,18 +1403,20 @@ static OSStatus STDMETHODCALLTYPE RomuEq_DoIOOperation(AudioServerPlugInDriverRe
             UInt32 ringIdx = (UInt32)(sampleTime & kRingBufferMask);
             UInt64 stamp = atomic_load_explicit(&gFrameStamp[ringIdx], memory_order_acquire);
 
-            // Check that the slot holds the exact sample for this sample time
-            if (stamp == sampleTime + 1) {
+            // Accept sample if written recently and within the active window (up to half the ring buffer size)
+            if (stamp > 0 && stamp <= (sampleTime + 1) && ((sampleTime + 1) - stamp) < (kRingBufferFrames / 2)) {
                 dst[i * 2]     = gRingBuffer[ringIdx * 2];
                 dst[i * 2 + 1] = gRingBuffer[ringIdx * 2 + 1];
-                // Clear stamp & sample after consumption so stopping playback yields silence immediately
-                gRingBuffer[ringIdx * 2]     = 0.0f;
-                gRingBuffer[ringIdx * 2 + 1] = 0.0f;
-                atomic_store_explicit(&gFrameStamp[ringIdx], 0, memory_order_release);
             } else {
                 dst[i * 2]     = 0.0f;
                 dst[i * 2 + 1] = 0.0f;
             }
+
+            // Zero out trailing samples 8192 frames behind to ensure stale playback loops are cleared
+            UInt32 clearIdx = (UInt32)((sampleTime - 8192U) & kRingBufferMask);
+            gRingBuffer[clearIdx * 2]     = 0.0f;
+            gRingBuffer[clearIdx * 2 + 1] = 0.0f;
+            atomic_store_explicit(&gFrameStamp[clearIdx], 0, memory_order_release);
         }
     }
 

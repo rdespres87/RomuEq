@@ -900,7 +900,7 @@ pub fn render_interactive_frequency_response_plot(
                         let node_y = match band.filter_type {
                             romueq_common::FilterType::LowPass
                             | romueq_common::FilterType::HighPass => 0.0,
-                            _ => band.gain_db as f64,
+                            _ => (band.gain_db as f64).clamp(-24.0, 24.0),
                         };
                         // Calculate exact pixel distance using the plot widget's actual screen dimensions
                         let dx_px = ((px - node_x) / (log_max_x - log_min_x)) * plot_w;
@@ -945,7 +945,7 @@ pub fn render_interactive_frequency_response_plot(
                         let node_y = match band.filter_type {
                             romueq_common::FilterType::LowPass
                             | romueq_common::FilterType::HighPass => 0.0,
-                            _ => band.gain_db as f64,
+                            _ => (band.gain_db as f64).clamp(-24.0, 24.0),
                         };
                         let dx_px = ((px - node_x) / (log_max_x - log_min_x)) * plot_w;
                         let dy_px = ((py - node_y) / 80.0) * plot_h;

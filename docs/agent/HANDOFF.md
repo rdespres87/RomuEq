@@ -10,3 +10,4 @@
 1. Test audio playback on macOS with `RomuEq.app` launched.
 2. If macOS prompts for driver install on first run, enter admin password to install `RomuEq.driver` into `/Library/Audio/Plug-Ins/HAL/RomuEq.driver`.
 3. Verify volume keyboard shortcuts and EQ curve behavior with audio playing.
+

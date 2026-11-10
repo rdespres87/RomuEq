@@ -21,3 +21,4 @@
    - Active preset persistence in `~/.romueq/last_preset.txt`.
    - Output device preservation on startup and exit in `~/.romueq/last_output_device.txt`.
    - Graceful coreaudiod daemon reload via `killall coreaudiod`.
+

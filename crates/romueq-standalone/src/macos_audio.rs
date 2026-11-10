@@ -253,23 +253,26 @@ pub mod macos_impl {
 
     /// Check if the native RomuEq CoreAudio HAL driver (`RomuEqDriver_Create`) is installed and recognized by CoreAudio.
     pub fn is_romueq_driver_available() -> bool {
-        let is_native_bundle = std::fs::read_to_string(
-            "/Library/Audio/Plug-Ins/HAL/RomuEq.driver/Contents/Info.plist",
-        )
-        .map(|plist| plist.contains("RomuEqDriver_Create"))
-        .unwrap_or(false);
+        let is_native_bundle =
+            std::fs::read("/Library/Audio/Plug-Ins/HAL/RomuEq.driver/Contents/Info.plist")
+                .map(|bytes| {
+                    bytes
+                        .windows(b"RomuEqDriver_Create".len())
+                        .any(|w| w == b"RomuEqDriver_Create")
+                })
+                .unwrap_or(false);
 
         is_native_bundle && find_device_by_name("RomuEq").is_some()
     }
 
-    /// Install the native RomuEq virtual audio driver (and remove obsolete BlackHole/legacy bundles) via macOS administrator dialog.
+    /// Install the native RomuEq virtual audio driver via macOS administrator dialog.
     pub fn install_romueq_driver() -> Result<(), String> {
         let tmp_path = "/tmp/RomuEqDriver.pkg";
         std::fs::write(tmp_path, EMBEDDED_ROMUEQ_DRIVER_PKG)
             .map_err(|e| format!("Impossible d'écrire le paquet d'installation temporaire: {e}"))?;
 
         let script = format!(
-            "do shell script \"rm -rf /Library/Audio/Plug-Ins/HAL/BlackHole2ch.driver /Library/Audio/Plug-Ins/HAL/RomuEq.driver && installer -pkg {tmp_path} -target / && killall coreaudiod\" with administrator privileges with prompt \"RomuEq souhaite installer son pilote CoreAudio natif 'RomuEq' (et supprimer l'ancien pilote BlackHole).\""
+            "do shell script \"rm -rf /Library/Audio/Plug-Ins/HAL/RomuEq.driver && installer -pkg {tmp_path} -target / && killall coreaudiod\" with administrator privileges with prompt \"RomuEq souhaite installer son pilote CoreAudio natif 'RomuEq'.\""
         );
 
         let output = std::process::Command::new("osascript")
