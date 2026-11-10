@@ -3,7 +3,7 @@
 ## Current State
 - All features requested by the user are fully implemented, rigorously grilled, tested, packaged into `RomuEq.app`, and committed.
 - Driver: Native C11 CoreAudio AudioServerPlugIn (`RomuEq.driver`) compiled as universal binary (`arm64` + `x86_64`) and packaged into `RomuEqDriver.pkg`.
-- GUI: Fixed non-sliding dual plots (EQ curve and FFT spectrum side-by-side), `[-40 dB .. +40 dB]` vertical scale, exact screen-space 16 pt grab radius for nodes, stereo L/R VU-meter.
+- GUI: Fixed non-sliding dual plots (EQ curve and FFT spectrum side-by-side), `[-40 dB .. +40 dB]` vertical scale, exact screen-space 16 pt grab radius for nodes, stereo L/R VU-meter, and 15 curated studio/multimedia factory presets.
 - State: Complete persistence and seamless hardware output restoration upon app enter/exit.
 
 ## Next Logical Action
