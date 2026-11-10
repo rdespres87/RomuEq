@@ -2083,20 +2083,108 @@ pub mod standalone {
         add("Flat", |_| {});
         add("Bass Boost (+6 dB)", |p| {
             p.bands[0].gain_db = 6.0;
+            p.bands[1].gain_db = 3.5;
+        });
+        add("Électro / EDM", |p| {
+            p.bands[0].gain_db = 5.5;
+            p.bands[1].gain_db = 4.0;
+            p.bands[3].gain_db = -2.5;
+            p.bands[5].gain_db = 1.5;
+            p.bands[7].gain_db = 4.5;
+        });
+        add("Rock / Metal", |p| {
+            p.bands[0].gain_db = 2.0;
+            p.bands[1].gain_db = 4.5;
+            p.bands[2].gain_db = -1.5;
+            p.bands[3].gain_db = -3.0;
+            p.bands[5].gain_db = 3.5;
+            p.bands[6].gain_db = 2.5;
+            p.bands[7].gain_db = 2.0;
+        });
+        add("Hip-Hop / R&B", |p| {
+            p.bands[0].gain_db = 7.0;
+            p.bands[1].gain_db = 4.5;
+            p.bands[2].gain_db = 1.0;
+            p.bands[3].gain_db = -2.0;
+            p.bands[5].gain_db = 1.5;
+            p.bands[7].gain_db = 3.0;
+        });
+        add("Jazz / Warmth", |p| {
+            p.bands[0].gain_db = 1.5;
+            p.bands[1].gain_db = 2.5;
+            p.bands[2].gain_db = 3.0;
+            p.bands[3].gain_db = 1.5;
+            p.bands[5].gain_db = -1.0;
+            p.bands[6].gain_db = -2.0;
+            p.bands[7].gain_db = -2.5;
+        });
+        add("Pop Moderne", |p| {
+            p.bands[0].gain_db = 4.0;
             p.bands[1].gain_db = 3.0;
+            p.bands[3].gain_db = -2.0;
+            p.bands[4].gain_db = 1.0;
+            p.bands[5].gain_db = 2.5;
+            p.bands[6].gain_db = 3.0;
+            p.bands[7].gain_db = 4.0;
         });
         add("Acoustic Clarity", |p| {
             p.bands[1].gain_db = -2.0;
-            p.bands[4].gain_db = 3.0;
+            p.bands[4].gain_db = 2.5;
+            p.bands[5].gain_db = 3.5;
             p.bands[7].gain_db = 4.0;
         });
         add("Vocal Air", |p| {
+            p.bands[0].gain_db = -4.0;
+            p.bands[1].gain_db = -2.5;
+            p.bands[4].gain_db = 2.0;
+            p.bands[5].gain_db = 3.5;
+            p.bands[7].gain_db = 5.0;
+        });
+        add("Podcast / Voix", |p| {
+            p.bands[0].gain_db = -8.0;
+            p.bands[1].gain_db = -4.0;
+            p.bands[2].gain_db = -2.0;
+            p.bands[4].gain_db = 2.5;
+            p.bands[5].gain_db = 4.0;
+            p.bands[7].gain_db = 1.5;
+        });
+        add("Cinéma / Dialogues", |p| {
+            p.bands[0].gain_db = 5.0;
+            p.bands[1].gain_db = 2.0;
+            p.bands[3].gain_db = -2.5;
+            p.bands[4].gain_db = 2.0;
+            p.bands[5].gain_db = 3.5;
+            p.bands[7].gain_db = 2.0;
+        });
+        add("Gaming / FPS", |p| {
+            p.bands[0].gain_db = -6.0;
             p.bands[1].gain_db = -3.0;
+            p.bands[2].gain_db = -1.5;
             p.bands[4].gain_db = 3.0;
-            p.bands[7].gain_db = 4.0;
+            p.bands[5].gain_db = 5.0;
+            p.bands[6].gain_db = 4.0;
+            p.bands[7].gain_db = -2.0;
+        });
+        add("Casque Audiophile (Harman)", |p| {
+            p.bands[0].gain_db = 4.5;
+            p.bands[1].gain_db = 2.5;
+            p.bands[2].gain_db = -0.5;
+            p.bands[5].gain_db = 2.0;
+            p.bands[6].gain_db = 1.0;
+            p.bands[7].gain_db = 1.5;
+        });
+        add("Écoute Nocturne (Night Mode)", |p| {
+            p.bands[0].gain_db = -9.0;
+            p.bands[1].gain_db = -5.0;
+            p.bands[2].gain_db = -2.0;
+            p.bands[4].gain_db = 2.0;
+            p.bands[5].gain_db = 2.5;
+            p.bands[6].gain_db = -2.0;
+            p.bands[7].gain_db = -4.0;
         });
         add("Loudness", |p| {
             p.bands[0].gain_db = 5.0;
+            p.bands[1].gain_db = 3.0;
             p.bands[3].gain_db = -2.5;
             p.bands[7].gain_db = 4.0;
         });
