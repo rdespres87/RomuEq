@@ -1,4 +1,4 @@
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 
 //! GUI framework contract for RomuEq.
 //!
@@ -36,7 +36,7 @@
 pub use romueq_common::parameter::ParamId;
 
 /// egui Widget trait for `.ui()` method on sliders, checkboxes, etc.
-use egui_plot::{Line, Plot, Points};
+use egui_plot::{GridMark, HLine, Line, Plot, Points, Text, VLine};
 use romueq_common::BandParameters;
 
 #[cfg(feature = "standalone")]
@@ -318,6 +318,54 @@ impl Default for BandControls {
     }
 }
 
+/// Returns the 8 default parametric EQ bands aligned across standard musical zones
+/// [32, 75, 180, 420, 1000, 2400, 5600, 13500] Hz.
+pub fn default_8_bands() -> [romueq_common::BandParameters; romueq_common::MAX_BANDS] {
+    let freqs = [32.0, 75.0, 180.0, 420.0, 1000.0, 2400.0, 5600.0, 13500.0];
+    let mut bands = [romueq_common::BandParameters::default(); romueq_common::MAX_BANDS];
+    for (i, b) in bands.iter_mut().enumerate() {
+        b.enabled = true;
+        b.frequency_hz = freqs[i];
+        b.gain_db = 0.0;
+        b.q = if i == 0 || i == 7 { 0.707 } else { 1.0 };
+        b.filter_type = if i == 0 {
+            romueq_common::FilterType::LowShelf
+        } else if i == 7 {
+            romueq_common::FilterType::HighShelf
+        } else {
+            romueq_common::FilterType::Bell
+        };
+    }
+    bands
+}
+
+fn log_freq_grid_spacer(_input: egui_plot::GridInput) -> Vec<GridMark> {
+    let freqs: [f64; 10] = [
+        20.0, 50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0, 5000.0, 10000.0, 20000.0,
+    ];
+    freqs
+        .iter()
+        .map(|&f| GridMark {
+            value: f.log10(),
+            step_size: 1.0,
+        })
+        .collect()
+}
+
+fn log_freq_axis_formatter(mark: GridMark, _range: &std::ops::RangeInclusive<f64>) -> String {
+    let freq = 10.0_f64.powf(mark.value);
+    if freq >= 990.0 {
+        let khz = freq / 1000.0;
+        if (khz - khz.round()).abs() < 0.05 {
+            format!("{:.0} kHz", khz.round())
+        } else {
+            format!("{khz:.1} kHz")
+        }
+    } else {
+        format!("{freq:.0} Hz")
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Band widget rendering (egui integration)
 // ---------------------------------------------------------------------------
@@ -334,109 +382,173 @@ pub fn render_band(
     snapshot: &ParamSnapshot,
     batch: &mut GuiCommandBatch,
 ) {
+    let band_names = [
+        "Sub",
+        "Graves",
+        "Bas-Méd",
+        "Médiums",
+        "Ht-Méd",
+        "Présence",
+        "Brillance",
+        "Air",
+    ];
+    let band_name = band_names.get(band_index).copied().unwrap_or("Bande");
+
+    let color = match band_index % 8 {
+        0 => egui::Color32::from_rgb(255, 80, 80),   // Red
+        1 => egui::Color32::from_rgb(255, 160, 40),  // Orange
+        2 => egui::Color32::from_rgb(255, 220, 50),  // Yellow
+        3 => egui::Color32::from_rgb(50, 220, 100),  // Green
+        4 => egui::Color32::from_rgb(40, 200, 220),  // Cyan
+        5 => egui::Color32::from_rgb(80, 140, 255),  // Blue
+        6 => egui::Color32::from_rgb(180, 90, 255),  // Purple
+        _ => egui::Color32::from_rgb(255, 100, 200), // Magenta
+    };
+
     ui.group(|ui| {
-        // Band header with enable checkbox.
-        let enabled_val = snapshot.get(params.enabled()).unwrap_or(1.0);
-        let mut enabled = enabled_val >= 0.5;
+        ui.vertical_centered(|ui| {
+            ui.spacing_mut().item_spacing.y = 2.0;
 
-        ui.horizontal(|ui| {
-            if ui.checkbox(&mut enabled, "").changed() {
-                batch.push(params.enabled(), if enabled { 1.0 } else { 0.0 });
+            // 1. Compact single-line colored header badge + ON/OFF toggle
+            let enabled_val = snapshot.get(params.enabled()).unwrap_or(1.0);
+            let mut enabled = enabled_val >= 0.5;
+            let header_color = if enabled {
+                color
+            } else {
+                egui::Color32::from_rgb(110, 115, 125)
+            };
+
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                if ui.checkbox(&mut enabled, "").changed() {
+                    batch.push(params.enabled(), if enabled { 1.0 } else { 0.0 });
+                }
+                ui.label(
+                    egui::RichText::new(format!("B{}", band_index + 1))
+                        .strong()
+                        .color(header_color),
+                );
+                ui.label(
+                    egui::RichText::new(band_name)
+                        .small()
+                        .color(egui::Color32::from_rgb(175, 180, 190)),
+                );
+            });
+
+            // 2. Compact Filter type dropdown (enum, 0–4)
+            let ft_val = snapshot.get(params.filter_type()).unwrap_or(2.0);
+            let filter_types = ["LowShelf", "HiShelf", "Bell", "LowPass", "HiPass"];
+            let ft_idx = (ft_val as usize).min(filter_types.len() - 1);
+            let mut ft_idx = ft_idx;
+
+            let col_w = (ui.available_width() - 4.0).max(52.0);
+            egui::ComboBox::from_id_salt(format!("ft_{band_index}"))
+                .width(col_w)
+                .selected_text(filter_types[ft_idx])
+                .show_index(ui, &mut ft_idx, filter_types.len(), |idx| {
+                    filter_types[idx].to_string()
+                });
+            if ft_idx as f32 != ft_val {
+                batch.push(params.filter_type(), ft_idx as f32);
             }
 
-            ui.label(params.label());
+            // 3. Vertical Gain Fader (top-to-bottom console strip) + compact dB DragValue
+            let mut gain_val = snapshot.get(params.gain_db()).unwrap_or(0.0);
+            let is_pass = ft_idx == 3 || ft_idx == 4;
+            ui.spacing_mut().slider_width = 58.0;
+            if is_pass {
+                ui.add_enabled(
+                    false,
+                    egui::Slider::new(&mut gain_val, -24.0..=24.0)
+                        .vertical()
+                        .show_value(false),
+                );
+                ui.add_enabled(
+                    false,
+                    egui::DragValue::new(&mut gain_val)
+                        .range(-24.0..=24.0)
+                        .speed(0.1)
+                        .fixed_decimals(1)
+                        .suffix(" dB"),
+                );
+            } else {
+                if ui
+                    .add(
+                        egui::Slider::new(&mut gain_val, -24.0..=24.0)
+                            .vertical()
+                            .show_value(false),
+                    )
+                    .on_hover_text("Double-clic pour remettre à 0 dB")
+                    .changed()
+                {
+                    batch.push(params.gain_db(), gain_val);
+                }
+                if ui
+                    .add(
+                        egui::DragValue::new(&mut gain_val)
+                            .range(-24.0..=24.0)
+                            .speed(0.1)
+                            .fixed_decimals(1)
+                            .suffix(" dB"),
+                    )
+                    .changed()
+                {
+                    batch.push(params.gain_db(), gain_val);
+                }
+            }
 
-            // Enable/disable button as alternative.
+            // 4. Stacked Frequency DragValue (20–20000 Hz)
+            let mut freq_val = snapshot.get(params.frequency_hz()).unwrap_or(1000.0);
+            let freq_speed = (freq_val * 0.015).max(1.0);
             if ui
-                .button(if enabled { "Disable" } else { "Enable" })
-                .clicked()
+                .add(
+                    egui::DragValue::new(&mut freq_val)
+                        .range(20.0..=20_000.0)
+                        .speed(freq_speed)
+                        .custom_formatter(|n, _| {
+                            if n >= 1000.0 {
+                                format!("{:.2} kHz", n / 1000.0)
+                            } else {
+                                format!("{n:.0} Hz")
+                            }
+                        }),
+                )
+                .on_hover_text("Fréquence centrale (glisser ou cliquer pour saisir)")
+                .changed()
             {
-                let new_val = if enabled { 0.0 } else { 1.0 };
-                batch.push(params.enabled(), new_val);
-                enabled = !enabled;
+                batch.push(params.frequency_hz(), freq_val);
             }
 
-            ui.separator();
+            // 5. Stacked Q Factor DragValue (0.1–20.0)
+            let mut q_val = snapshot.get(params.q()).unwrap_or(0.707);
+            if ui
+                .add(
+                    egui::DragValue::new(&mut q_val)
+                        .range(0.1..=20.0)
+                        .speed(0.05)
+                        .fixed_decimals(2)
+                        .prefix("Q "),
+                )
+                .on_hover_text("Largeur de bande (Facteur Q)")
+                .changed()
+            {
+                batch.push(params.q(), q_val);
+            }
+
+            // 6. Compact Slope dropdown (6/12/24/48 dB/oct)
+            let slope_val = snapshot.get(params.slope()).unwrap_or(1.0);
+            let slopes = ["6 dB/o", "12 dB/o", "24 dB/o", "48 dB/o"];
+            let sl_idx = (slope_val as usize).min(slopes.len() - 1);
+            let mut sl_idx = sl_idx;
+
+            egui::ComboBox::from_id_salt(format!("slope_{band_index}"))
+                .width(col_w)
+                .selected_text(slopes[sl_idx])
+                .show_index(ui, &mut sl_idx, slopes.len(), |idx| slopes[idx].to_string());
+            if sl_idx as f32 != slope_val {
+                batch.push(params.slope(), sl_idx as f32);
+            }
         });
-
-        // Filter type dropdown (enum, 0–4).
-        let ft_val = snapshot.get(params.filter_type()).unwrap_or(2.0);
-        let filter_types = ["Low Shelf", "High Shelf", "Bell", "Low Pass", "High Pass"];
-        let ft_idx = (ft_val as usize).min(filter_types.len() - 1);
-        let mut ft_idx = ft_idx;
-
-        let ft_selected = filter_types[ft_idx].to_string();
-        if egui::ComboBox::from_id_salt(format!("ft_{band_index}"))
-            .selected_text(ft_selected)
-            .show_index(ui, &mut ft_idx, filter_types.len(), |idx| {
-                filter_types[idx].to_string()
-            })
-            .changed()
-        {
-            batch.push(params.filter_type(), ft_idx as f32);
-        }
-
-        // Frequency slider (logarithmic scale, 20–20000 Hz).
-        let mut freq_val = snapshot.get(params.frequency_hz()).unwrap_or(1000.0);
-        let freq_min: f32 = 20.0;
-        let freq_max: f32 = 20_000.0;
-
-        if ui
-            .add(
-                egui::Slider::new(&mut freq_val, freq_min..=freq_max)
-                    .logarithmic(true)
-                    .suffix(" Hz")
-                    .text("Frequency"),
-            )
-            .changed()
-        {
-            batch.push(params.frequency_hz(), freq_val);
-        }
-
-        // Gain slider (-24 to +24 dB).
-        let mut gain_val = snapshot.get(params.gain_db()).unwrap_or(0.0);
-
-        if ui
-            .add(
-                egui::Slider::new(&mut gain_val, -24.0..=24.0)
-                    .suffix(" dB")
-                    .text("Gain"),
-            )
-            .changed()
-        {
-            batch.push(params.gain_db(), gain_val);
-        }
-
-        // Q slider (0.1 to 20).
-        let mut q_val = snapshot.get(params.q()).unwrap_or(0.707);
-
-        if ui
-            .add(
-                egui::Slider::new(&mut q_val, 0.1..=20.0)
-                    .suffix(" Q")
-                    .text("Q"),
-            )
-            .changed()
-        {
-            batch.push(params.q(), q_val);
-        }
-
-        // Slope dropdown (enum, 0–3: 6/12/24/48 dB/oct).
-        let slope_val = snapshot.get(params.slope()).unwrap_or(1.0);
-        let slopes = ["6", "12", "24", "48"];
-        let sl_idx = (slope_val as usize).min(slopes.len() - 1);
-        let mut sl_idx = sl_idx;
-
-        let sl_selected = format!("{} dB/oct", slopes[sl_idx]);
-        if egui::ComboBox::from_id_salt(format!("slope_{band_index}"))
-            .selected_text(sl_selected)
-            .show_index(ui, &mut sl_idx, slopes.len(), |idx| {
-                format!("{} dB/oct", slopes[idx])
-            })
-            .changed()
-        {
-            batch.push(params.slope(), sl_idx as f32);
-        }
     });
 }
 
@@ -458,26 +570,46 @@ pub fn render_frequency_response_plot(
 
     let response = compute_response(sample_rate, bands, width);
 
-    // Convert to plot points: [frequency_hz, magnitude_db]
+    // Convert to plot points: [log10(frequency_hz), magnitude_db]
     let points: Vec<[f64; 2]> = response
         .iter()
-        .map(|p| [p.frequency_hz as f64, p.magnitude_db as f64])
+        .map(|p| {
+            [
+                (p.frequency_hz as f64).max(20.0).log10(),
+                p.magnitude_db as f64,
+            ]
+        })
         .collect();
 
     let line = Line::new(points)
         .color(egui::Color32::from_rgb(0, 180, 255))
         .stroke(egui::Stroke::new(2.0, egui::Color32::from_rgb(0, 180, 255)))
-        .fill(-60.0)
+        .fill(0.0)
         .name("EQ Response");
 
-    // Clamp to a reasonable dB range for display
     let plot = Plot::new("eq_response")
-        .include_x(20.0)
-        .include_x(24000.0)
-        .include_y(-30.0)
+        .include_x(20.0_f64.log10())
+        .include_x(20000.0_f64.log10())
+        .include_y(-24.0)
         .include_y(24.0)
         .height(200.0)
+        .x_axis_formatter(log_freq_axis_formatter)
+        .x_grid_spacer(log_freq_grid_spacer)
+        .label_formatter(|_name, val| {
+            let freq = 10.0_f64.powf(val.x);
+            format!("Freq: {freq:.0} Hz\nGain: {:+.1} dB", val.y)
+        })
         .show(ui, |plot_ui| {
+            // Subtle 0 dB reference line
+            plot_ui.hline(
+                HLine::new(0.0)
+                    .color(egui::Color32::from_rgba_unmultiplied(255, 255, 255, 30))
+                    .stroke(egui::Stroke::new(
+                        1.0,
+                        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 30),
+                    )),
+            );
+
             plot_ui.line(line);
 
             // Render interactive visual nodes for each enabled band
@@ -493,15 +625,29 @@ pub fn render_frequency_response_plot(
                         6 => egui::Color32::from_rgb(180, 90, 255),  // Purple
                         _ => egui::Color32::from_rgb(255, 100, 200), // Magenta
                     };
+                    let node_x = (band.frequency_hz as f64).log10();
                     let node_y = match band.filter_type {
-                        romueq_common::FilterType::LowPass | romueq_common::FilterType::HighPass => 0.0,
+                        romueq_common::FilterType::LowPass
+                        | romueq_common::FilterType::HighPass => 0.0,
                         _ => band.gain_db as f64,
                     };
                     plot_ui.points(
-                        Points::new(vec![[band.frequency_hz as f64, node_y]])
+                        Points::new(vec![[node_x, node_y]])
                             .color(color)
                             .radius(5.5)
                             .name(format!("Bande {}", i + 1)),
+                    );
+                    let text_y = if node_y >= 0.0 {
+                        node_y + 2.5
+                    } else {
+                        node_y - 2.5
+                    };
+                    plot_ui.text(
+                        Text::new(
+                            egui_plot::PlotPoint::new(node_x, text_y),
+                            format!("B{}", i + 1),
+                        )
+                        .color(color),
                     );
                 }
             }
@@ -509,9 +655,9 @@ pub fn render_frequency_response_plot(
 
     // Show axis labels
     ui.horizontal(|ui| {
-        ui.label("Frequency (Hz)");
+        ui.label("Fréquence (Hz)");
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label("Magnitude (dB)");
+            ui.label("Gain (dB)");
         });
     });
 
@@ -527,41 +673,126 @@ pub fn render_interactive_frequency_response_plot(
     dragged_band: &mut Option<usize>,
     batch: &mut GuiCommandBatch,
 ) {
-    use romueq_dsp::compute_response;
+    use romueq_dsp::coefficients::compute_coefficients;
+    use romueq_dsp::{biquad_response_at_frequency, compute_response};
 
     let response = compute_response(sample_rate, bands, width);
 
+    let log_min_x = 20.0_f64.log10();
+    let log_max_x = 20000.0_f64.log10();
+
     let points: Vec<[f64; 2]> = response
         .iter()
-        .map(|p| [p.frequency_hz as f64, p.magnitude_db as f64])
+        .map(|p| {
+            [
+                (p.frequency_hz as f64).clamp(20.0, 20000.0).log10(),
+                (p.magnitude_db as f64).clamp(-24.0, 24.0),
+            ]
+        })
         .collect();
 
-    let line = Line::new(points)
-        .color(egui::Color32::from_rgb(0, 180, 255))
-        .stroke(egui::Stroke::new(2.5, egui::Color32::from_rgb(0, 180, 255)))
-        .fill(-60.0)
-        .name("EQ Response");
+    let master_line = Line::new(points)
+        .color(egui::Color32::from_rgb(0, 185, 255))
+        .stroke(egui::Stroke::new(2.2, egui::Color32::from_rgb(0, 185, 255)))
+        .fill(0.0)
+        .name("Courbe EQ");
 
     let is_primary_down = ui.ctx().input(|i| i.pointer.primary_down());
+    let is_primary_pressed = ui.ctx().input(|i| i.pointer.primary_pressed());
     let mut local_dragged = *dragged_band;
     let mut coord_under_pointer = None;
 
     let plot = Plot::new("eq_response_interactive")
-        .include_x(20.0)
-        .include_x(20000.0)
+        .include_x(log_min_x)
+        .include_x(log_max_x)
         .include_y(-24.0)
         .include_y(24.0)
-        .height(210.0)
+        .height(165.0)
         .allow_drag(false)
         .allow_zoom(false)
         .allow_scroll(false)
+        .allow_boxed_zoom(false)
+        .allow_double_click_reset(false)
+        .x_axis_formatter(log_freq_axis_formatter)
+        .x_grid_spacer(log_freq_grid_spacer)
+        .label_formatter(|_name, val| {
+            let freq = 10.0_f64.powf(val.x);
+            format!("Freq: {freq:.0} Hz\nGain EQ: {:+.1} dB", val.y)
+        })
         .show(ui, |plot_ui| {
-            plot_ui.line(line);
+            // Lock viewport bounds strictly to [20 Hz .. 20 kHz] x [-24 dB .. +24 dB] so it never slides
+            plot_ui.set_auto_bounds(egui::Vec2b::FALSE);
+            plot_ui.set_plot_bounds(egui_plot::PlotBounds::from_min_max(
+                [log_min_x, -24.0],
+                [log_max_x, 24.0],
+            ));
+
+            // 1. Subtle 0 dB reference line
+            plot_ui.hline(
+                HLine::new(0.0)
+                    .color(egui::Color32::from_rgba_unmultiplied(255, 255, 255, 35))
+                    .stroke(egui::Stroke::new(
+                        1.0,
+                        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 35),
+                    )),
+            );
+
+            // 2. Individual translucent band response curves for active boosted/cut bands
+            for (i, band) in bands.iter().enumerate() {
+                if band.enabled && band.gain_db.abs() > 0.05 {
+                    let color = match i % 8 {
+                        0 => egui::Color32::from_rgb(255, 80, 80),   // Red
+                        1 => egui::Color32::from_rgb(255, 160, 40),  // Orange
+                        2 => egui::Color32::from_rgb(255, 220, 50),  // Yellow
+                        3 => egui::Color32::from_rgb(50, 220, 100),  // Green
+                        4 => egui::Color32::from_rgb(40, 200, 220),  // Cyan
+                        5 => egui::Color32::from_rgb(80, 140, 255),  // Blue
+                        6 => egui::Color32::from_rgb(180, 90, 255),  // Purple
+                        _ => egui::Color32::from_rgb(255, 100, 200), // Magenta
+                    };
+                    let coeffs = compute_coefficients(
+                        band.filter_type,
+                        band.frequency_hz,
+                        band.gain_db,
+                        band.q,
+                        band.slope,
+                        sample_rate,
+                    );
+                    let band_curve_points: Vec<[f64; 2]> = (0..width)
+                        .map(|k| {
+                            let t = k as f32 / (width - 1).max(1) as f32;
+                            let log_min = 20.0_f32.log10();
+                            let log_max = 20000.0_f32.log10();
+                            let f = 10.0_f32.powf(log_min + t * (log_max - log_min));
+                            let db = biquad_response_at_frequency(
+                                &coeffs,
+                                f.min(sample_rate * 0.4999),
+                                sample_rate,
+                            );
+                            [
+                                (f as f64).clamp(20.0, 20000.0).log10(),
+                                (db as f64).clamp(-24.0, 24.0),
+                            ]
+                        })
+                        .collect();
+                    let translucent_color =
+                        egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 85);
+                    plot_ui.line(
+                        Line::new(band_curve_points)
+                            .color(translucent_color)
+                            .stroke(egui::Stroke::new(1.2, translucent_color)),
+                    );
+                }
+            }
+
+            // 3. Master EQ curve
+            plot_ui.line(master_line);
 
             if let Some(coord) = plot_ui.pointer_coordinate() {
                 coord_under_pointer = Some((coord.x, coord.y));
             }
 
+            // 4. Discreet vertical guide lines and small refined studio nodes
             for (i, band) in bands.iter().enumerate() {
                 if band.enabled {
                     let color = match i % 8 {
@@ -574,37 +805,87 @@ pub fn render_interactive_frequency_response_plot(
                         6 => egui::Color32::from_rgb(180, 90, 255),  // Purple
                         _ => egui::Color32::from_rgb(255, 100, 200), // Magenta
                     };
+                    let node_x = (band.frequency_hz as f64).clamp(20.0, 20000.0).log10();
                     let node_y = match band.filter_type {
-                        romueq_common::FilterType::LowPass | romueq_common::FilterType::HighPass => 0.0,
-                        _ => band.gain_db as f64,
+                        romueq_common::FilterType::LowPass
+                        | romueq_common::FilterType::HighPass => 0.0,
+                        _ => (band.gain_db as f64).clamp(-24.0, 24.0),
                     };
+
+                    // Subtle vertical guide line
+                    let guide_color =
+                        egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 32);
+                    plot_ui.vline(
+                        VLine::new(node_x)
+                            .color(guide_color)
+                            .stroke(egui::Stroke::new(1.0, guide_color)),
+                    );
+
                     let is_active_node = local_dragged == Some(i);
-                    let radius = if is_active_node { 8.0 } else { 6.0 };
+                    let halo_color = egui::Color32::from_rgba_unmultiplied(
+                        color.r(),
+                        color.g(),
+                        color.b(),
+                        if is_active_node { 95 } else { 50 },
+                    );
+                    let halo_radius = if is_active_node { 5.2 } else { 3.8 };
+                    let dot_radius = if is_active_node { 3.6 } else { 2.5 };
+
                     plot_ui.points(
-                        Points::new(vec![[band.frequency_hz as f64, node_y]])
+                        Points::new(vec![[node_x, node_y]])
+                            .color(halo_color)
+                            .radius(halo_radius),
+                    );
+                    plot_ui.points(
+                        Points::new(vec![[node_x, node_y]])
                             .color(color)
-                            .radius(radius)
+                            .radius(dot_radius)
                             .name(format!("Bande {}", i + 1)),
                     );
+
+                    if is_active_node {
+                        let text_y = if node_y >= 0.0 {
+                            (node_y + 2.2).min(21.5)
+                        } else {
+                            (node_y - 2.2).max(-21.5)
+                        };
+                        plot_ui.text(
+                            Text::new(
+                                egui_plot::PlotPoint::new(node_x.clamp(1.45, 4.15), text_y),
+                                format!(
+                                    "B{} ({:.0} Hz, {:+.1} dB)",
+                                    i + 1,
+                                    band.frequency_hz,
+                                    band.gain_db
+                                ),
+                            )
+                            .color(color),
+                        );
+                    }
                 }
             }
         });
 
+    let plot_hovered = plot.response.hovered();
+
     if is_primary_down {
         if let Some((px, py)) = coord_under_pointer {
-            if local_dragged.is_none() {
+            // Only grab a node when pressing inside the plot
+            if local_dragged.is_none() && is_primary_pressed && plot_hovered {
                 let mut closest = None;
                 let mut min_dist = f64::MAX;
                 for (i, band) in bands.iter().enumerate() {
                     if band.enabled {
+                        let node_x = (band.frequency_hz as f64).clamp(20.0, 20000.0).log10();
                         let node_y = match band.filter_type {
-                            romueq_common::FilterType::LowPass | romueq_common::FilterType::HighPass => 0.0,
+                            romueq_common::FilterType::LowPass
+                            | romueq_common::FilterType::HighPass => 0.0,
                             _ => band.gain_db as f64,
                         };
-                        let dx = (px.log10() - (band.frequency_hz as f64).log10()).abs();
-                        let dy = ((py - node_y) / 24.0).abs();
-                        let dist = dx * dx + dy * dy;
-                        if dist < 0.04 && dist < min_dist {
+                        let nx = (px - node_x) / 3.0;
+                        let ny = (py - node_y) / 48.0;
+                        let dist = nx * nx + ny * ny;
+                        if dist < 0.025 && dist < min_dist {
                             min_dist = dist;
                             closest = Some(i);
                         }
@@ -615,7 +896,8 @@ pub fn render_interactive_frequency_response_plot(
 
             if let Some(band_idx) = local_dragged {
                 let params = BandParams::new(band_idx, (band_idx as u32 + 1) * 100);
-                let new_freq = (px as f32).clamp(20.0, 20_000.0);
+                let new_freq = (10.0_f64.powf(px.clamp(log_min_x, log_max_x)) as f32)
+                    .clamp(20.0, 20_000.0);
                 let new_gain = (py as f32).clamp(-24.0, 24.0);
                 batch.push(params.frequency_hz(), new_freq);
                 match bands[band_idx].filter_type {
@@ -630,22 +912,23 @@ pub fn render_interactive_frequency_response_plot(
 
     // Handle mouse scroll wheel to adjust Q factor of the hovered or dragged band
     let scroll_delta = ui.ctx().input(|i| i.raw_scroll_delta.y);
-    if scroll_delta.abs() > 0.1 {
+    if scroll_delta.abs() > 0.1 && (plot_hovered || local_dragged.is_some()) {
         let target_band = local_dragged.or_else(|| {
             if let Some((px, py)) = coord_under_pointer {
                 let mut closest = None;
                 let mut min_dist = f64::MAX;
                 for (i, band) in bands.iter().enumerate() {
                     if band.enabled {
+                        let node_x = (band.frequency_hz as f64).clamp(20.0, 20000.0).log10();
                         let node_y = match band.filter_type {
                             romueq_common::FilterType::LowPass
                             | romueq_common::FilterType::HighPass => 0.0,
                             _ => band.gain_db as f64,
                         };
-                        let dx = (px.log10() - (band.frequency_hz as f64).log10()).abs();
-                        let dy = ((py - node_y) / 24.0).abs();
-                        let dist = dx * dx + dy * dy;
-                        if dist < 0.06 && dist < min_dist {
+                        let nx = (px - node_x) / 3.0;
+                        let ny = (py - node_y) / 48.0;
+                        let dist = nx * nx + ny * ny;
+                        if dist < 0.035 && dist < min_dist {
                             min_dist = dist;
                             closest = Some(i);
                         }
@@ -669,13 +952,6 @@ pub fn render_interactive_frequency_response_plot(
 
     *dragged_band = local_dragged;
 
-    ui.horizontal(|ui| {
-        ui.label("Fréquence (Hz) — Glissez pour ajuster Freq/Gain, Molette pour le facteur Q");
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label("Gain (dB)");
-        });
-    });
-
     let _ = plot;
 }
 
@@ -687,7 +963,7 @@ pub fn render_interactive_frequency_response_plot(
 ///
 /// Displays the latest FFT magnitude data as a log-scaled bar chart.
 /// Uses `analysis.spectrum_data` (a Vec of [freq_hz, magnitude_db] pairs)
-/// when available; falls back to a flat line at -inf when no data exists.
+/// when available; falls back to a flat line at -90 dB when no data exists.
 pub fn render_spectrum_analyzer(
     ui: &mut egui::Ui,
     analysis: &AnalysisSnapshot,
@@ -698,20 +974,20 @@ pub fn render_spectrum_analyzer(
 
     // Build frequency bins (logarithmically spaced) for x-axis mapping.
     let log_min = 20.0_f64.log10();
-    let log_max = (nyquist as f64).log10();
+    let log_max = (nyquist as f64).min(20000.0).log10();
 
     let mut bars: Vec<[f64; 2]> = Vec::with_capacity(num_bars);
 
     if analysis.spectrum_data.is_empty() {
-        // No spectrum data yet — draw a flat line at -inf.
+        // No spectrum data yet — draw a flat floor at -90 dB.
         for i in 0..num_bars {
             let t = if num_bars == 1 {
                 0.5_f64
             } else {
                 i as f64 / (num_bars - 1) as f64
             };
-            let center_freq = 10.0_f64.powf(log_min + t * (log_max - log_min));
-            bars.push([center_freq, f64::NEG_INFINITY]);
+            let log_freq = log_min + t * (log_max - log_min);
+            bars.push([log_freq, -90.0]);
         }
     } else {
         // Interpolate the FFT spectrum data onto logarithmic bins.
@@ -764,29 +1040,42 @@ pub fn render_spectrum_analyzer(
                 lo_val + t_interp * (hi_val - lo_val)
             };
 
-            bars.push([target_freq, mag_db]);
+            let clamped_db = mag_db.clamp(-90.0, 0.0);
+            bars.push([target_freq.log10(), clamped_db]);
         }
     }
 
     let bar_chart = Line::new(bars)
-        .color(egui::Color32::from_rgb(0, 255, 100))
-        .name("Spectrum");
+        .color(egui::Color32::from_rgb(0, 230, 180)) // Studio cyan/emerald
+        .stroke(egui::Stroke::new(1.8, egui::Color32::from_rgb(0, 230, 180)))
+        .fill(-90.0)
+        .name("Spectre");
 
     let plot = Plot::new("spectrum")
-        .include_x(20.0)
-        .include_x(nyquist as f64)
+        .include_x(log_min)
+        .include_x(log_max)
         .include_y(-90.0)
         .include_y(0.0)
-        .height(150.0)
-        .show(ui, |plot_ui| plot_ui.line(bar_chart));
-
-    // Axis labels
-    ui.horizontal(|ui| {
-        ui.label("Frequency (Hz)");
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label("Level (dBFS)");
+        .height(165.0)
+        .allow_drag(false)
+        .allow_zoom(false)
+        .allow_scroll(false)
+        .allow_boxed_zoom(false)
+        .allow_double_click_reset(false)
+        .x_axis_formatter(log_freq_axis_formatter)
+        .x_grid_spacer(log_freq_grid_spacer)
+        .label_formatter(|_name, val| {
+            let freq = 10.0_f64.powf(val.x);
+            format!("Freq: {freq:.0} Hz\nNiveau: {:+.1} dBFS", val.y)
+        })
+        .show(ui, |plot_ui| {
+            plot_ui.set_auto_bounds(egui::Vec2b::FALSE);
+            plot_ui.set_plot_bounds(egui_plot::PlotBounds::from_min_max(
+                [log_min, -90.0],
+                [log_max, 0.0],
+            ));
+            plot_ui.line(bar_chart);
         });
-    });
 
     let _ = plot;
 }
@@ -795,7 +1084,93 @@ pub fn render_spectrum_analyzer(
 // Master section controls widget
 // ---------------------------------------------------------------------------
 
-/// Renders the master section controls: bypass, output gain, and mute.
+/// Renders a graphical Stereo Left/Right VU-Meter (-60 dBFS to 0 dBFS) with studio color zones.
+pub fn render_stereo_vu_meter(ui: &mut egui::Ui, peak_l_db: f32, peak_r_db: f32) {
+    let draw_channel = |ui: &mut egui::Ui, label: &str, db: f32| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            ui.label(
+                egui::RichText::new(label)
+                    .small()
+                    .strong()
+                    .color(egui::Color32::from_rgb(180, 185, 195)),
+            );
+
+            let bar_w = 130.0;
+            let bar_h = 8.0;
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(bar_w, bar_h), egui::Sense::hover());
+
+            if ui.is_rect_visible(rect) {
+                let painter = ui.painter();
+                // Dark background track
+                painter.rect_filled(rect, 2.0, egui::Color32::from_rgb(28, 30, 36));
+
+                // Normalized fill from -60 dB .. 0 dB
+                let norm = ((db.clamp(-60.0, 0.0) + 60.0) / 60.0).clamp(0.0, 1.0);
+                if norm > 0.005 {
+                    // Green segment (-60 to -12 dB -> 0.0 to 0.80)
+                    let green_end = norm.min(0.80);
+                    let green_rect = egui::Rect::from_min_max(
+                        rect.min,
+                        egui::pos2(rect.min.x + bar_w * green_end, rect.max.y),
+                    );
+                    painter.rect_filled(green_rect, 2.0, egui::Color32::from_rgb(45, 215, 115));
+
+                    // Amber segment (-12 to -3 dB -> 0.80 to 0.95)
+                    if norm > 0.80 {
+                        let amber_end = norm.min(0.95);
+                        let amber_rect = egui::Rect::from_min_max(
+                            egui::pos2(rect.min.x + bar_w * 0.80, rect.min.y),
+                            egui::pos2(rect.min.x + bar_w * amber_end, rect.max.y),
+                        );
+                        painter.rect_filled(amber_rect, 1.0, egui::Color32::from_rgb(245, 195, 50));
+                    }
+
+                    // Red clip segment (-3 to 0 dB -> 0.95 to 1.0)
+                    if norm > 0.95 {
+                        let red_rect = egui::Rect::from_min_max(
+                            egui::pos2(rect.min.x + bar_w * 0.95, rect.min.y),
+                            egui::pos2(rect.min.x + bar_w * norm, rect.max.y),
+                        );
+                        painter.rect_filled(red_rect, 1.0, egui::Color32::from_rgb(245, 70, 70));
+                    }
+                }
+
+                // Subtle border
+                painter.rect_stroke(
+                    rect,
+                    2.0,
+                    egui::Stroke::new(0.8, egui::Color32::from_rgb(60, 65, 75)),
+                    egui::StrokeKind::Inside,
+                );
+            }
+
+            let db_text = if db <= -90.0 {
+                "-∞ dB".to_string()
+            } else {
+                format!("{db:+5.1} dB")
+            };
+            ui.label(
+                egui::RichText::new(db_text)
+                    .small()
+                    .monospace()
+                    .color(if db > -1.0 {
+                        egui::Color32::from_rgb(255, 90, 90)
+                    } else {
+                        egui::Color32::from_rgb(165, 170, 180)
+                    }),
+            );
+        });
+    };
+
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = 2.0;
+        draw_channel(ui, "L", peak_l_db);
+        draw_channel(ui, "R", peak_r_db);
+    });
+}
+
+/// Renders the master section controls: bypass, output gain, and auto-gain.
 ///
 /// These are global parameters that affect the entire EQ signal path.
 pub fn render_master_section(
@@ -803,10 +1178,8 @@ pub fn render_master_section(
     snapshot: &ParamSnapshot,
     batch: &mut GuiCommandBatch,
 ) {
-    ui.separator();
-    ui.heading("Master");
-
     ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Master:").strong());
         // Bypass checkbox.
         let bypass_val = snapshot.get(ParamId(1)).unwrap_or(0.0);
         let mut bypass = bypass_val >= 0.5;
@@ -836,16 +1209,21 @@ pub fn render_master_section(
         let auto_gain_val = snapshot.get(ParamId(3)).unwrap_or(0.0);
         let mut auto_gain = auto_gain_val >= 0.5;
 
+        let auto_gain_label = if auto_gain {
+            let comp = snapshot.get(ParamId(6)).unwrap_or(0.0);
+            format!("Auto Gain ({comp:+.1} dB)")
+        } else {
+            "Auto Gain".to_string()
+        };
+
         if ui
-            .checkbox(&mut auto_gain, "Auto Gain")
-            .on_hover_text("Enable auto-gain compensation")
+            .checkbox(&mut auto_gain, auto_gain_label)
+            .on_hover_text("Compensation automatique de gain perceptuel")
             .changed()
         {
             batch.push(ParamId(3), if auto_gain { 1.0 } else { 0.0 });
         }
     });
-
-    ui.separator();
 }
 
 // ---------------------------------------------------------------------------
@@ -979,8 +1357,12 @@ pub mod standalone {
 
     /// Run the GUI application as a standalone desktop app.
     pub fn run(app: impl GuiApp) -> eframe::Result {
+        let (w, h) = app.window_size();
         let options = eframe::NativeOptions {
-            viewport: egui::ViewportBuilder::default().with_resizable(true),
+            viewport: egui::ViewportBuilder::default()
+                .with_inner_size([w, h])
+                .with_min_inner_size([960.0, 535.0])
+                .with_resizable(true),
             ..Default::default()
         };
         let window_title = app.window_title().to_string();
@@ -1001,6 +1383,8 @@ pub mod standalone {
         client: EngineClient,
         audio_stream: Option<audio::AudioStream>,
         audio_active: bool,
+        available_outputs: Vec<String>,
+        available_inputs: Vec<String>,
         preset_name_input: String,
         spectrum_processor: romueq_analysis::SpectrumProcessor,
         spectrum_frame_num: u64,
@@ -1015,34 +1399,55 @@ pub mod standalone {
             // Initialize the engine at startup so encode_snapshot() returns real data.
             client.prepare(48000.0, 512, 2);
 
+            // Populate built-in presets, load user presets from disk, and restore full saved state BEFORE starting audio
+            populate_factory_presets(&mut client);
+
             let mut audio_stream = audio::AudioStream::new();
 
             // Auto-detect audio devices for seamless macOS EQ replacement
             let in_devices = audio::AudioStream::available_input_devices();
             let out_devices = audio::AudioStream::available_output_devices();
 
-            // Detect virtual input bridge (BlackHole prioritized, then eqMac Export)
+            // Detect virtual input bridge (RomuEq prioritized, then BlackHole, then eqMac Export)
             let detected_in = in_devices
                 .iter()
-                .find(|d| d.contains("BlackHole"))
+                .find(|d| d.contains("RomuEq"))
+                .or_else(|| in_devices.iter().find(|d| d.contains("BlackHole")))
                 .or_else(|| in_devices.iter().find(|d| d.contains("eqMac Export")))
                 .cloned();
 
-            // Detect real hardware output (Komplete Audio 6 MK2 or built-in speakers)
-            let detected_out = out_devices
-                .iter()
-                .find(|d| d.contains("Komplete Audio") && !d.contains("eqMac"))
+            // Detect real hardware output (restore last selected device if available, else built-in / external)
+            let saved_out = load_saved_output_device();
+            let detected_out = saved_out
+                .and_then(|s| out_devices.iter().find(|d| **d == s).cloned())
                 .or_else(|| {
                     out_devices
                         .iter()
-                        .find(|d| d.contains("Haut-parleurs") || d.contains("MacBook Pro"))
+                        .find(|d| {
+                            let l = d.to_lowercase();
+                            l.contains("haut-parleurs")
+                                || l.contains("macbook")
+                                || l.contains("internal")
+                                || l.contains("built-in")
+                        })
+                        .cloned()
                 })
-                .cloned()
+                .or_else(|| {
+                    out_devices
+                        .iter()
+                        .find(|d| {
+                            let l = d.to_lowercase();
+                            !l.contains("romueq")
+                                && !l.contains("blackhole")
+                                && !l.contains("eqmac")
+                        })
+                        .cloned()
+                })
                 .or_else(|| out_devices.first().cloned());
 
             let is_virtual_bridge = detected_in
                 .as_ref()
-                .map(|d| d.contains("BlackHole") || d.contains("eqMac"))
+                .map(|d| d.contains("RomuEq") || d.contains("BlackHole") || d.contains("eqMac"))
                 .unwrap_or(false);
 
             let initial_mode = if is_virtual_bridge {
@@ -1054,6 +1459,9 @@ pub mod standalone {
             audio_stream.set_source_mode(initial_mode);
             audio_stream.set_input_device(detected_in.clone());
             audio_stream.set_output_device(detected_out.clone());
+            if let Some(ref eng) = client.engine {
+                let _ = audio_stream.set_parameters(*eng.eq_parameters());
+            }
 
             let mut audio_active = false;
             let mut status_message = Some("Prêt — Périphériques audio configurés".to_string());
@@ -1063,6 +1471,7 @@ pub mod standalone {
                     status_message = Some(format!("Erreur démarrage flux: {e}"));
                 } else {
                     audio_active = true;
+                    client.sample_rate = audio_stream.sample_rate();
                     let out_name = detected_out.as_deref().unwrap_or("Sortie");
                     status_message = Some(format!("Égaliseur actif → {out_name}"));
                 }
@@ -1071,14 +1480,13 @@ pub mod standalone {
             let spectrum_config = romueq_analysis::SpectrumConfig::new(1024, 48000.0);
             let spectrum_processor = romueq_analysis::SpectrumProcessor::new(spectrum_config);
 
-            // Populate built-in presets
-            populate_factory_presets(&mut client);
-
             Self {
                 app,
                 client,
                 audio_stream: Some(audio_stream),
                 audio_active,
+                available_outputs: out_devices,
+                available_inputs: in_devices,
                 preset_name_input: String::new(),
                 spectrum_processor,
                 spectrum_frame_num: 0,
@@ -1090,6 +1498,8 @@ pub mod standalone {
 
     impl<A: GuiApp> App for StandaloneRunner<A> {
         fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+            ctx.set_visuals(egui::Visuals::dark());
+
             // Update DPI scaling.
             let _pixels_per_point = ctx.pixels_per_point();
 
@@ -1109,19 +1519,26 @@ pub mod standalone {
                             self.spectrum_frame_num,
                         );
                         self.spectrum_frame_num += 1;
+                        // Subtract unnormalized DFT gain 20*log10(N/2) (~54.18 dB for N=1024) so 1.0 full-scale = 0 dBFS
+                        let dft_norm_db = 20.0 * ((frame.fft_size as f64) * 0.5).log10();
                         analysis.spectrum_data = (0..frame.num_bins)
-                            .map(|b| [frame.bin_frequency(b), frame.magnitudes_db[b] as f64])
+                            .map(|b| {
+                                [
+                                    frame.bin_frequency(b),
+                                    (frame.magnitudes_db[b] as f64) - dft_norm_db,
+                                ]
+                            })
                             .collect();
                     }
                 }
+            } else {
+                analysis.spectrum_data.clear();
             }
 
-            // Process any pending commands.
-            let batch = self.client.take_pending_commands();
-            if !batch.is_empty() {
-                self.client.apply_commands(batch.clone());
-                // Update band parameters from commands for real-time FR plot.
-                self.client.apply_params_from_batch(&batch);
+            // Process any pending commands from client.
+            let pending = self.client.take_pending_commands();
+            if !pending.is_empty() {
+                self.client.apply_commands(pending);
                 // Synchronize live parameters with audio thread
                 if let Some(ref mut audio) = self.audio_stream {
                     if let Some(ref engine) = self.client.engine {
@@ -1135,9 +1552,23 @@ pub mod standalone {
 
             // Render the UI.
             egui::CentralPanel::default().show(ctx, |ui| {
-                ui.heading("RomuEq — Égaliseur Paramétrique PC");
+                ui.spacing_mut().item_spacing.y = 4.0;
 
-                // Audio playback controls.
+                // Compact header row: Title + Status message
+                ui.horizontal(|ui| {
+                    ui.heading("RomuEq — Égaliseur Paramétrique");
+                    if let Some(ref status) = self.status_message {
+                        ui.separator();
+                        ui.label(
+                            egui::RichText::new(status)
+                                .small()
+                                .color(egui::Color32::from_rgb(165, 175, 190)),
+                        );
+                    }
+                });
+
+                // Unified top toolbar: Play/Stop + EQ On/Off + Output Device + Refresh + Stereo L/R VU-Meter
+                let mut refresh_devices = false;
                 ui.horizontal(|ui| {
                     let play_label = if self.audio_active {
                         "⏹ Stop Audio"
@@ -1151,19 +1582,18 @@ pub mod standalone {
                                 self.audio_active = false;
                                 self.status_message = Some("Audio arrêté".to_string());
                             } else {
-                                // Sync current engine params to audio thread.
-                                let params = self
-                                    .client
-                                    .engine
-                                    .as_ref()
-                                    .map(|e| *e.eq_parameters())
-                                    .unwrap_or_default();
-                                let _ = audio.set_parameters(params);
+                                if let Some(ref engine) = self.client.engine {
+                                    let _ = audio.set_parameters(*engine.eq_parameters());
+                                }
                                 match audio.start() {
                                     Ok(()) => {
                                         self.audio_active = true;
+                                        self.client.sample_rate = audio.sample_rate();
+                                        let out_name = audio
+                                            .selected_output_device()
+                                            .unwrap_or("Sortie");
                                         self.status_message =
-                                            Some("Audio actif — Sortie CPAL connectée".to_string());
+                                            Some(format!("Égaliseur actif → {out_name}"));
                                     }
                                     Err(err) => {
                                         self.status_message = Some(format!("Erreur audio: {err}"));
@@ -1173,104 +1603,134 @@ pub mod standalone {
                         }
                     }
 
-                    if let Some(ref mut audio) = self.audio_stream {
-                        let cur_mode = audio.source_mode();
-                        let mut selected_mode = cur_mode;
-                        egui::ComboBox::from_id_salt("source_select")
-                            .selected_text(match cur_mode {
-                                audio::AudioSourceMode::TestSignal => {
-                                    "🎵 Signal Démo (Accord + Harmoniques)"
-                                }
-                                audio::AudioSourceMode::PassThrough => {
-                                    "🎙️ Pass-Through (Entrée Micro / Loopback)"
-                                }
-                            })
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(
-                                    &mut selected_mode,
-                                    audio::AudioSourceMode::TestSignal,
-                                    "🎵 Signal Démo (Accord + Harmoniques)",
-                                );
-                                ui.selectable_value(
-                                    &mut selected_mode,
-                                    audio::AudioSourceMode::PassThrough,
-                                    "🎙️ Pass-Through (Entrée Micro / Loopback)",
-                                );
-                            });
+                    // Equalizer On / Off (Direct Bypass) toggle button
+                    let is_bypassed = self
+                        .client
+                        .snapshot()
+                        .get(ParamId(1))
+                        .map(|v| v >= 0.5)
+                        .unwrap_or(false);
 
-                        if selected_mode != cur_mode {
-                            audio.set_source_mode(selected_mode);
+                    let eq_text = if is_bypassed {
+                        "⚡ ÉGALISEUR : OFF (BYPASS)"
+                    } else {
+                        "✨ ÉGALISEUR : ON"
+                    };
+
+                    let eq_color = if is_bypassed {
+                        egui::Color32::from_rgb(180, 180, 180)
+                    } else {
+                        egui::Color32::from_rgb(80, 240, 120)
+                    };
+
+                    if ui
+                        .add(egui::Button::new(
+                            egui::RichText::new(eq_text).strong().color(eq_color),
+                        ))
+                        .on_hover_text(if is_bypassed {
+                            "Cliquez pour activer le traitement d'égalisation (ON)"
+                        } else {
+                            "Cliquez pour passer en flux direct transparent sans traitement (BYPASS DIRECT)"
+                        })
+                        .clicked()
+                    {
+                        let new_bypass = !is_bypassed;
+                        let mut batch = GuiCommandBatch::new();
+                        batch.push(ParamId(1), if new_bypass { 1.0 } else { 0.0 });
+                        self.client.apply_commands(batch);
+                        save_complete_app_state(&self.client);
+                        if let Some(ref mut audio) = self.audio_stream {
+                            if let Some(ref engine) = self.client.engine {
+                                let _ = audio.set_parameters(*engine.eq_parameters());
+                            }
                         }
-
-                        let (pl, pr) = audio.peak_levels_db();
-                        ui.label(format!("Crête: L {pl:.1} dB | R {pr:.1} dB"));
                     }
-                });
 
-                // Device selection UI
-                ui.horizontal(|ui| {
+                    ui.separator();
+
                     if let Some(ref mut audio) = self.audio_stream {
-                        let out_devices = audio::AudioStream::available_output_devices();
-                        let current_out =
-                            audio.selected_output_device().unwrap_or("Défaut Système");
-                        let mut chosen_out = current_out.to_string();
+                        let current_out = audio
+                            .selected_output_device()
+                            .unwrap_or("Défaut Système")
+                            .to_string();
+                        let mut chosen_out = current_out.clone();
 
                         ui.label("🔊 Sortie:");
                         egui::ComboBox::from_id_salt("output_device_select")
-                            .selected_text(current_out)
+                            .selected_text(&current_out)
                             .show_ui(ui, |ui| {
-                                for dev in &out_devices {
-                                    if ui
-                                        .selectable_value(
-                                            &mut chosen_out,
-                                            dev.clone(),
-                                            dev.as_str(),
-                                        )
-                                        .clicked()
-                                    {
-                                        audio.set_output_device(Some(dev.clone()));
-                                        if self.audio_active {
-                                            let _ = audio.stop();
-                                            let _ = audio.start();
-                                        }
-                                    }
+                                for dev in &self.available_outputs {
+                                    ui.selectable_value(&mut chosen_out, dev.clone(), dev.as_str());
                                 }
                             });
 
-                        if audio.source_mode() == audio::AudioSourceMode::PassThrough {
-                            let in_devices = audio::AudioStream::available_input_devices();
-                            let current_in =
-                                audio.selected_input_device().unwrap_or("Défaut Système");
-                            let mut chosen_in = current_in.to_string();
-
-                            ui.separator();
-                            ui.label("🎙️ Entrée (Loopback):");
-                            egui::ComboBox::from_id_salt("input_device_select")
-                                .selected_text(current_in)
-                                .show_ui(ui, |ui| {
-                                    for dev in &in_devices {
-                                        if ui
-                                            .selectable_value(
-                                                &mut chosen_in,
-                                                dev.clone(),
-                                                dev.as_str(),
-                                            )
-                                            .clicked()
-                                        {
-                                            audio.set_input_device(Some(dev.clone()));
-                                            if self.audio_active {
-                                                let _ = audio.stop();
-                                                let _ = audio.start();
-                                            }
-                                        }
+                        if chosen_out != current_out {
+                            audio.set_output_device(Some(chosen_out.clone()));
+                            save_selected_output_device(&chosen_out);
+                            if let Some(ref engine) = self.client.engine {
+                                let _ = audio.set_parameters(*engine.eq_parameters());
+                            }
+                            if self.audio_active {
+                                let _ = audio.stop();
+                                match audio.start() {
+                                    Ok(()) => {
+                                        self.audio_active = true;
+                                        self.client.sample_rate = audio.sample_rate();
+                                        self.status_message =
+                                            Some(format!("Égaliseur actif → {chosen_out}"));
                                     }
-                                });
+                                    Err(e) => {
+                                        self.audio_active = false;
+                                        self.status_message =
+                                            Some(format!("Erreur sortie '{chosen_out}': {e}"));
+                                    }
+                                }
+                            } else {
+                                self.status_message =
+                                    Some(format!("Sortie sélectionnée : {chosen_out}"));
+                            }
                         }
+
+                        if ui
+                            .button("🔄")
+                            .on_hover_text("Actualiser les périphériques audio")
+                            .clicked()
+                        {
+                            refresh_devices = true;
+                        }
+
+                        ui.separator();
+
+                        // Graphical Stereo Left / Right VU-Meter
+                        let (pl, pr) = audio.peak_levels_db();
+                        render_stereo_vu_meter(ui, pl, pr);
                     }
                 });
 
-                if let Some(ref status) = self.status_message {
-                    ui.label(egui::RichText::new(status).small());
+                if refresh_devices {
+                    let was_active = self.audio_active;
+                    if was_active {
+                        if let Some(ref mut audio) = self.audio_stream {
+                            let _ = audio.stop();
+                        }
+                    }
+                    self.available_outputs = audio::AudioStream::available_output_devices();
+                    self.available_inputs = audio::AudioStream::available_input_devices();
+                    if was_active {
+                        if let Some(ref mut audio) = self.audio_stream {
+                            if let Some(ref engine) = self.client.engine {
+                                let _ = audio.set_parameters(*engine.eq_parameters());
+                            }
+                            if let Err(e) = audio.start() {
+                                self.status_message =
+                                    Some(format!("Erreur redémarrage flux: {e}"));
+                                self.audio_active = false;
+                            } else {
+                                self.audio_active = true;
+                                self.client.sample_rate = audio.sample_rate();
+                            }
+                        }
+                    }
                 }
 
                 ui.separator();
@@ -1278,41 +1738,44 @@ pub mod standalone {
                 // Build a batch of commands from user interaction.
                 let mut batch = GuiCommandBatch::new();
 
-                // Interactive frequency response plot (draggable band nodes + real DSP curve).
-                render_interactive_frequency_response_plot(
-                    ui,
-                    &self.client.band_params,
-                    self.client.sample_rate,
-                    512,
-                    &mut self.dragged_band,
-                    &mut batch,
-                );
+                // Two side-by-side plots: Left = Equalizer Curve, Right = Real-Time FFT Spectrum
+                ui.columns(2, |cols| {
+                    cols[0].horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new("📈 Courbe d'Égalisation (dB)").strong(),
+                        );
+                        ui.label(
+                            egui::RichText::new("— Glisser: Freq/Gain • Molette: Q")
+                                .small()
+                                .color(egui::Color32::from_rgb(155, 160, 170)),
+                        );
+                    });
+                    render_interactive_frequency_response_plot(
+                        &mut cols[0],
+                        &self.client.band_params,
+                        self.client.sample_rate,
+                        512,
+                        &mut self.dragged_band,
+                        &mut batch,
+                    );
 
-                // Spectrum analyzer (FFT data).
-                render_spectrum_analyzer(ui, &analysis, self.client.sample_rate, 128);
+                    cols[1].horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new("📊 Spectre FFT Temps-Réel (dBFS)").strong(),
+                        );
+                    });
+                    render_spectrum_analyzer(&mut cols[1], &analysis, self.client.sample_rate, 128);
+                });
 
-                // Master section (bypass, output gain, auto-gain).
-                render_master_section(ui, &self.client.snapshot, &mut batch);
-
-                // Preset management UI.
                 ui.separator();
+
+                // Unified Master & Preset bar on a single compact row
                 ui.horizontal(|ui| {
-                    ui.label("Preset:");
-                    ui.text_edit_singleline(&mut self.preset_name_input);
+                    render_master_section(ui, &self.client.snapshot, &mut batch);
 
-                    if ui.button("Sauvegarder").clicked()
-                        && !self.preset_name_input.trim().is_empty()
-                    {
-                        let name = self.preset_name_input.trim().to_string();
-                        if let Err(e) = self.client.create_preset(&name) {
-                            self.status_message = Some(format!("Erreur preset '{name}': {e}"));
-                        } else {
-                            self.status_message = Some(format!("Preset '{name}' sauvegardé"));
-                            self.preset_name_input.clear();
-                        }
-                    }
+                    ui.separator();
 
-                    // List of presets from the manager.
+                    ui.label(egui::RichText::new("Preset:").strong());
                     let presets: Vec<String> = self
                         .client
                         .preset_manager
@@ -1321,79 +1784,122 @@ pub mod standalone {
                         .collect();
 
                     let selected_text = if self.client._current_preset.is_empty() {
-                        "Choisir un preset"
+                        "Choisir un preset".to_string()
                     } else {
-                        self.client._current_preset.as_str()
+                        self.client._current_preset.clone()
                     };
 
+                    let prev_preset = self.client._current_preset.clone();
                     egui::ComboBox::new("preset_select", "")
                         .selected_text(selected_text)
                         .show_ui(ui, |ui| {
                             for name in &presets {
-                                if ui
-                                    .selectable_value(
-                                        &mut self.client._current_preset,
-                                        name.clone(),
-                                        name.as_str(),
-                                    )
-                                    .clicked()
-                                {
-                                    let _ = self.client.apply_preset(name);
-                                    if let Some(ref mut audio) = self.audio_stream {
-                                        if let Some(ref engine) = self.client.engine {
-                                            let _ = audio.set_parameters(*engine.eq_parameters());
-                                        }
-                                    }
-                                    self.status_message = Some(format!("Preset '{name}' appliqué"));
-                                }
+                                ui.selectable_value(
+                                    &mut self.client._current_preset,
+                                    name.clone(),
+                                    name.as_str(),
+                                );
                             }
                         });
 
-                    if ui.button("Charger").clicked() {
-                        let sel = self.client._current_preset.clone();
-                        if !sel.is_empty() {
-                            let _ = self.client.apply_preset(&sel);
-                            if let Some(ref mut audio) = self.audio_stream {
-                                if let Some(ref engine) = self.client.engine {
-                                    let _ = audio.set_parameters(*engine.eq_parameters());
-                                }
+                    if self.client._current_preset != prev_preset
+                        && !self.client._current_preset.is_empty()
+                    {
+                        let chosen = self.client._current_preset.clone();
+                        let _ = self.client.apply_preset(&chosen);
+                        // Automatically engage the equalizer (disable Bypass) when user selects a preset
+                        let mut engage = GuiCommandBatch::new();
+                        engage.push(ParamId(1), 0.0);
+                        self.client.apply_commands(engage);
+                        save_last_active_preset_name(&chosen);
+                        save_complete_app_state(&self.client);
+                        if let Some(ref mut audio) = self.audio_stream {
+                            if let Some(ref engine) = self.client.engine {
+                                let _ = audio.set_parameters(*engine.eq_parameters());
                             }
-                            self.status_message = Some(format!("Preset '{sel}' chargé"));
+                        }
+                        self.status_message = Some(format!("Preset '{chosen}' appliqué"));
+                    }
+
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.preset_name_input)
+                            .desired_width(110.0)
+                            .hint_text("Nom du preset..."),
+                    );
+
+                    if ui.button("💾 Sauvegarder").clicked() {
+                        let name = if !self.preset_name_input.trim().is_empty() {
+                            self.preset_name_input.trim().to_string()
+                        } else if !self.client._current_preset.trim().is_empty() {
+                            self.client._current_preset.trim().to_string()
+                        } else {
+                            self.client.next_auto_name()
+                        };
+                        if let Err(e) = self.client.create_preset(&name) {
+                            self.status_message = Some(format!("Erreur preset '{name}': {e}"));
+                        } else {
+                            self.client._current_preset = name.clone();
+                            persist_preset_to_disk(&mut self.client, &name);
+                            save_last_active_preset_name(&name);
+                            save_complete_app_state(&self.client);
+                            self.status_message =
+                                Some(format!("Preset '{name}' sauvegardé sur disque"));
+                            self.preset_name_input.clear();
                         }
                     }
 
-                    if ui.button("Supprimer").clicked() {
+                    if ui.button("🗑 Supprimer").clicked() {
                         let rem = self.client._current_preset.clone();
                         if !rem.is_empty() {
                             let _ = self.client.remove_preset(&rem);
+                            remove_preset_from_disk(&rem);
                             self.client._current_preset.clear();
+                            save_complete_app_state(&self.client);
                             self.status_message = Some(format!("Preset '{rem}' supprimé"));
                         }
                     }
                 });
 
                 ui.separator();
-                ui.heading("Bandes d'Égalisation");
 
-                // Render 8 bands in a scrollable area
-                egui::ScrollArea::vertical()
-                    .max_height(260.0)
-                    .show(ui, |ui| {
-                        let band_controls = BandControls::new();
-                        for i in 0..romueq_common::MAX_BANDS {
-                            let bp = band_controls.params(i);
-                            render_band(ui, i, &bp, &self.client.snapshot, &mut batch);
-                        }
-                    });
+                // 8 equal-width columns Channel Strip grid
+                ui.columns(8, |cols| {
+                    let band_controls = BandControls::new();
+                    for (i, col) in cols.iter_mut().enumerate() {
+                        let bp = band_controls.params(i);
+                        render_band(col, i, &bp, &self.client.snapshot, &mut batch);
+                    }
+                });
 
                 // Process the batch through the engine client.
                 if !batch.is_empty() {
-                    self.client.apply_commands(batch.clone());
-                    self.client.apply_params_from_batch(&batch);
+                    // If user actively adjusts any band parameter while Bypass is on, automatically engage EQ
+                    let modifies_band = batch.commands().iter().any(|c| c.param_id.0 >= 100);
+                    let modifies_bypass = batch.commands().iter().any(|c| c.param_id.0 == 1);
+                    if modifies_band && !modifies_bypass {
+                        let cur_bypass = self
+                            .client
+                            .snapshot()
+                            .get(ParamId(1))
+                            .map(|v| v >= 0.5)
+                            .unwrap_or(false);
+                        if cur_bypass {
+                            batch.push(ParamId(1), 0.0);
+                        }
+                    }
+                    self.client.apply_commands(batch);
+                    save_complete_app_state(&self.client);
                     if let Some(ref mut audio) = self.audio_stream {
                         if let Some(ref engine) = self.client.engine {
                             let _ = audio.set_parameters(*engine.eq_parameters());
                         }
+                    }
+                }
+
+                // Guarantee that the real-time audio thread always has the exact latest EqParameters
+                if let Some(ref mut audio) = self.audio_stream {
+                    if let Some(ref engine) = self.client.engine {
+                        audio.ensure_parameters_synced(*engine.eq_parameters());
                     }
                 }
             });
@@ -1402,16 +1908,149 @@ pub mod standalone {
             ctx.request_repaint();
         }
 
-        fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-            // Light theme background.
-            [0.95, 0.95, 0.95, 1.0]
+        fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+            save_complete_app_state(&self.client);
+            if !self.client._current_preset.is_empty() {
+                save_last_active_preset_name(&self.client._current_preset);
+            }
+            if let Some(ref mut audio) = self.audio_stream {
+                let _ = audio.stop();
+                audio.restore_system_output_to_selected();
+            }
         }
+
+        fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+            // Sleek studio dark background
+            [0.10, 0.11, 0.13, 1.0]
+        }
+    }
+
+    fn user_config_dir() -> std::path::PathBuf {
+        let base = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        let dir = std::path::PathBuf::from(base).join(".romueq");
+        let _ = std::fs::create_dir_all(dir.join("presets"));
+        dir
+    }
+
+    fn sanitize_preset_filename(name: &str) -> String {
+        let s: String = name
+            .chars()
+            .map(|c| {
+                if c.is_alphanumeric()
+                    || c == '-'
+                    || c == '_'
+                    || c == ' '
+                    || c == '+'
+                    || c == '('
+                    || c == ')'
+                {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        format!("{}.req", s.trim())
+    }
+
+    fn persist_preset_to_disk(client: &mut EngineClient, name: &str) {
+        let path = user_config_dir()
+            .join("presets")
+            .join(sanitize_preset_filename(name));
+        if let Some(path_str) = path.to_str() {
+            let _ = client.save_preset_to_file(name, path_str);
+        }
+    }
+
+    fn remove_preset_from_disk(name: &str) {
+        let path = user_config_dir()
+            .join("presets")
+            .join(sanitize_preset_filename(name));
+        let _ = std::fs::remove_file(path);
+    }
+
+    fn save_last_active_preset_name(name: &str) {
+        let path = user_config_dir().join("last_preset.txt");
+        let _ = std::fs::write(path, name.as_bytes());
+    }
+
+    fn load_last_active_preset_name() -> Option<String> {
+        let path = user_config_dir().join("last_preset.txt");
+        std::fs::read_to_string(path)
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    }
+
+    fn save_selected_output_device(dev: &str) {
+        let path = user_config_dir().join("last_output_device.txt");
+        let _ = std::fs::write(path, dev.as_bytes());
+    }
+
+    fn load_saved_output_device() -> Option<String> {
+        let path = user_config_dir().join("last_output_device.txt");
+        std::fs::read_to_string(path)
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    }
+
+    fn save_complete_app_state(client: &EngineClient) {
+        let mut state = romueq_common::state::ProjectState::new();
+        for pv in client.encode_snapshot() {
+            if pv.param_id.0 == 6 {
+                continue;
+            }
+            state.set(pv.param_id.0, pv.value);
+        }
+        let bytes = state.serialize();
+        let path = user_config_dir().join("app_state.bin");
+        let _ = std::fs::write(path, bytes);
+    }
+
+    fn load_complete_app_state(client: &mut EngineClient) -> bool {
+        let path = user_config_dir().join("app_state.bin");
+        let Ok(bytes) = std::fs::read(path) else {
+            return false;
+        };
+        let Ok(state) = romueq_common::state::ProjectState::deserialize(&bytes) else {
+            return false;
+        };
+        if let Some(ref mut eng) = client.engine {
+            let mut params = *eng.eq_parameters();
+            for (id, value) in state.parameter_values.iter() {
+                if id == 6 {
+                    continue;
+                }
+                EngineClient::apply_command_to_params(
+                    &mut params,
+                    &GuiCommand {
+                        param_id: ParamId(id),
+                        value,
+                    },
+                );
+            }
+            eng.set_parameters(params);
+        }
+        client.snapshot = ParamSnapshot::new(client.encode_snapshot());
+        let eq_params = client
+            .engine
+            .as_ref()
+            .map(|e| *e.eq_parameters())
+            .unwrap_or_default();
+        for i in 0..romueq_common::MAX_BANDS {
+            client.band_params[i] = eq_params.bands[i];
+        }
+        true
     }
 
     fn populate_factory_presets(client: &mut EngineClient) {
         let mut add = |name: &str, configure: fn(&mut romueq_common::EqParameters)| {
             if let Some(ref mut eng) = client.engine {
-                let mut params = romueq_common::EqParameters::default();
+                let mut params = romueq_common::EqParameters {
+                    bands: default_8_bands(),
+                    ..Default::default()
+                };
                 configure(&mut params);
                 eng.set_parameters(params);
                 let _ = client.create_preset(name);
@@ -1420,72 +2059,46 @@ pub mod standalone {
 
         add("Flat", |_| {});
         add("Bass Boost (+6 dB)", |p| {
-            p.bands[0].enabled = true;
-            p.bands[0].filter_type = romueq_common::FilterType::LowShelf;
-            p.bands[0].frequency_hz = 80.0;
             p.bands[0].gain_db = 6.0;
-            p.bands[0].q = 0.707;
+            p.bands[1].gain_db = 3.0;
         });
         add("Acoustic Clarity", |p| {
-            p.bands[1].enabled = true;
-            p.bands[1].filter_type = romueq_common::FilterType::Bell;
-            p.bands[1].frequency_hz = 250.0;
             p.bands[1].gain_db = -2.0;
-            p.bands[1].q = 1.0;
-
-            p.bands[4].enabled = true;
-            p.bands[4].filter_type = romueq_common::FilterType::Bell;
-            p.bands[4].frequency_hz = 3000.0;
             p.bands[4].gain_db = 3.0;
-            p.bands[4].q = 1.2;
-
-            p.bands[7].enabled = true;
-            p.bands[7].filter_type = romueq_common::FilterType::HighShelf;
-            p.bands[7].frequency_hz = 10000.0;
             p.bands[7].gain_db = 4.0;
-            p.bands[7].q = 0.707;
         });
         add("Vocal Air", |p| {
-            p.bands[1].enabled = true;
-            p.bands[1].filter_type = romueq_common::FilterType::Bell;
-            p.bands[1].frequency_hz = 200.0;
             p.bands[1].gain_db = -3.0;
-            p.bands[1].q = 1.0;
-
-            p.bands[3].enabled = true;
-            p.bands[3].filter_type = romueq_common::FilterType::Bell;
-            p.bands[3].frequency_hz = 2500.0;
-            p.bands[3].gain_db = 3.0;
-            p.bands[3].q = 1.0;
-
-            p.bands[7].enabled = true;
-            p.bands[7].filter_type = romueq_common::FilterType::HighShelf;
-            p.bands[7].frequency_hz = 12000.0;
+            p.bands[4].gain_db = 3.0;
             p.bands[7].gain_db = 4.0;
-            p.bands[7].q = 0.707;
         });
         add("Loudness", |p| {
-            p.bands[0].enabled = true;
-            p.bands[0].filter_type = romueq_common::FilterType::LowShelf;
-            p.bands[0].frequency_hz = 60.0;
             p.bands[0].gain_db = 5.0;
-            p.bands[0].q = 0.707;
-
-            p.bands[2].enabled = true;
-            p.bands[2].filter_type = romueq_common::FilterType::Bell;
-            p.bands[2].frequency_hz = 800.0;
-            p.bands[2].gain_db = -2.5;
-            p.bands[2].q = 1.0;
-
-            p.bands[7].enabled = true;
-            p.bands[7].filter_type = romueq_common::FilterType::HighShelf;
-            p.bands[7].frequency_hz = 12000.0;
+            p.bands[3].gain_db = -2.5;
             p.bands[7].gain_db = 4.0;
-            p.bands[7].q = 0.707;
         });
 
-        let _ = client.apply_preset("Flat");
-        client._current_preset = "Flat".to_string();
+        // Load any user-saved presets from ~/.romueq/presets/
+        let presets_dir = user_config_dir().join("presets");
+        if let Ok(entries) = std::fs::read_dir(presets_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) == Some("req") {
+                    if let Some(p_str) = path.to_str() {
+                        let _ = client.load_preset_from_file(p_str);
+                    }
+                }
+            }
+        }
+
+        let initial_preset = load_last_active_preset_name()
+            .filter(|n| client.preset_manager.get(n).is_some())
+            .unwrap_or_else(|| "Flat".to_string());
+        let _ = client.apply_preset(&initial_preset);
+        client._current_preset = initial_preset;
+
+        // Restore complete saved app state (bypass, auto_gain, master gain, and exact band curves) if available
+        let _ = load_complete_app_state(client);
     }
 
     use romueq_analysis::AnalysisEngine;
@@ -1542,6 +2155,7 @@ pub mod standalone {
         }
 
         /// Update band parameters from a command batch.
+        #[allow(dead_code)]
         fn apply_params_from_batch(&mut self, batch: &GuiCommandBatch) {
             let commands = batch.commands();
             for cmd in commands {
@@ -1651,6 +2265,10 @@ pub mod standalone {
                     param_id: ParamId(5),
                     value: Self::stereo_mode_to_f32(params.global.stereo_mode),
                 });
+                values.push(ParamValue {
+                    param_id: ParamId(6),
+                    value: eng.auto_gain_compensation_db(),
+                });
 
                 // Band parameters
                 for band_idx in 0..romueq_common::MAX_BANDS {
@@ -1753,10 +2371,11 @@ pub mod standalone {
             if eng.prepare(sample_rate as f64, block_size, channels) {
                 self.engine = Some(eng);
 
-                // Reset band_params to defaults.
-                for bp in &mut self.band_params {
-                    *bp = Default::default();
-                }
+                // Initialize band_params to default 8-band musical layout.
+                self.band_params = default_8_bands();
+                let mut params = *self.engine.as_ref().unwrap().eq_parameters();
+                params.bands = self.band_params;
+                self.engine.as_mut().unwrap().set_parameters(params);
 
                 // Update snapshot from engine params.
                 self.snapshot = ParamSnapshot::new(self.encode_snapshot());
@@ -1790,7 +2409,11 @@ pub mod standalone {
             let (lo, hi) = output.split_at_mut(block_size);
             let mut output_planar: [&mut [f32]; 2] = [lo, hi];
 
-            let _ = eng.process(&input_planar, &mut output_planar);
+            if !eng.process(&input_planar, &mut output_planar) {
+                // Dry copy fallback on processing failure
+                output_planar[0].copy_from_slice(input_planar[0]);
+                output_planar[1].copy_from_slice(input_planar[1]);
+            }
 
             // Update snapshot and band_params from engine before releasing borrow.
             let eq_params = *eng.eq_parameters();
@@ -1946,9 +2569,15 @@ pub mod standalone {
 
             let mut preset = Preset::new(name);
             for pv in self.encode_snapshot().into_iter() {
+                // Skip read-only telemetry parameter ID 6 (auto-gain compensation readout)
+                if pv.param_id.0 == 6 {
+                    continue;
+                }
                 preset.parameter_values.set(pv.param_id.0, pv.value);
             }
 
+            // Allow updating an existing preset with the same name.
+            self.preset_manager.remove(name);
             self.preset_manager
                 .add(name.to_string(), preset)
                 .map_err(|e| format!("create preset: {e}"))?;
@@ -1963,6 +2592,8 @@ pub mod standalone {
 
             if let Some(ref mut eng) = self.engine {
                 let mut params = *eng.eq_parameters();
+                let keep_bypass = params.global.bypass;
+                let keep_auto_gain = params.global.auto_gain;
                 for (id, value) in preset.preset.parameter_values.iter() {
                     let pid = ParamId(id);
                     Self::apply_command_to_params(
@@ -1973,6 +2604,9 @@ pub mod standalone {
                         },
                     );
                 }
+                // Preserve global Bypass and Auto Gain state when switching presets.
+                params.global.bypass = keep_bypass;
+                params.global.auto_gain = keep_auto_gain;
                 eng.set_parameters(params);
             }
 
@@ -2012,6 +2646,8 @@ pub mod standalone {
 
             if let Some(ref mut eng) = self.engine {
                 let mut params = *eng.eq_parameters();
+                let keep_bypass = params.global.bypass;
+                let keep_auto_gain = params.global.auto_gain;
                 for (id, value) in named.preset.parameter_values.iter() {
                     let pid = ParamId(id);
                     Self::apply_command_to_params(
@@ -2022,6 +2658,8 @@ pub mod standalone {
                         },
                     );
                 }
+                params.global.bypass = keep_bypass;
+                params.global.auto_gain = keep_auto_gain;
                 eng.set_parameters(params);
             }
 

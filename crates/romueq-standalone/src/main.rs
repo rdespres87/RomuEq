@@ -1,8 +1,8 @@
 /// Standalone entry point for RomuEq GUI.
 ///
 /// Creates the RomuEq application and runs it with eframe.
-/// On macOS, intercepts system audio output via BlackHole 2ch and restores
-/// hardware output upon exit.
+/// On macOS, intercepts system audio output via the RomuEq virtual driver and restores
+/// the selected hardware output upon exit.
 #[cfg(target_os = "macos")]
 mod macos_audio;
 
@@ -22,7 +22,7 @@ impl GuiApp for RomuEqApp {
     }
 
     fn window_size(&self) -> (f32, f32) {
-        (1080.0, 780.0)
+        (1180.0, 560.0)
     }
 
     fn update(&mut self, client: &mut dyn romueq_gui::GuiClient) {
@@ -33,11 +33,12 @@ impl GuiApp for RomuEqApp {
 fn main() {
     #[cfg(target_os = "macos")]
     let mut _audio_guard = {
-        // If BlackHole 2ch is not installed, prompt native admin installer
-        if !macos_audio::is_blackhole_available() {
-            println!("[RomuEq] BlackHole 2ch non détecté. Lancement de l'installateur natif...");
-            if let Err(e) = macos_audio::install_blackhole() {
-                eprintln!("[RomuEq] {e}");
+        if !macos_audio::is_romueq_driver_available() {
+            println!(
+                "[RomuEq] Pilote audio virtuel 'RomuEq' non détecté. Lancement de l'installateur..."
+            );
+            if let Err(e) = macos_audio::install_romueq_driver() {
+                eprintln!("[RomuEq] Installation de RomuEqDriver: {e}");
             }
         }
         macos_audio::SystemAudioRoutingGuard::activate()

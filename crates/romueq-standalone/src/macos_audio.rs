@@ -27,7 +27,50 @@ pub mod macos_impl {
         mElement: 0,
     };
 
-    const EMBEDDED_BLACKHOLE_PKG: &[u8] = include_bytes!("../resources/BlackHole2ch.pkg");
+    const EMBEDDED_ROMUEQ_DRIVER_PKG: &[u8] = include_bytes!("../resources/RomuEqDriver.pkg");
+
+    unsafe extern "C" {
+        fn atexit(cb: extern "C" fn()) -> i32;
+    }
+
+    fn saved_output_device_path() -> std::path::PathBuf {
+        let base = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        let dir = std::path::PathBuf::from(base).join(".romueq");
+        let _ = std::fs::create_dir_all(&dir);
+        dir.join("last_output_device.txt")
+    }
+
+    fn load_saved_output_device() -> Option<String> {
+        std::fs::read_to_string(saved_output_device_path())
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    }
+
+    fn save_selected_output_device(name: &str) {
+        let _ = std::fs::write(saved_output_device_path(), name.as_bytes());
+    }
+
+    extern "C" fn restore_on_process_exit() {
+        // If current macOS default output is RomuEq/BlackHole, restore to user's selected physical output
+        if let Some(cur_id) = get_default_output_device_id() {
+            let cur_name = get_device_name(cur_id).unwrap_or_default().to_lowercase();
+            if cur_name.contains("romueq") || cur_name.contains("blackhole") {
+                if let Some(saved) = load_saved_output_device() {
+                    if let Some((phys_id, _)) = find_device_by_name(&saved) {
+                        let _ = set_default_output_device(phys_id);
+                        return;
+                    }
+                }
+                if let Some((phys_id, _)) = find_device_by_name("Komplete Audio")
+                    .or_else(|| find_device_by_name("Haut-parleurs"))
+                    .or_else(|| find_device_by_name("MacBook"))
+                {
+                    let _ = set_default_output_device(phys_id);
+                }
+            }
+        }
+    }
 
     /// Get the current macOS system default output device ID.
     pub fn get_default_output_device_id() -> Option<u32> {
@@ -208,19 +251,19 @@ pub mod macos_impl {
         }
     }
 
-    /// Check if BlackHole 2ch driver is present and recognized by CoreAudio.
-    pub fn is_blackhole_available() -> bool {
-        find_device_by_name("BlackHole 2ch").is_some()
+    /// Check if RomuEq driver is present and recognized by CoreAudio.
+    pub fn is_romueq_driver_available() -> bool {
+        find_device_by_name("RomuEq").is_some()
     }
 
-    /// Install BlackHole 2ch driver automatically via native macOS administrator dialog.
-    pub fn install_blackhole() -> Result<(), String> {
-        let tmp_path = "/tmp/RomuEq_BlackHole2ch.pkg";
-        std::fs::write(tmp_path, EMBEDDED_BLACKHOLE_PKG)
+    /// Install RomuEq virtual audio driver via native macOS administrator dialog.
+    pub fn install_romueq_driver() -> Result<(), String> {
+        let tmp_path = "/tmp/RomuEqDriver.pkg";
+        std::fs::write(tmp_path, EMBEDDED_ROMUEQ_DRIVER_PKG)
             .map_err(|e| format!("Impossible d'écrire le paquet d'installation temporaire: {e}"))?;
 
         let script = format!(
-            "do shell script \"installer -pkg {tmp_path} -target / && killall -9 coreaudiod\" with administrator privileges with prompt \"RomuEq a besoin d'installer le composant audio BlackHole 2ch pour capturer le son du système macOS.\""
+            "do shell script \"installer -pkg {tmp_path} -target / && killall -9 coreaudiod\" with administrator privileges with prompt \"RomuEq souhaite installer son pilote audio virtuel 'RomuEq' pour afficher 'RomuEq' dans le contrôle de volume macOS.\""
         );
 
         let output = std::process::Command::new("osascript")
@@ -237,12 +280,14 @@ pub mod macos_impl {
             Ok(())
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            Err(format!("Autorisation refusée ou installation échouée: {stderr}"))
+            Err(format!(
+                "Autorisation refusée ou installation échouée: {stderr}"
+            ))
         }
     }
 
-    /// Guard struct that saves original physical output and switches system output to BlackHole.
-    /// Restores the original hardware device when dropped (app quit or panic).
+    /// Guard struct that saves original physical output and switches system output to virtual device.
+    /// Restores the chosen hardware device when dropped (app quit or panic).
     pub struct SystemAudioRoutingGuard {
         pub original_device_id: Option<u32>,
         pub original_device_name: Option<String>,
@@ -250,7 +295,7 @@ pub mod macos_impl {
     }
 
     impl SystemAudioRoutingGuard {
-        /// Create guard and intercept system audio if BlackHole is available.
+        /// Create guard and intercept system audio if RomuEq is available.
         pub fn activate() -> Self {
             let mut guard = Self {
                 original_device_id: None,
@@ -258,17 +303,30 @@ pub mod macos_impl {
                 routing_active: false,
             };
 
-            // Detect current default output
+            unsafe {
+                let _ = atexit(restore_on_process_exit);
+            }
+
+            // Detect current default output in macOS before rerouting
             if let Some(cur_id) = get_default_output_device_id() {
                 let name = get_device_name(cur_id).unwrap_or_else(|| "Inconnu".to_string());
-                // Avoid saving BlackHole or eqMac as original physical device
-                if !name.to_lowercase().contains("blackhole") && !name.to_lowercase().contains("eqmac") {
+                let lower = name.to_lowercase();
+                // If macOS is currently set to a physical device, preserve it and sync it with RomuEq's saved output
+                if !lower.contains("romueq")
+                    && !lower.contains("blackhole")
+                    && !lower.contains("eqmac")
+                {
                     guard.original_device_id = Some(cur_id);
                     guard.original_device_name = Some(name.clone());
+                    save_selected_output_device(&name);
                 } else {
-                    // Search for a physical device (Komplete Audio or built-in speakers)
-                    if let Some((phys_id, phys_name)) = find_device_by_name("Komplete Audio")
+                    // macOS was already on RomuEq (e.g. after a restart): check user's last selected physical output first
+                    let saved_phys =
+                        load_saved_output_device().and_then(|saved| find_device_by_name(&saved));
+                    if let Some((phys_id, phys_name)) = saved_phys
+                        .or_else(|| find_device_by_name("Komplete Audio"))
                         .or_else(|| find_device_by_name("Haut-parleurs"))
+                        .or_else(|| find_device_by_name("MacBook"))
                     {
                         guard.original_device_id = Some(phys_id);
                         guard.original_device_name = Some(phys_name);
@@ -276,17 +334,43 @@ pub mod macos_impl {
                 }
             }
 
-            // If BlackHole 2ch exists, synchronize sample rate with physical hardware, then switch
-            if let Some((bh_id, _)) = find_device_by_name("BlackHole 2ch") {
+            // Look for "RomuEq" virtual device
+            let target_virtual_device = find_device_by_name("RomuEq");
+
+            if let Some((virt_id, virt_name)) = target_virtual_device {
                 if let Some(target_sr) = guard.original_device_id.and_then(get_device_sample_rate) {
-                    println!("[RomuEq] Synchronisation de BlackHole 2ch sur la fréquence matérielle: {target_sr} Hz");
-                    let _ = set_device_sample_rate(bh_id, target_sr);
+                    println!(
+                        "[RomuEq] Synchronizing {virt_name} to hardware sample rate: {target_sr} Hz"
+                    );
+                    let _ = set_device_sample_rate(virt_id, target_sr);
+                    // Verify property take-effect in CoreAudio HAL
+                    let mut verified = false;
+                    for _ in 0..25 {
+                        if let Some(current_sr) = get_device_sample_rate(virt_id) {
+                            if (current_sr - target_sr).abs() < 1.0 {
+                                println!(
+                                    "[RomuEq] {virt_name} sample rate verified and locked at {target_sr} Hz"
+                                );
+                                verified = true;
+                                break;
+                            }
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                    }
+                    if !verified {
+                        eprintln!(
+                            "[RomuEq] ERROR: CoreAudio HAL could not verify {virt_name} sample rate match within 2.5s. Aborting system output reroute to avoid audio degradation."
+                        );
+                        return guard;
+                    }
                 }
 
-                if let Err(e) = set_default_output_device(bh_id) {
-                    eprintln!("[RomuEq] Impossible de basculer la sortie système vers BlackHole: {e}");
+                if let Err(e) = set_default_output_device(virt_id) {
+                    eprintln!("[RomuEq] Failed to route system output to {virt_name}: {e}");
                 } else {
-                    println!("[RomuEq] Sortie système macOS routée avec succès vers BlackHole 2ch (ID: {bh_id})");
+                    println!(
+                        "[RomuEq] macOS system audio successfully routed to {virt_name} (ID: {virt_id})"
+                    );
                     guard.routing_active = true;
                 }
             }
@@ -294,15 +378,32 @@ pub mod macos_impl {
             guard
         }
 
-        /// Restore the original default output device.
+        /// Restore the chosen physical output device (or original default output device).
         pub fn restore(&mut self) {
             if self.routing_active {
-                if let Some(orig_id) = self.original_device_id {
-                    let orig_name = self.original_device_name.as_deref().unwrap_or("Périphérique d'origine");
-                    if let Err(e) = set_default_output_device(orig_id) {
-                        eprintln!("[RomuEq] Échec de restauration de la sortie système ({orig_name}): {e}");
+                // Prefer the output device currently chosen inside RomuEq
+                let target = load_saved_output_device()
+                    .and_then(|saved| find_device_by_name(&saved))
+                    .or_else(|| {
+                        self.original_device_id.map(|id| {
+                            (
+                                id,
+                                self.original_device_name
+                                    .clone()
+                                    .unwrap_or_else(|| "Périphérique d'origine".to_string()),
+                            )
+                        })
+                    });
+
+                if let Some((target_id, target_name)) = target {
+                    if let Err(e) = set_default_output_device(target_id) {
+                        eprintln!(
+                            "[RomuEq] Échec de restauration de la sortie système ({target_name}): {e}"
+                        );
                     } else {
-                        println!("[RomuEq] Sortie système macOS restaurée sur {orig_name} (ID: {orig_id})");
+                        println!(
+                            "[RomuEq] Sortie système macOS restaurée sur {target_name} (ID: {target_id})"
+                        );
                     }
                 }
                 self.routing_active = false;
@@ -357,9 +458,18 @@ mod tests {
                 let mut sr: f64 = 0.0;
                 let mut size = std::mem::size_of::<f64>() as u32;
                 let status = unsafe {
-                    AudioObjectGetPropertyData(*id, &addr, 0, std::ptr::null(), &mut size, &mut sr as *mut _ as *mut _)
+                    AudioObjectGetPropertyData(
+                        *id,
+                        &addr,
+                        0,
+                        std::ptr::null(),
+                        &mut size,
+                        &mut sr as *mut _ as *mut _,
+                    )
                 };
-                println!("Device '{name}' (ID {id}) nominal sample rate: {sr} Hz (status: {status})");
+                println!(
+                    "Device '{name}' (ID {id}) nominal sample rate: {sr} Hz (status: {status})"
+                );
             }
         }
     }

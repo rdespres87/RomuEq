@@ -153,12 +153,15 @@ impl PresetManager {
         let data = std::fs::read(path)
             .map_err(|e| PresetManagerError::IoError(format!("read '{path}': {e}")))?;
 
-        let preset = Preset::deserialize(&data)?;
+        let mut preset = Preset::deserialize(&data)?;
+        // Strip read-only telemetry parameter ID 6 (auto-gain compensation readout) if present
+        preset.parameter_values.remove(6);
 
         // Validate the loaded preset
         preset.parameter_values.validate()?;
 
         let name = preset.name.clone();
+        self.remove(&name);
         self.add(name.clone(), preset.clone())?;
 
         Ok(NamedPreset::new(name, preset))
