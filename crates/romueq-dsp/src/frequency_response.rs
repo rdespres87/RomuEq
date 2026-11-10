@@ -33,7 +33,7 @@ pub struct ResponsePoint {
 /// Compute the magnitude response of a single biquad filter at one frequency.
 ///
 /// Returns the magnitude in dB (20 * log10(|H(e^(jω))|)).
-fn biquad_response_at_frequency(
+pub fn biquad_response_at_frequency(
     coeffs: &BiquadCoefficients,
     frequency_hz: f32,
     sample_rate: f32,
@@ -125,7 +125,11 @@ pub fn compute_response(
                     sample_rate,
                 );
 
-                let mag_db = biquad_response_at_frequency(&coeffs, frequency_hz, sample_rate);
+                let mag_db = biquad_response_at_frequency(
+                    &coeffs,
+                    frequency_hz.min(nyquist * 0.9999),
+                    sample_rate,
+                );
 
                 if mag_db.is_finite() {
                     total_mag_linear *= 10.0_f32.powf(mag_db / 20.0);

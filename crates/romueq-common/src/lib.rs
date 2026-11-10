@@ -3,6 +3,7 @@
 //! Common types and traits for RomuEq.
 
 pub mod audio_buffer;
+pub mod audio_ring;
 
 /// Maximum number of channels for analysis data (RMS, peak, zero-crossings).
 pub const ANALYSIS_MAX_CHANNELS: usize = 8;
@@ -20,6 +21,7 @@ pub use audio_buffer::EngineLifecycle as CommonEngineLifecycle;
 pub use audio_buffer::LifecycleState as CommonLifecycleState;
 pub use audio_buffer::MAX_BLOCK_SIZE;
 pub use audio_buffer::MAX_CHANNELS;
+pub use audio_ring::{AudioRingConsumer, AudioRingProducer, create_audio_ring_buffer};
 pub use parameter::BandParameters;
 pub use parameter::EqParameters;
 pub use parameter::FilterType;

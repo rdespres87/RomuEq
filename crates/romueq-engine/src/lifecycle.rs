@@ -43,7 +43,8 @@ use romueq_common::automation::{AutomationEvent, AutomationValueProvider, Interp
 use romueq_common::{
     BandParameters, EqParameters, MAX_BANDS, MAX_BLOCK_SIZE, MAX_CHANNELS, ParamId,
 };
-use romueq_dsp::coefficients::compute_coefficients;
+use romueq_dsp::biquad_response_at_frequency;
+use romueq_dsp::coefficients::{BiquadCoefficients, compute_coefficients};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -168,6 +169,16 @@ pub struct EngineLifecycle {
     /// Bounded ring buffer for analysis frame handoff to the GUI thread.
     /// Audio thread pushes frames; GUI thread consumes them.
     analysis_buffer: AnalysisBuffer,
+
+    // -----------------------------------------------------------------------
+    // Coefficient caching (zero per-block recalculation)
+    // -----------------------------------------------------------------------
+    /// Cached biquad filter coefficients for each band.
+    cached_coeffs: [BiquadCoefficients; MAX_BANDS],
+    /// Dirty flag indicating whether coefficients need recalculation.
+    coeffs_dirty: bool,
+    /// Cached perceptual loudness auto-gain compensation in dB.
+    cached_auto_gain_db: f32,
 }
 
 impl EngineLifecycle {
@@ -195,6 +206,10 @@ impl EngineLifecycle {
             bypass_buffer: [0.0; FLAT_BUFFER_SIZE],
             // Analysis handoff (M5-T001) — pre-allocated ring buffer
             analysis_buffer: AnalysisBuffer::new(),
+            // Cached filter coefficients
+            cached_coeffs: [BiquadCoefficients::default(); MAX_BANDS],
+            coeffs_dirty: true,
+            cached_auto_gain_db: 0.0,
         }
     }
 
@@ -250,8 +265,86 @@ impl EngineLifecycle {
         // allocation-free in the hot path.
         self.automation_ingestor = Some(AutomationIngestor::new(InterpolationMode::Linear));
 
+        self.recompute_all_coefficients();
+
         self.state = LifecycleState::Ready;
         true
+    }
+
+    /// Recompute cached biquad filter coefficients for all bands.
+    fn recompute_all_coefficients(&mut self) {
+        let sample_rate = self.sample_rate as f32;
+        for band_idx in 0..MAX_BANDS {
+            let band_params = &self.eq_params.bands[band_idx];
+            self.cached_coeffs[band_idx] = compute_coefficients(
+                band_params.filter_type,
+                band_params.frequency_hz,
+                band_params.gain_db,
+                band_params.q,
+                band_params.slope,
+                sample_rate,
+            );
+        }
+        self.coeffs_dirty = false;
+
+        self.update_auto_gain_db();
+    }
+
+    /// Recompute perceptual RMS power loudness-weighted auto-gain compensation in dB.
+    fn update_auto_gain_db(&mut self) {
+        let sample_rate = self.sample_rate as f32;
+        let mut coeffs = [BiquadCoefficients::default(); MAX_BANDS];
+        for (band_idx, slot) in coeffs.iter_mut().enumerate() {
+            let bp = &self.eq_params.bands[band_idx];
+            if bp.enabled {
+                *slot = compute_coefficients(
+                    bp.filter_type,
+                    bp.frequency_hz,
+                    bp.gain_db,
+                    bp.q,
+                    bp.slope,
+                    sample_rate,
+                );
+            }
+        }
+
+        let log_min = 50.0_f32.log10();
+        let log_max = 14000.0_f32.log10();
+        let mut sum_power = 0.0_f32;
+        let mut sum_weight = 0.0_f32;
+        for k in 0..24 {
+            let t = k as f32 / 23.0;
+            let freq = 10.0_f32.powf(log_min + t * (log_max - log_min));
+            let mut total_db = 0.0_f32;
+            for (band_idx, coeff) in coeffs.iter().enumerate() {
+                if self.eq_params.bands[band_idx].enabled {
+                    let band_db = biquad_response_at_frequency(coeff, freq, sample_rate);
+                    if band_db.is_finite() {
+                        total_db += band_db;
+                    }
+                }
+            }
+            let weight = if (200.0..=5000.0).contains(&freq) {
+                1.8_f32
+            } else {
+                1.0_f32
+            };
+            let clamped_db = total_db.clamp(-36.0, 36.0);
+            sum_power += weight * 10.0_f32.powf(clamped_db / 10.0);
+            sum_weight += weight;
+        }
+        let mean_power = (sum_power / sum_weight).max(1e-6);
+        let rms_gain_db = 10.0_f32 * mean_power.log10();
+        self.cached_auto_gain_db = (-rms_gain_db).clamp(-15.0, 12.0);
+    }
+
+    /// Return the active auto-gain compensation in dB.
+    pub fn auto_gain_compensation_db(&self) -> f32 {
+        if self.eq_params.global.auto_gain {
+            self.cached_auto_gain_db
+        } else {
+            0.0
+        }
     }
 
     /// Set the EQ parameters.
@@ -262,7 +355,11 @@ impl EngineLifecycle {
     ///
     /// **No allocation.** The `EqParameters` struct is `Copy` and stored inline.
     pub fn set_parameters(&mut self, params: EqParameters) {
-        self.eq_params = params;
+        if self.eq_params != params {
+            self.eq_params = params;
+            self.coeffs_dirty = true;
+            self.update_auto_gain_db();
+        }
     }
 
     /// M5-T001: Get a mutable reference to the analysis buffer for GUI thread consumption.
@@ -418,8 +515,14 @@ impl EngineLifecycle {
         let sample_rate = self.sample_rate as f32;
         let bypass = self.eq_params.global.bypass;
 
-        // Detect bypass state change and start transition if needed.
-        if self.curr_bypass != bypass {
+        // If no blocks have been processed yet, adopt the initial bypass state immediately.
+        // Once playback is underway (blocks_processed > 0), state changes trigger click-free crossfade.
+        if self.blocks_processed == 0 {
+            self.curr_bypass = bypass;
+            self.prev_bypass = bypass;
+            self.transitioning = false;
+            self.crossfade_progress = 0;
+        } else if self.curr_bypass != bypass {
             self.prev_bypass = self.curr_bypass;
             self.curr_bypass = bypass;
             self.crossfade_progress = 0;
@@ -429,8 +532,78 @@ impl EngineLifecycle {
         // Calculate crossfade samples count.
         let crossfade_samples = (CROSSFADE_MS as f32 / 1000.0 * sample_rate) as usize;
 
-        let output_gain_db = self.eq_params.global.output_gain_db;
+        // Ensure cached coefficients are up to date.
+        if self.coeffs_dirty {
+            self.recompute_all_coefficients();
+        }
+
+        let auto_comp_db = if self.eq_params.global.auto_gain {
+            self.cached_auto_gain_db
+        } else {
+            0.0
+        };
+        let output_gain_db = self.eq_params.global.output_gain_db + auto_comp_db;
         let output_gain_linear = 10.0_f32.powf(output_gain_db / 20.0);
+
+        // Prepare coefficients for this block (base cached or automated).
+        let mut block_coeffs = self.cached_coeffs;
+
+        if let Some(provider) = automation_provider {
+            let block_start_sample = self.sample_offset as u32;
+            let gain_min = BandParameters::gain_db_min();
+            let gain_max = BandParameters::gain_db_max();
+            let freq_min: f32 = 20.0;
+            let freq_max: f32 = sample_rate / 2.0;
+
+            for (band_idx, coeff_slot) in block_coeffs.iter_mut().enumerate() {
+                let mut band_params = self.eq_params.bands[band_idx];
+                if !band_params.enabled {
+                    continue;
+                }
+
+                let mut automated = false;
+                let mut last_gain = band_params.gain_db;
+                for i in 0..block_size {
+                    let sample_idx = block_start_sample + i as u32;
+                    if let Some(automation_value) =
+                        provider.value_at_sample(band_params.gain_param_id(), sample_idx, None)
+                    {
+                        let gain_range = gain_max - gain_min;
+                        last_gain = gain_min + (automation_value + 1.0) * 0.5 * gain_range;
+                        automated = true;
+                    }
+                }
+                band_params.gain_db = last_gain;
+
+                let mut last_freq = band_params.frequency_hz;
+                for i in 0..block_size {
+                    let sample_idx = block_start_sample + i as u32;
+                    if let Some(automation_value) =
+                        provider.value_at_sample(band_params.frequency_param_id(), sample_idx, None)
+                    {
+                        // Correct logarithmic frequency interpolation: f(t) = f_min * (f_max / f_min)^t
+                        let t = automation_value * 0.5 + 0.5;
+                        last_freq = freq_min * (freq_max / freq_min).powf(t);
+                        automated = true;
+                    }
+                }
+                band_params.frequency_hz = last_freq;
+
+                if automated {
+                    *coeff_slot = compute_coefficients(
+                        band_params.filter_type,
+                        band_params.frequency_hz,
+                        band_params.gain_db,
+                        band_params.q,
+                        band_params.slope,
+                        sample_rate,
+                    );
+                }
+            }
+        }
+
+        let is_entering_bypass = self.curr_bypass;
+        let start_crossfade_progress = self.crossfade_progress;
 
         for ch_idx in 0..self.channels {
             let buffer_offset = ch_idx * self.max_block_size;
@@ -440,62 +613,10 @@ impl EngineLifecycle {
             self.bypass_buffer[buffer_offset..buffer_offset + block_size].copy_from_slice(samples);
 
             // Process through band cascade (always, even during bypass transition).
-            for band_idx in 0..MAX_BANDS {
-                let mut band_params = self.eq_params.bands[band_idx];
-
-                // Skip disabled bands.
-                if !band_params.enabled {
+            for (band_idx, coeffs) in block_coeffs.iter().enumerate() {
+                if !self.eq_params.bands[band_idx].enabled {
                     continue;
                 }
-
-                // Apply automation interpolation for gain_db and frequency_hz.
-                if let Some(provider) = &automation_provider {
-                    let block_start_sample = self.sample_offset as u32;
-                    let gain_min = BandParameters::gain_db_min();
-                    let gain_max = BandParameters::gain_db_max();
-                    let freq_min: f32 = 20.0;
-                    let freq_max: f32 = sample_rate / 2.0;
-
-                    // Interpolate gain_db per sample.
-                    let mut last_gain = band_params.gain_db;
-                    for i in 0..block_size {
-                        let sample_idx = block_start_sample + i as u32;
-                        if let Some(automation_value) =
-                            provider.value_at_sample(band_params.gain_param_id(), sample_idx, None)
-                        {
-                            // Map automation value [-1.0, 1.0] to gain range [gain_min, gain_max].
-                            let gain_range = gain_max - gain_min;
-                            last_gain = gain_min + (automation_value + 1.0) * 0.5 * gain_range;
-                        }
-                    }
-                    band_params.gain_db = last_gain;
-
-                    // Interpolate frequency_hz per sample.
-                    let mut last_freq = band_params.frequency_hz;
-                    for i in 0..block_size {
-                        let sample_idx = block_start_sample + i as u32;
-                        if let Some(automation_value) = provider.value_at_sample(
-                            band_params.frequency_param_id(),
-                            sample_idx,
-                            None,
-                        ) {
-                            // Map automation value to frequency range using log scale.
-                            let t = automation_value * 0.5 + 0.5;
-                            last_freq = freq_min.powf(t) * (freq_max / freq_min).powf(t);
-                        }
-                    }
-                    band_params.frequency_hz = last_freq;
-                }
-
-                // Compute coefficients for this band (may have been modified by automation).
-                let coeffs = compute_coefficients(
-                    band_params.filter_type,
-                    band_params.frequency_hz,
-                    band_params.gain_db,
-                    band_params.q,
-                    band_params.slope,
-                    sample_rate,
-                );
 
                 // Get delay line state for this band/channel.
                 let delay_offset = band_idx * self.channels * DELAY_SAMPLES_PER_STAGE
@@ -537,29 +658,40 @@ impl EngineLifecycle {
             }
 
             // Apply crossfade if bypass transition is in progress.
-            if self.transitioning && self.crossfade_progress < crossfade_samples {
-                let t = self.crossfade_progress as f32 / crossfade_samples as f32;
-                // Equal-power crossfade curve.
-                let fade_in = (t * std::f32::consts::PI / 2.0).sin();
-                let fade_out = (t * std::f32::consts::PI / 2.0).cos();
-
-                // When bypassing (prev_bypass=false → curr_bypass=true):
-                //   fade_out = processed signal, fade_in = dry (input) signal.
+            if self.transitioning && start_crossfade_progress < crossfade_samples {
                 for (i, sample) in samples.iter_mut().enumerate().take(block_size) {
+                    let progress = (start_crossfade_progress + i).min(crossfade_samples);
+                    let t = progress as f32 / crossfade_samples as f32;
+                    let sin_t = (t * std::f32::consts::FRAC_PI_2).sin();
+                    let cos_t = (t * std::f32::consts::FRAC_PI_2).cos();
+
+                    // When entering bypass (prev_bypass=false -> curr_bypass=true):
+                    //   wet fades out (cos 1->0), dry fades in (sin 0->1).
+                    // When exiting bypass (prev_bypass=true -> curr_bypass=false):
+                    //   wet fades in (sin 0->1), dry fades out (cos 1->0).
+                    let (wet_gain, dry_gain) = if is_entering_bypass {
+                        (cos_t, sin_t)
+                    } else {
+                        (sin_t, cos_t)
+                    };
+
                     let processed = *sample;
                     let dry = self.bypass_buffer[buffer_offset + i];
-                    *sample = processed * fade_out + dry * fade_in;
-                }
-
-                self.crossfade_progress += block_size;
-                if self.crossfade_progress >= crossfade_samples {
-                    self.transitioning = false;
+                    *sample = processed * wet_gain + dry * dry_gain;
                 }
             } else if self.curr_bypass {
                 // Bypass is steady (no transition): pass through dry signal.
                 samples.copy_from_slice(
                     &self.bypass_buffer[buffer_offset..buffer_offset + block_size],
                 );
+            }
+        }
+
+        // Advance crossfade progress ONCE per block (not per channel).
+        if self.transitioning {
+            self.crossfade_progress += block_size;
+            if self.crossfade_progress >= crossfade_samples {
+                self.transitioning = false;
             }
         }
     }
@@ -664,6 +796,7 @@ impl EngineLifecycle {
     pub fn load_state(&mut self, data: &[u8]) -> bool {
         if let Ok(params) = bincode::deserialize::<EqParameters>(data) {
             self.eq_params = params;
+            self.coeffs_dirty = true;
             true
         } else {
             false
@@ -684,7 +817,7 @@ impl Default for EngineLifecycle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use romueq_common::{BandParameters, Slope};
+    use romueq_common::{BandParameters, FilterType, Slope};
 
     // -----------------------------------------------------------------------
     // EngineLifecycle construction tests
@@ -1801,5 +1934,150 @@ mod tests {
                 diff
             );
         }
+    }
+
+    #[test]
+    fn test_coefficient_caching_and_dirty_flag() {
+        let mut engine = EngineLifecycle::new();
+        assert!(engine.coeffs_dirty);
+
+        engine.prepare(48000.0, 256, 2);
+        assert!(!engine.coeffs_dirty);
+
+        let initial_coeffs = engine.cached_coeffs[0];
+        assert!(initial_coeffs.is_finite());
+
+        // Process a block without parameter change - remains clean
+        let input_l = [0.1f32; 64];
+        let input_r = [0.1f32; 64];
+        let mut out_l = [0.0f32; 64];
+        let mut out_r = [0.0f32; 64];
+        assert!(engine.process(&[&input_l, &input_r], &mut [&mut out_l, &mut out_r]));
+        assert!(!engine.coeffs_dirty);
+        assert_eq!(engine.cached_coeffs[0], initial_coeffs);
+
+        // Change parameters - flags dirty
+        let mut params = *engine.eq_parameters();
+        params.bands[0].gain_db = 6.0;
+        engine.set_parameters(params);
+        assert!(engine.coeffs_dirty);
+
+        // Next process - recomputes and clears dirty flag
+        assert!(engine.process(&[&input_l, &input_r], &mut [&mut out_l, &mut out_r]));
+        assert!(!engine.coeffs_dirty);
+        assert_ne!(engine.cached_coeffs[0], initial_coeffs);
+    }
+
+    #[test]
+    fn test_bidirectional_bypass_crossfade() {
+        let mut engine = EngineLifecycle::new();
+        engine.prepare(48000.0, 256, 1);
+
+        // Boost 1kHz by +12dB
+        let mut params = *engine.eq_parameters();
+        params.bands[0].enabled = true;
+        params.bands[0].frequency_hz = 1000.0;
+        params.bands[0].gain_db = 12.0;
+        params.bands[0].q = 1.0;
+        params.global.bypass = false;
+        engine.set_parameters(params);
+
+        // 1kHz sine wave at 48kHz
+        let pi2 = std::f32::consts::PI * 2.0;
+        let mut input = vec![0.0f32; 128];
+        for (i, sample) in input.iter_mut().enumerate() {
+            *sample = (pi2 * 1000.0 * i as f32 / 48000.0).sin();
+        }
+        let mut out = vec![0.0f32; 128];
+
+        // 1. Let filter settle in active state
+        for _ in 0..15 {
+            assert!(engine.process(&[&input], &mut [&mut out]));
+        }
+        let active_peak = out.iter().cloned().fold(0.0f32, f32::max);
+        // +12dB should boost sine amplitude from 1.0 to ~3.98
+        assert!(
+            active_peak > 3.5,
+            "active peak should be ~3.98, got {active_peak}"
+        );
+
+        // 2. Engage bypass (active -> bypass)
+        params.global.bypass = true;
+        engine.set_parameters(params);
+
+        // Crossfade for 20ms at 48kHz = 960 samples (10 blocks of 128 = 1280 samples)
+        for _ in 0..10 {
+            assert!(engine.process(&[&input], &mut [&mut out]));
+        }
+        // At full bypass, peak should match dry sine amplitude (1.0)
+        let bypassed_peak = out.iter().cloned().fold(0.0f32, f32::max);
+        assert!(
+            (bypassed_peak - 1.0).abs() < 0.05,
+            "bypassed peak should match dry 1.0, got {bypassed_peak}"
+        );
+
+        // 3. Disengage bypass (bypass -> active)
+        params.global.bypass = false;
+        engine.set_parameters(params);
+
+        for _ in 0..15 {
+            assert!(engine.process(&[&input], &mut [&mut out]));
+        }
+        let re_active_peak = out.iter().cloned().fold(0.0f32, f32::max);
+        assert!(
+            (re_active_peak - active_peak).abs() < 0.05,
+            "re-activated peak should match active peak {active_peak}, got {re_active_peak}"
+        );
+    }
+
+    #[test]
+    fn test_auto_gain_compensation() {
+        let mut engine = EngineLifecycle::new();
+        engine.prepare(48000.0, 128, 1);
+
+        let mut params = EqParameters::default();
+        params.global.bypass = false;
+        params.global.auto_gain = false;
+        // Boost 1000 Hz by +12 dB
+        params.bands[0].enabled = true;
+        params.bands[0].frequency_hz = 1000.0;
+        params.bands[0].gain_db = 12.0;
+        params.bands[0].filter_type = FilterType::Bell;
+        params.bands[0].q = 1.0;
+        engine.set_parameters(params);
+
+        let pi2 = std::f32::consts::PI * 2.0;
+        let mut input = vec![0.0f32; 128];
+        for (i, sample) in input.iter_mut().enumerate() {
+            *sample = (pi2 * 1000.0 * i as f32 / 48000.0).sin();
+        }
+        let mut out = vec![0.0f32; 128];
+
+        // Process without auto_gain
+        for _ in 0..15 {
+            assert!(engine.process(&[&input], &mut [&mut out]));
+        }
+        let peak_without_auto_gain = out.iter().cloned().fold(0.0f32, f32::max);
+        assert!(peak_without_auto_gain > 3.5);
+
+        // Enable auto_gain
+        params.global.auto_gain = true;
+        engine.set_parameters(params);
+
+        for _ in 0..15 {
+            assert!(engine.process(&[&input], &mut [&mut out]));
+        }
+        let peak_with_auto_gain = out.iter().cloned().fold(0.0f32, f32::max);
+
+        // Auto gain should reduce the output amplitude
+        assert!(
+            peak_with_auto_gain < peak_without_auto_gain * 0.8,
+            "auto_gain should reduce peak, got {peak_with_auto_gain} vs {peak_without_auto_gain}"
+        );
+        let comp_db = engine.auto_gain_compensation_db();
+        assert!(
+            comp_db < 0.0,
+            "comp_db should be negative for a boost, got {comp_db}"
+        );
     }
 }
