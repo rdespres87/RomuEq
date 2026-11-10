@@ -10,6 +10,7 @@
 - [x] Implement clean-room native macOS CoreAudio HAL virtual loopback driver (`RomuEq.driver`)
 - [x] Pass adversarial Inquisitor Grill session with zero critical or major defects
 - [x] Validate all 188 workspace unit and integration tests, format, and clippy with zero warnings
-- [x] Commit changes to git repository (`52f235b`)
+- [x] Commit changes to git repository (`2a90ca7`)
+- [x] Add 10 studio & multimedia factory presets (EDM, Rock, Hip-Hop, Jazz, Pop, Podcast, Cinéma, Gaming, Harman, Night Mode)
 - [ ] User testing with live audio playback through `RomuEq.app`
 
