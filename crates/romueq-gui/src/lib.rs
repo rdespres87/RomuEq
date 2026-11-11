@@ -435,10 +435,10 @@ pub fn render_band(
                 );
             });
 
-            // 2. Compact Filter type dropdown (enum, 0–4)
-            let ft_val = snapshot.get(params.filter_type()).unwrap_or(2.0);
-            let filter_types = ["LowShelf", "HiShelf", "Bell", "LowPass", "HiPass"];
-            let ft_idx = (ft_val as usize).min(filter_types.len() - 1);
+            // 2. Compact Filter type dropdown (enum, 0–4 matching FilterType::to_raw)
+            let ft_val = snapshot.get(params.filter_type()).unwrap_or(0.0);
+            let filter_types = ["Bell", "LowShelf", "HiShelf", "HiPass", "LowPass"];
+            let ft_idx = (ft_val.round().max(0.0) as usize).min(filter_types.len() - 1);
             let mut ft_idx = ft_idx;
 
             let col_w = (ui.available_width() - 4.0).max(52.0);
@@ -1363,6 +1363,11 @@ pub trait GuiApp: Send {
 pub mod preset_manager;
 pub use preset_manager::{NamedPreset, PresetManager, PresetManagerError};
 
+pub mod presets_io;
+pub mod workspace_ui;
+pub use presets_io::*;
+pub use workspace_ui::*;
+
 // ---------------------------------------------------------------------------
 // Standalone entry point (feature-gated)
 // ---------------------------------------------------------------------------
@@ -1408,11 +1413,10 @@ pub mod standalone {
         audio_active: bool,
         available_outputs: Vec<String>,
         available_inputs: Vec<String>,
-        preset_name_input: String,
+        ui_state: WorkspaceUiState,
         spectrum_processor: romueq_analysis::SpectrumProcessor,
         spectrum_frame_num: u64,
         status_message: Option<String>,
-        dragged_band: Option<usize>,
     }
 
     impl<A: GuiApp> StandaloneRunner<A> {
@@ -1510,11 +1514,10 @@ pub mod standalone {
                 audio_active,
                 available_outputs: out_devices,
                 available_inputs: in_devices,
-                preset_name_input: String::new(),
+                ui_state: WorkspaceUiState::default(),
                 spectrum_processor,
                 spectrum_frame_num: 0,
                 status_message,
-                dragged_band: None,
             }
         }
     }
@@ -1574,31 +1577,41 @@ pub mod standalone {
             self.app.update(&mut self.client);
 
             // Render the UI.
+            // Render the unified workspace UI across Standalone and Plugin modes.
+            let env = HostEnvironment::Standalone {
+                audio_active: self.audio_active,
+                current_output: self.audio_stream.as_ref()
+                    .and_then(|a| a.selected_output_device())
+                    .unwrap_or("Défaut Système")
+                    .to_string(),
+                available_outputs: self.available_outputs.clone(),
+                peak_levels_db: self.audio_stream.as_ref().map(|a| a.peak_levels_db()).unwrap_or((-100.0, -100.0)),
+            };
+
+            let mut batch = GuiCommandBatch::new();
+            let mut actions = Vec::new();
+
             egui::CentralPanel::default().show(ctx, |ui| {
-                ui.spacing_mut().item_spacing.y = 4.0;
+                let (b, a) = render_workspace(
+                    ui,
+                    &mut self.ui_state,
+                    &env,
+                    &self.client.band_params,
+                    self.client.sample_rate,
+                    &self.client.snapshot,
+                    &analysis,
+                    &self.client.preset_manager,
+                    &self.client._current_preset,
+                    self.status_message.as_deref(),
+                );
+                batch = b;
+                actions = a;
+            });
 
-                // Compact header row: Title + Status message
-                ui.horizontal(|ui| {
-                    ui.heading("RomuEq — Égaliseur Paramétrique");
-                    if let Some(ref status) = self.status_message {
-                        ui.separator();
-                        ui.label(
-                            egui::RichText::new(status)
-                                .small()
-                                .color(egui::Color32::from_rgb(165, 175, 190)),
-                        );
-                    }
-                });
-
-                // Unified top toolbar: Play/Stop + EQ On/Off + Output Device + Refresh + Stereo L/R VU-Meter
-                let mut refresh_devices = false;
-                ui.horizontal(|ui| {
-                    let play_label = if self.audio_active {
-                        "⏹ Stop Audio"
-                    } else {
-                        "▶ Play Audio"
-                    };
-                    if ui.button(play_label).clicked() {
+            // Handle actions from workspace UI
+            for action in actions {
+                match action {
+                    WorkspaceAction::TogglePlayStop => {
                         if let Some(ref mut audio) = self.audio_stream {
                             if self.audio_active {
                                 let _ = audio.stop();
@@ -1612,11 +1625,8 @@ pub mod standalone {
                                     Ok(()) => {
                                         self.audio_active = true;
                                         self.client.sample_rate = audio.sample_rate();
-                                        let out_name = audio
-                                            .selected_output_device()
-                                            .unwrap_or("Sortie");
-                                        self.status_message =
-                                            Some(format!("Égaliseur actif → {out_name}"));
+                                        let out_name = audio.selected_output_device().unwrap_or("Sortie");
+                                        self.status_message = Some(format!("Égaliseur actif → {out_name}"));
                                     }
                                     Err(err) => {
                                         self.status_message = Some(format!("Erreur audio: {err}"));
@@ -1625,71 +1635,10 @@ pub mod standalone {
                             }
                         }
                     }
-
-                    // Equalizer On / Off (Direct Bypass) toggle button
-                    let is_bypassed = self
-                        .client
-                        .snapshot()
-                        .get(ParamId(1))
-                        .map(|v| v >= 0.5)
-                        .unwrap_or(false);
-
-                    let eq_text = if is_bypassed {
-                        "⚡ ÉGALISEUR : OFF (BYPASS)"
-                    } else {
-                        "✨ ÉGALISEUR : ON"
-                    };
-
-                    let eq_color = if is_bypassed {
-                        egui::Color32::from_rgb(180, 180, 180)
-                    } else {
-                        egui::Color32::from_rgb(80, 240, 120)
-                    };
-
-                    if ui
-                        .add(egui::Button::new(
-                            egui::RichText::new(eq_text).strong().color(eq_color),
-                        ))
-                        .on_hover_text(if is_bypassed {
-                            "Cliquez pour activer le traitement d'égalisation (ON)"
-                        } else {
-                            "Cliquez pour passer en flux direct transparent sans traitement (BYPASS DIRECT)"
-                        })
-                        .clicked()
-                    {
-                        let new_bypass = !is_bypassed;
-                        let mut batch = GuiCommandBatch::new();
-                        batch.push(ParamId(1), if new_bypass { 1.0 } else { 0.0 });
-                        self.client.apply_commands(batch);
-                        save_complete_app_state(&self.client);
+                    WorkspaceAction::SelectOutputDevice(dev) => {
                         if let Some(ref mut audio) = self.audio_stream {
-                            if let Some(ref engine) = self.client.engine {
-                                let _ = audio.set_parameters(*engine.eq_parameters());
-                            }
-                        }
-                    }
-
-                    ui.separator();
-
-                    if let Some(ref mut audio) = self.audio_stream {
-                        let current_out = audio
-                            .selected_output_device()
-                            .unwrap_or("Défaut Système")
-                            .to_string();
-                        let mut chosen_out = current_out.clone();
-
-                        ui.label("🔊 Sortie:");
-                        egui::ComboBox::from_id_salt("output_device_select")
-                            .selected_text(&current_out)
-                            .show_ui(ui, |ui| {
-                                for dev in &self.available_outputs {
-                                    ui.selectable_value(&mut chosen_out, dev.clone(), dev.as_str());
-                                }
-                            });
-
-                        if chosen_out != current_out {
-                            audio.set_output_device(Some(chosen_out.clone()));
-                            save_selected_output_device(&chosen_out);
+                            audio.set_output_device(Some(dev.clone()));
+                            save_selected_output_device(&dev);
                             if let Some(ref engine) = self.client.engine {
                                 let _ = audio.set_parameters(*engine.eq_parameters());
                             }
@@ -1699,233 +1648,108 @@ pub mod standalone {
                                     Ok(()) => {
                                         self.audio_active = true;
                                         self.client.sample_rate = audio.sample_rate();
-                                        self.status_message =
-                                            Some(format!("Égaliseur actif → {chosen_out}"));
+                                        self.status_message = Some(format!("Égaliseur actif → {dev}"));
                                     }
                                     Err(e) => {
                                         self.audio_active = false;
-                                        self.status_message =
-                                            Some(format!("Erreur sortie '{chosen_out}': {e}"));
+                                        self.status_message = Some(format!("Erreur sortie '{dev}': {e}"));
                                     }
                                 }
                             } else {
-                                self.status_message =
-                                    Some(format!("Sortie sélectionnée : {chosen_out}"));
-                            }
-                        }
-
-                        if ui
-                            .button("🔄")
-                            .on_hover_text("Actualiser les périphériques audio")
-                            .clicked()
-                        {
-                            refresh_devices = true;
-                        }
-
-                        ui.separator();
-
-                        // Graphical Stereo Left / Right VU-Meter
-                        let (pl, pr) = audio.peak_levels_db();
-                        render_stereo_vu_meter(ui, pl, pr);
-                    }
-                });
-
-                if refresh_devices {
-                    let was_active = self.audio_active;
-                    if was_active {
-                        if let Some(ref mut audio) = self.audio_stream {
-                            let _ = audio.stop();
-                        }
-                    }
-                    self.available_outputs = audio::AudioStream::available_output_devices();
-                    self.available_inputs = audio::AudioStream::available_input_devices();
-                    if was_active {
-                        if let Some(ref mut audio) = self.audio_stream {
-                            if let Some(ref engine) = self.client.engine {
-                                let _ = audio.set_parameters(*engine.eq_parameters());
-                            }
-                            if let Err(e) = audio.start() {
-                                self.status_message =
-                                    Some(format!("Erreur redémarrage flux: {e}"));
-                                self.audio_active = false;
-                            } else {
-                                self.audio_active = true;
-                                self.client.sample_rate = audio.sample_rate();
+                                self.status_message = Some(format!("Sortie sélectionnée : {dev}"));
                             }
                         }
                     }
-                }
-
-                ui.separator();
-
-                // Build a batch of commands from user interaction.
-                let mut batch = GuiCommandBatch::new();
-
-                // Two side-by-side plots: Left = Equalizer Curve, Right = Real-Time FFT Spectrum
-                ui.columns(2, |cols| {
-                    cols[0].horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new("📈 Courbe d'Égalisation (dB)").strong(),
-                        );
-                        ui.label(
-                            egui::RichText::new("— Glisser: Freq/Gain • Molette: Q")
-                                .small()
-                                .color(egui::Color32::from_rgb(155, 160, 170)),
-                        );
-                    });
-                    render_interactive_frequency_response_plot(
-                        &mut cols[0],
-                        &self.client.band_params,
-                        self.client.sample_rate,
-                        512,
-                        &mut self.dragged_band,
-                        &mut batch,
-                    );
-
-                    cols[1].horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new("📊 Spectre FFT Temps-Réel (dBFS)").strong(),
-                        );
-                    });
-                    render_spectrum_analyzer(&mut cols[1], &analysis, self.client.sample_rate, 128);
-                });
-
-                ui.separator();
-
-                // Unified Master & Preset bar on a single compact row
-                ui.horizontal(|ui| {
-                    render_master_section(ui, &self.client.snapshot, &mut batch);
-
-                    ui.separator();
-
-                    ui.label(egui::RichText::new("Preset:").strong());
-                    let presets: Vec<String> = self
-                        .client
-                        .preset_manager
-                        .iter()
-                        .map(|p| p.name.clone())
-                        .collect();
-
-                    let selected_text = if self.client._current_preset.is_empty() {
-                        "Choisir un preset".to_string()
-                    } else {
-                        self.client._current_preset.clone()
-                    };
-
-                    let prev_preset = self.client._current_preset.clone();
-                    egui::ComboBox::new("preset_select", "")
-                        .selected_text(selected_text)
-                        .show_ui(ui, |ui| {
-                            for name in &presets {
-                                ui.selectable_value(
-                                    &mut self.client._current_preset,
-                                    name.clone(),
-                                    name.as_str(),
-                                );
+                    WorkspaceAction::RefreshDevices => {
+                        let was_active = self.audio_active;
+                        if was_active {
+                            if let Some(ref mut audio) = self.audio_stream {
+                                let _ = audio.stop();
                             }
-                        });
-
-                    if self.client._current_preset != prev_preset
-                        && !self.client._current_preset.is_empty()
-                    {
-                        let chosen = self.client._current_preset.clone();
-                        let _ = self.client.apply_preset(&chosen);
-                        // Automatically engage the equalizer (disable Bypass) when user selects a preset
+                        }
+                        self.available_outputs = audio::AudioStream::available_output_devices();
+                        self.available_inputs = audio::AudioStream::available_input_devices();
+                        if was_active {
+                            if let Some(ref mut audio) = self.audio_stream {
+                                if let Some(ref engine) = self.client.engine {
+                                    let _ = audio.set_parameters(*engine.eq_parameters());
+                                }
+                                if let Err(e) = audio.start() {
+                                    self.status_message = Some(format!("Erreur redémarrage flux: {e}"));
+                                    self.audio_active = false;
+                                } else {
+                                    self.audio_active = true;
+                                    self.client.sample_rate = audio.sample_rate();
+                                }
+                            }
+                        }
+                    }
+                    WorkspaceAction::ApplyPreset(name) => {
+                        let _ = self.client.apply_preset(&name);
+                        self.client._current_preset = name.clone();
                         let mut engage = GuiCommandBatch::new();
                         engage.push(ParamId(1), 0.0);
                         self.client.apply_commands(engage);
-                        save_last_active_preset_name(&chosen);
+                        save_last_active_preset_name(&name);
                         save_complete_app_state(&self.client);
                         if let Some(ref mut audio) = self.audio_stream {
                             if let Some(ref engine) = self.client.engine {
                                 let _ = audio.set_parameters(*engine.eq_parameters());
                             }
                         }
-                        self.status_message = Some(format!("Preset '{chosen}' appliqué"));
+                        self.status_message = Some(format!("Preset '{name}' appliqué"));
                     }
-
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.preset_name_input)
-                            .desired_width(110.0)
-                            .hint_text("Nom du preset..."),
-                    );
-
-                    if ui.button("💾 Sauvegarder").clicked() {
-                        let name = if !self.preset_name_input.trim().is_empty() {
-                            self.preset_name_input.trim().to_string()
-                        } else if !self.client._current_preset.trim().is_empty() {
-                            self.client._current_preset.trim().to_string()
-                        } else {
-                            self.client.next_auto_name()
-                        };
+                    WorkspaceAction::SavePreset(name) => {
                         if let Err(e) = self.client.create_preset(&name) {
                             self.status_message = Some(format!("Erreur preset '{name}': {e}"));
                         } else {
                             self.client._current_preset = name.clone();
-                            persist_preset_to_disk(&mut self.client, &name);
+                            let _ = persist_preset_to_disk(&mut self.client.preset_manager, &name);
                             save_last_active_preset_name(&name);
                             save_complete_app_state(&self.client);
-                            self.status_message =
-                                Some(format!("Preset '{name}' sauvegardé sur disque"));
-                            self.preset_name_input.clear();
+                            self.status_message = Some(format!("Preset '{name}' sauvegardé sur disque"));
                         }
                     }
-
-                    if ui.button("🗑 Supprimer").clicked() {
-                        let rem = self.client._current_preset.clone();
-                        if !rem.is_empty() {
-                            let _ = self.client.remove_preset(&rem);
-                            remove_preset_from_disk(&rem);
-                            self.client._current_preset.clear();
-                            save_complete_app_state(&self.client);
-                            self.status_message = Some(format!("Preset '{rem}' supprimé"));
-                        }
-                    }
-                });
-
-                ui.separator();
-
-                // 8 equal-width columns Channel Strip grid
-                ui.columns(8, |cols| {
-                    let band_controls = BandControls::new();
-                    for (i, col) in cols.iter_mut().enumerate() {
-                        let bp = band_controls.params(i);
-                        render_band(col, i, &bp, &self.client.snapshot, &mut batch);
-                    }
-                });
-
-                // Process the batch through the engine client.
-                if !batch.is_empty() {
-                    // If user actively adjusts any band parameter while Bypass is on, automatically engage EQ
-                    let modifies_band = batch.commands().iter().any(|c| c.param_id.0 >= 100);
-                    let modifies_bypass = batch.commands().iter().any(|c| c.param_id.0 == 1);
-                    if modifies_band && !modifies_bypass {
-                        let cur_bypass = self
-                            .client
-                            .snapshot()
-                            .get(ParamId(1))
-                            .map(|v| v >= 0.5)
-                            .unwrap_or(false);
-                        if cur_bypass {
-                            batch.push(ParamId(1), 0.0);
-                        }
-                    }
-                    self.client.apply_commands(batch);
-                    save_complete_app_state(&self.client);
-                    if let Some(ref mut audio) = self.audio_stream {
-                        if let Some(ref engine) = self.client.engine {
-                            let _ = audio.set_parameters(*engine.eq_parameters());
-                        }
+                    WorkspaceAction::DeletePreset(name) => {
+                        let _ = self.client.remove_preset(&name);
+                        remove_preset_from_disk(&name);
+                        self.client._current_preset.clear();
+                        save_complete_app_state(&self.client);
+                        self.status_message = Some(format!("Preset '{name}' supprimé"));
                     }
                 }
+            }
 
-                // Guarantee that the real-time audio thread always has the exact latest EqParameters
+            // Process the batch through the engine client.
+            if !batch.is_empty() {
+                let modifies_band = batch.commands().iter().any(|c| c.param_id.0 >= 100);
+                let modifies_bypass = batch.commands().iter().any(|c| c.param_id.0 == 1);
+                if modifies_band && !modifies_bypass {
+                    let cur_bypass = self
+                        .client
+                        .snapshot()
+                        .get(ParamId(1))
+                        .map(|v| v >= 0.5)
+                        .unwrap_or(false);
+                    if cur_bypass {
+                        batch.push(ParamId(1), 0.0);
+                    }
+                }
+                self.client.apply_commands(batch);
+                save_complete_app_state(&self.client);
                 if let Some(ref mut audio) = self.audio_stream {
                     if let Some(ref engine) = self.client.engine {
-                        audio.ensure_parameters_synced(*engine.eq_parameters());
+                        let _ = audio.set_parameters(*engine.eq_parameters());
                     }
                 }
-            });
+            }
+
+            // Guarantee that the real-time audio thread always has the exact latest EqParameters
+            if let Some(ref mut audio) = self.audio_stream {
+                if let Some(ref engine) = self.client.engine {
+                    audio.ensure_parameters_synced(*engine.eq_parameters());
+                }
+            }
 
             // Repaint continuously for real-time response.
             ctx.request_repaint();
@@ -1953,56 +1777,6 @@ pub mod standalone {
         let dir = std::path::PathBuf::from(base).join(".romueq");
         let _ = std::fs::create_dir_all(dir.join("presets"));
         dir
-    }
-
-    fn sanitize_preset_filename(name: &str) -> String {
-        let s: String = name
-            .chars()
-            .map(|c| {
-                if c.is_alphanumeric()
-                    || c == '-'
-                    || c == '_'
-                    || c == ' '
-                    || c == '+'
-                    || c == '('
-                    || c == ')'
-                {
-                    c
-                } else {
-                    '_'
-                }
-            })
-            .collect();
-        format!("{}.req", s.trim())
-    }
-
-    fn persist_preset_to_disk(client: &mut EngineClient, name: &str) {
-        let path = user_config_dir()
-            .join("presets")
-            .join(sanitize_preset_filename(name));
-        if let Some(path_str) = path.to_str() {
-            let _ = client.save_preset_to_file(name, path_str);
-        }
-    }
-
-    fn remove_preset_from_disk(name: &str) {
-        let path = user_config_dir()
-            .join("presets")
-            .join(sanitize_preset_filename(name));
-        let _ = std::fs::remove_file(path);
-    }
-
-    fn save_last_active_preset_name(name: &str) {
-        let path = user_config_dir().join("last_preset.txt");
-        let _ = std::fs::write(path, name.as_bytes());
-    }
-
-    fn load_last_active_preset_name() -> Option<String> {
-        let path = user_config_dir().join("last_preset.txt");
-        std::fs::read_to_string(path)
-            .ok()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
     }
 
     fn save_selected_output_device(dev: &str) {
@@ -2296,46 +2070,24 @@ pub mod standalone {
 
         /// Map a float value to a FilterType enum variant.
         fn filter_type_from_f32(v: f32) -> romueq_common::FilterType {
-            match v as i32 {
-                0 => romueq_common::FilterType::LowShelf,
-                1 => romueq_common::FilterType::HighShelf,
-                2 => romueq_common::FilterType::Bell,
-                3 => romueq_common::FilterType::LowPass,
-                4 => romueq_common::FilterType::HighPass,
-                _ => romueq_common::FilterType::Bell,
-            }
+            romueq_common::FilterType::from_raw(v.round().max(0.0) as u32)
+                .unwrap_or(romueq_common::FilterType::Bell)
         }
 
         /// Map a float value to a Slope enum variant.
         fn slope_from_f32(v: f32) -> romueq_common::Slope {
-            match v as i32 {
-                0 => romueq_common::Slope::Db6,
-                1 => romueq_common::Slope::Db12,
-                2 => romueq_common::Slope::Db18,
-                3 => romueq_common::Slope::Db24,
-                _ => romueq_common::Slope::Db12,
-            }
+            romueq_common::Slope::from_raw(v.round().max(0.0) as u32)
+                .unwrap_or(romueq_common::Slope::Db12)
         }
 
         /// Map a FilterType enum to a float value (for snapshot encoding).
         fn filter_type_to_f32(ft: romueq_common::FilterType) -> f32 {
-            match ft {
-                romueq_common::FilterType::LowShelf => 0.0,
-                romueq_common::FilterType::HighShelf => 1.0,
-                romueq_common::FilterType::Bell => 2.0,
-                romueq_common::FilterType::LowPass => 3.0,
-                romueq_common::FilterType::HighPass => 4.0,
-            }
+            ft.to_raw() as f32
         }
 
         /// Map a Slope enum to a float value (for snapshot encoding).
         fn slope_to_f32(sl: romueq_common::Slope) -> f32 {
-            match sl {
-                romueq_common::Slope::Db6 => 0.0,
-                romueq_common::Slope::Db12 => 1.0,
-                romueq_common::Slope::Db18 => 2.0,
-                romueq_common::Slope::Db24 => 3.0,
-            }
+            sl.to_raw() as f32
         }
 
         /// Map a ProcessingMode enum to a float value (for snapshot encoding).

@@ -1,0 +1,227 @@
+//! Preset and state disk persistence for RomuEq.
+//!
+//! Stores user-created presets in `~/.romueq/presets/*.req`, the last active preset
+//! name in `~/.romueq/last_preset.txt`, and complete app state in `~/.romueq/app_state.bin`.
+
+use crate::default_8_bands;
+use crate::preset_manager::PresetManager;
+use romueq_common::state::Preset;
+use romueq_common::EqParameters;
+
+/// Returns the configuration directory for RomuEq (`~/.romueq`).
+pub fn user_config_dir() -> std::path::PathBuf {
+    let base = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    let dir = std::path::PathBuf::from(base).join(".romueq");
+    let _ = std::fs::create_dir_all(dir.join("presets"));
+    dir
+}
+
+/// Sanitizes a preset name into a safe `.req` filename.
+pub fn sanitize_preset_filename(name: &str) -> String {
+    let s: String = name
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric()
+                || c == '-'
+                || c == '_'
+                || c == ' '
+                || c == '+'
+                || c == '('
+                || c == ')'
+            {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("{}.req", s.trim())
+}
+
+/// Saves a named preset from the preset manager to `~/.romueq/presets/<name>.req`.
+pub fn persist_preset_to_disk(preset_manager: &mut PresetManager, name: &str) -> Result<(), String> {
+    let path = user_config_dir()
+        .join("presets")
+        .join(sanitize_preset_filename(name));
+    let path_str = path.to_str().ok_or_else(|| "Invalid UTF-8 path".to_string())?;
+    preset_manager.save_to_file(name, path_str).map_err(|e| e.to_string())
+}
+
+/// Removes a preset file `~/.romueq/presets/<name>.req` from disk.
+pub fn remove_preset_from_disk(name: &str) {
+    let path = user_config_dir()
+        .join("presets")
+        .join(sanitize_preset_filename(name));
+    let _ = std::fs::remove_file(path);
+}
+
+/// Saves the last active preset name to `~/.romueq/last_preset.txt`.
+pub fn save_last_active_preset_name(name: &str) {
+    let path = user_config_dir().join("last_preset.txt");
+    let _ = std::fs::write(path, name.as_bytes());
+}
+
+/// Loads the last active preset name from `~/.romueq/last_preset.txt`.
+pub fn load_last_active_preset_name() -> Option<String> {
+    let path = user_config_dir().join("last_preset.txt");
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Populates the preset manager with the 15 standard factory presets.
+pub fn populate_factory_presets(preset_manager: &mut PresetManager) {
+    let mut add = |name: &str, configure: fn(&mut EqParameters)| {
+        let mut params = EqParameters {
+            bands: default_8_bands(),
+            ..Default::default()
+        };
+        configure(&mut params);
+
+        let mut preset = Preset::new(name);
+        preset.parameter_values.set(1, if params.global.bypass { 1.0 } else { 0.0 });
+        preset.parameter_values.set(2, params.global.output_gain_db);
+        preset.parameter_values.set(3, if params.global.auto_gain { 1.0 } else { 0.0 });
+
+        for band_idx in 0..romueq_common::MAX_BANDS {
+            let base = 100u32 + band_idx as u32 * 100;
+            let band = &params.bands[band_idx];
+            preset.parameter_values.set(base, if band.enabled { 1.0 } else { 0.0 });
+            preset
+                .parameter_values
+                .set(base + 1, band.filter_type.to_raw() as f32);
+            preset.parameter_values.set(base + 2, band.frequency_hz);
+            preset.parameter_values.set(base + 3, band.gain_db);
+            preset.parameter_values.set(base + 4, band.q);
+            preset
+                .parameter_values
+                .set(base + 5, band.slope.to_raw() as f32);
+        }
+
+        preset_manager.remove(name);
+        let _ = preset_manager.add(name.to_string(), preset);
+    };
+
+    add("Flat", |_| {});
+    add("Bass Boost (+6 dB)", |p| {
+        p.bands[0].gain_db = 6.0;
+        p.bands[1].gain_db = 3.5;
+    });
+    add("Électro / EDM", |p| {
+        p.bands[0].gain_db = 5.5;
+        p.bands[1].gain_db = 4.0;
+        p.bands[3].gain_db = -2.5;
+        p.bands[5].gain_db = 1.5;
+        p.bands[7].gain_db = 4.5;
+    });
+    add("Rock / Metal", |p| {
+        p.bands[0].gain_db = 2.0;
+        p.bands[1].gain_db = 4.5;
+        p.bands[2].gain_db = -1.5;
+        p.bands[3].gain_db = -3.0;
+        p.bands[5].gain_db = 3.5;
+        p.bands[6].gain_db = 2.5;
+        p.bands[7].gain_db = 2.0;
+    });
+    add("Hip-Hop / R&B", |p| {
+        p.bands[0].gain_db = 7.0;
+        p.bands[1].gain_db = 4.5;
+        p.bands[2].gain_db = 1.0;
+        p.bands[3].gain_db = -2.0;
+        p.bands[5].gain_db = 1.5;
+        p.bands[7].gain_db = 3.0;
+    });
+    add("Jazz / Warmth", |p| {
+        p.bands[0].gain_db = 1.5;
+        p.bands[1].gain_db = 2.5;
+        p.bands[2].gain_db = 3.0;
+        p.bands[3].gain_db = 1.5;
+        p.bands[5].gain_db = -1.0;
+        p.bands[6].gain_db = -2.0;
+        p.bands[7].gain_db = -2.5;
+    });
+    add("Pop Moderne", |p| {
+        p.bands[0].gain_db = 4.0;
+        p.bands[1].gain_db = 3.0;
+        p.bands[3].gain_db = -2.0;
+        p.bands[4].gain_db = 1.0;
+        p.bands[5].gain_db = 2.5;
+        p.bands[6].gain_db = 3.0;
+        p.bands[7].gain_db = 4.0;
+    });
+    add("Acoustic Clarity", |p| {
+        p.bands[1].gain_db = -2.0;
+        p.bands[4].gain_db = 2.5;
+        p.bands[5].gain_db = 3.5;
+        p.bands[7].gain_db = 4.0;
+    });
+    add("Vocal Air", |p| {
+        p.bands[0].gain_db = -4.0;
+        p.bands[1].gain_db = -2.5;
+        p.bands[4].gain_db = 2.0;
+        p.bands[5].gain_db = 3.5;
+        p.bands[7].gain_db = 5.0;
+    });
+    add("Podcast / Voix", |p| {
+        p.bands[0].gain_db = -8.0;
+        p.bands[1].gain_db = -4.0;
+        p.bands[2].gain_db = -2.0;
+        p.bands[4].gain_db = 2.5;
+        p.bands[5].gain_db = 4.0;
+        p.bands[7].gain_db = 1.5;
+    });
+    add("Cinéma / Dialogues", |p| {
+        p.bands[0].gain_db = 5.0;
+        p.bands[1].gain_db = 2.0;
+        p.bands[3].gain_db = -2.5;
+        p.bands[4].gain_db = 2.0;
+        p.bands[5].gain_db = 3.5;
+        p.bands[7].gain_db = 2.0;
+    });
+    add("Gaming / FPS", |p| {
+        p.bands[0].gain_db = -6.0;
+        p.bands[1].gain_db = -3.0;
+        p.bands[2].gain_db = -1.5;
+        p.bands[4].gain_db = 3.0;
+        p.bands[5].gain_db = 5.0;
+        p.bands[6].gain_db = 4.0;
+        p.bands[7].gain_db = -2.0;
+    });
+    add("Casque Audiophile (Harman)", |p| {
+        p.bands[0].gain_db = 4.5;
+        p.bands[1].gain_db = 2.5;
+        p.bands[2].gain_db = -0.5;
+        p.bands[5].gain_db = 2.0;
+        p.bands[6].gain_db = 1.0;
+        p.bands[7].gain_db = 1.5;
+    });
+    add("Écoute Nocturne (Night Mode)", |p| {
+        p.bands[0].gain_db = -9.0;
+        p.bands[1].gain_db = -5.0;
+        p.bands[2].gain_db = -2.0;
+        p.bands[4].gain_db = 2.0;
+        p.bands[5].gain_db = 2.5;
+        p.bands[6].gain_db = -2.0;
+        p.bands[7].gain_db = -4.0;
+    });
+    add("Loudness", |p| {
+        p.bands[0].gain_db = 5.0;
+        p.bands[1].gain_db = 3.0;
+        p.bands[3].gain_db = -2.5;
+        p.bands[7].gain_db = 4.0;
+    });
+
+    // Load any user-saved presets from ~/.romueq/presets/
+    let presets_dir = user_config_dir().join("presets");
+    if let Ok(entries) = std::fs::read_dir(presets_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("req") {
+                if let Some(p_str) = path.to_str() {
+                    let _ = preset_manager.load_from_file(p_str);
+                }
+            }
+        }
+    }
+}
