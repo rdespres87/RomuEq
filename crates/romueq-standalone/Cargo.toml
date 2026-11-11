@@ -11,7 +11,7 @@ romueq-engine.workspace = true
 romueq-gui = { workspace = true, features = ["standalone"] }
 romueq-common.workspace = true
 eframe.workspace = true
-egui = "0.31"
+egui = "0.37"
 cpal = "0.15"
 
 [target.'cfg(target_os = "macos")'.dependencies]
