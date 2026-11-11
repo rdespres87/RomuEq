@@ -115,7 +115,9 @@ where
                 *out_value = val;
                 Ok(())
             } else {
-                Err(PluginWrapperError::Plugin(PluginError::Message("Unknown param id")))
+                Err(PluginWrapperError::Plugin(PluginError::Message(
+                    "Unknown param id",
+                )))
             }
         })
         .is_some()
@@ -262,8 +264,7 @@ unsafe extern "C" fn text_to_value(
             }
         }
 
-        let is_khz = lower.ends_with("khz")
-            || (lower.ends_with('k') && !lower.ends_with("ok"));
+        let is_khz = lower.ends_with("khz") || (lower.ends_with('k') && !lower.ends_with("ok"));
         let cleaned = lower
             .trim_end_matches("db/o")
             .trim_end_matches("db/oct")

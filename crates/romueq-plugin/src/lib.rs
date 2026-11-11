@@ -10,16 +10,18 @@ pub mod ext_ports;
 pub mod params_map;
 pub mod ui_cocoa;
 
-use std::ffi::{CStr, c_void};
+use std::ffi::CStr;
+#[cfg(target_os = "macos")]
+use std::ffi::c_void;
 use std::io::{Read, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
+use clack_common::events::Pckn;
 use clack_common::events::event_types::{
     ParamGestureBeginEvent, ParamGestureEndEvent, ParamValueEvent,
 };
 use clack_common::events::spaces::CoreEventSpace;
-use clack_common::events::Pckn;
 use clack_common::extensions::{
     Extension, ExtensionImplementation, PluginExtensionSide, RawExtension,
     RawExtensionImplementation,
@@ -33,7 +35,9 @@ use clap_sys::events::{
     CLAP_EVENT_PARAM_VALUE, clap_event_header, clap_event_param_gesture, clap_event_param_value,
     clap_output_events,
 };
-use clap_sys::ext::gui::{CLAP_WINDOW_API_COCOA, clap_window};
+#[cfg(target_os = "macos")]
+use clap_sys::ext::gui::CLAP_WINDOW_API_COCOA;
+use clap_sys::ext::gui::clap_window;
 use clap_sys::ext::params::{CLAP_EXT_PARAMS, CLAP_PARAM_RESCAN_VALUES, clap_host_params};
 use clap_sys::ext::state::{CLAP_EXT_STATE, clap_plugin_state};
 use clap_sys::id::clap_id;
@@ -248,7 +252,8 @@ impl RomuEqSharedInner {
 
     #[inline]
     pub fn take_gesture_begin(&self, slot: usize) -> Option<clap_id> {
-        if slot < PARAM_COUNT_USIZE && self.gesture_begin_pending[slot].swap(false, Ordering::AcqRel)
+        if slot < PARAM_COUNT_USIZE
+            && self.gesture_begin_pending[slot].swap(false, Ordering::AcqRel)
         {
             Some(slot_to_param_id(slot))
         } else {
@@ -265,7 +270,8 @@ impl RomuEqSharedInner {
 
     #[inline]
     pub fn take_gesture_end(&self, slot: usize) -> Option<clap_id> {
-        if slot < PARAM_COUNT_USIZE && self.gesture_end_pending[slot].swap(false, Ordering::AcqRel) {
+        if slot < PARAM_COUNT_USIZE && self.gesture_end_pending[slot].swap(false, Ordering::AcqRel)
+        {
             Some(slot_to_param_id(slot))
         } else {
             None
@@ -630,8 +636,7 @@ impl RomuEqAudioProcessor {
             }
 
             for (ch, out_ch) in outputs.iter_mut().enumerate().take(num_ch) {
-                out_ch[offset..offset + chunk]
-                    .copy_from_slice(&self.output_scratch[ch][..chunk]);
+                out_ch[offset..offset + chunk].copy_from_slice(&self.output_scratch[ch][..chunk]);
             }
 
             self.push_telemetry_chunk(chunk, target_ch, &mut max_l, &mut max_r);
@@ -1109,7 +1114,9 @@ impl RomuEqStateImplementation for RomuEqMainThread<'_> {
 
         let eq = if let Ok(env) = serde_json::from_slice::<PluginStateEnvelope>(&data) {
             if env.schema_version > STATE_SCHEMA_VERSION {
-                return Err(PluginError::Message("Unsupported future state schema version"));
+                return Err(PluginError::Message(
+                    "Unsupported future state schema version",
+                ));
             }
             env.eq
         } else {

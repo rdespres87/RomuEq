@@ -4,13 +4,13 @@
 //! (dual plots, master & presets bar, 8 vertical channel strips) that works identically
 //! in standalone mode and embedded inside a DAW plugin window.
 
-use romueq_common::{BandParameters, ParamId, MAX_BANDS};
+use romueq_common::{BandParameters, MAX_BANDS, ParamId};
 
 use crate::preset_manager::PresetManager;
 use crate::{
-    render_band, render_interactive_frequency_response_plot, render_master_section,
-    render_spectrum_analyzer, render_stereo_vu_meter, AnalysisSnapshot, BandControls,
-    GuiCommandBatch, ParamSnapshot,
+    AnalysisSnapshot, BandControls, GuiCommandBatch, ParamSnapshot, render_band,
+    render_interactive_frequency_response_plot, render_master_section, render_spectrum_analyzer,
+    render_stereo_vu_meter,
 };
 
 /// Host environment under which the workspace UI is currently rendered.

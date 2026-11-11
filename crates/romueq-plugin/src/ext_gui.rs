@@ -9,7 +9,7 @@ use clack_plugin::extensions::wrapper::{PluginWrapper, PluginWrapperError};
 use clack_plugin::prelude::*;
 use clap_sys::ext::gui::*;
 use clap_sys::plugin::clap_plugin;
-use std::ffi::{c_char, CStr};
+use std::ffi::{CStr, c_char};
 
 #[derive(Copy, Clone)]
 #[allow(dead_code)]
@@ -123,7 +123,9 @@ where
             if p.main_thread().as_mut().create_ui(is_floating) {
                 Ok(())
             } else {
-                Err(PluginWrapperError::Plugin(PluginError::Message("Failed to create UI")))
+                Err(PluginWrapperError::Plugin(PluginError::Message(
+                    "Failed to create UI",
+                )))
             }
         })
         .is_some()
@@ -198,11 +200,7 @@ unsafe extern "C" fn adjust_size(
     true
 }
 
-unsafe extern "C" fn set_size(
-    _plugin: *const clap_plugin,
-    width: u32,
-    height: u32,
-) -> bool {
+unsafe extern "C" fn set_size(_plugin: *const clap_plugin, width: u32, height: u32) -> bool {
     width == 1180 && height == 560
 }
 
@@ -218,7 +216,9 @@ where
             if p.main_thread().as_mut().set_parent(window) {
                 Ok(())
             } else {
-                Err(PluginWrapperError::Plugin(PluginError::Message("Failed to set window parent")))
+                Err(PluginWrapperError::Plugin(PluginError::Message(
+                    "Failed to set window parent",
+                )))
             }
         })
         .is_some()
@@ -232,11 +232,7 @@ unsafe extern "C" fn set_transient(
     false
 }
 
-unsafe extern "C" fn suggest_title(
-    _plugin: *const clap_plugin,
-    _title: *const c_char,
-) {
-}
+unsafe extern "C" fn suggest_title(_plugin: *const clap_plugin, _title: *const c_char) {}
 
 unsafe extern "C" fn show<P: Plugin>(plugin: *const clap_plugin) -> bool
 where
@@ -247,7 +243,9 @@ where
             if p.main_thread().as_mut().show_ui() {
                 Ok(())
             } else {
-                Err(PluginWrapperError::Plugin(PluginError::Message("Failed to show UI")))
+                Err(PluginWrapperError::Plugin(PluginError::Message(
+                    "Failed to show UI",
+                )))
             }
         })
         .is_some()
@@ -263,7 +261,9 @@ where
             if p.main_thread().as_mut().hide_ui() {
                 Ok(())
             } else {
-                Err(PluginWrapperError::Plugin(PluginError::Message("Failed to hide UI")))
+                Err(PluginWrapperError::Plugin(PluginError::Message(
+                    "Failed to hide UI",
+                )))
             }
         })
         .is_some()

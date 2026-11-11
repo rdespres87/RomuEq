@@ -5,8 +5,8 @@
 
 use crate::default_8_bands;
 use crate::preset_manager::PresetManager;
-use romueq_common::state::Preset;
 use romueq_common::EqParameters;
+use romueq_common::state::Preset;
 
 /// Returns the configuration directory for RomuEq (`~/.romueq`).
 pub fn user_config_dir() -> std::path::PathBuf {
@@ -39,12 +39,19 @@ pub fn sanitize_preset_filename(name: &str) -> String {
 }
 
 /// Saves a named preset from the preset manager to `~/.romueq/presets/<name>.req`.
-pub fn persist_preset_to_disk(preset_manager: &mut PresetManager, name: &str) -> Result<(), String> {
+pub fn persist_preset_to_disk(
+    preset_manager: &mut PresetManager,
+    name: &str,
+) -> Result<(), String> {
     let path = user_config_dir()
         .join("presets")
         .join(sanitize_preset_filename(name));
-    let path_str = path.to_str().ok_or_else(|| "Invalid UTF-8 path".to_string())?;
-    preset_manager.save_to_file(name, path_str).map_err(|e| e.to_string())
+    let path_str = path
+        .to_str()
+        .ok_or_else(|| "Invalid UTF-8 path".to_string())?;
+    preset_manager
+        .save_to_file(name, path_str)
+        .map_err(|e| e.to_string())
 }
 
 /// Removes a preset file `~/.romueq/presets/<name>.req` from disk.
@@ -80,14 +87,20 @@ pub fn populate_factory_presets(preset_manager: &mut PresetManager) {
         configure(&mut params);
 
         let mut preset = Preset::new(name);
-        preset.parameter_values.set(1, if params.global.bypass { 1.0 } else { 0.0 });
+        preset
+            .parameter_values
+            .set(1, if params.global.bypass { 1.0 } else { 0.0 });
         preset.parameter_values.set(2, params.global.output_gain_db);
-        preset.parameter_values.set(3, if params.global.auto_gain { 1.0 } else { 0.0 });
+        preset
+            .parameter_values
+            .set(3, if params.global.auto_gain { 1.0 } else { 0.0 });
 
         for band_idx in 0..romueq_common::MAX_BANDS {
             let base = 100u32 + band_idx as u32 * 100;
             let band = &params.bands[band_idx];
-            preset.parameter_values.set(base, if band.enabled { 1.0 } else { 0.0 });
+            preset
+                .parameter_values
+                .set(base, if band.enabled { 1.0 } else { 0.0 });
             preset
                 .parameter_values
                 .set(base + 1, band.filter_type.to_raw() as f32);

@@ -1,6 +1,6 @@
 use romueq_gui::preset_manager::PresetManager;
-use romueq_gui::workspace_ui::{render_workspace, HostEnvironment, WorkspaceUiState};
-use romueq_gui::{default_8_bands, populate_factory_presets, AnalysisSnapshot, ParamSnapshot};
+use romueq_gui::workspace_ui::{HostEnvironment, WorkspaceUiState, render_workspace};
+use romueq_gui::{AnalysisSnapshot, ParamSnapshot, default_8_bands, populate_factory_presets};
 
 #[test]
 fn test_workspace_ui_renders_headless() {

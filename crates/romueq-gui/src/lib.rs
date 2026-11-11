@@ -1580,12 +1580,18 @@ pub mod standalone {
             // Render the unified workspace UI across Standalone and Plugin modes.
             let env = HostEnvironment::Standalone {
                 audio_active: self.audio_active,
-                current_output: self.audio_stream.as_ref()
+                current_output: self
+                    .audio_stream
+                    .as_ref()
                     .and_then(|a| a.selected_output_device())
                     .unwrap_or("Défaut Système")
                     .to_string(),
                 available_outputs: self.available_outputs.clone(),
-                peak_levels_db: self.audio_stream.as_ref().map(|a| a.peak_levels_db()).unwrap_or((-100.0, -100.0)),
+                peak_levels_db: self
+                    .audio_stream
+                    .as_ref()
+                    .map(|a| a.peak_levels_db())
+                    .unwrap_or((-100.0, -100.0)),
             };
 
             let mut batch = GuiCommandBatch::new();
@@ -1625,8 +1631,10 @@ pub mod standalone {
                                     Ok(()) => {
                                         self.audio_active = true;
                                         self.client.sample_rate = audio.sample_rate();
-                                        let out_name = audio.selected_output_device().unwrap_or("Sortie");
-                                        self.status_message = Some(format!("Égaliseur actif → {out_name}"));
+                                        let out_name =
+                                            audio.selected_output_device().unwrap_or("Sortie");
+                                        self.status_message =
+                                            Some(format!("Égaliseur actif → {out_name}"));
                                     }
                                     Err(err) => {
                                         self.status_message = Some(format!("Erreur audio: {err}"));
@@ -1648,11 +1656,13 @@ pub mod standalone {
                                     Ok(()) => {
                                         self.audio_active = true;
                                         self.client.sample_rate = audio.sample_rate();
-                                        self.status_message = Some(format!("Égaliseur actif → {dev}"));
+                                        self.status_message =
+                                            Some(format!("Égaliseur actif → {dev}"));
                                     }
                                     Err(e) => {
                                         self.audio_active = false;
-                                        self.status_message = Some(format!("Erreur sortie '{dev}': {e}"));
+                                        self.status_message =
+                                            Some(format!("Erreur sortie '{dev}': {e}"));
                                     }
                                 }
                             } else {
@@ -1675,7 +1685,8 @@ pub mod standalone {
                                     let _ = audio.set_parameters(*engine.eq_parameters());
                                 }
                                 if let Err(e) = audio.start() {
-                                    self.status_message = Some(format!("Erreur redémarrage flux: {e}"));
+                                    self.status_message =
+                                        Some(format!("Erreur redémarrage flux: {e}"));
                                     self.audio_active = false;
                                 } else {
                                     self.audio_active = true;
@@ -1707,7 +1718,8 @@ pub mod standalone {
                             let _ = persist_preset_to_disk(&mut self.client.preset_manager, &name);
                             save_last_active_preset_name(&name);
                             save_complete_app_state(&self.client);
-                            self.status_message = Some(format!("Preset '{name}' sauvegardé sur disque"));
+                            self.status_message =
+                                Some(format!("Preset '{name}' sauvegardé sur disque"));
                         }
                     }
                     WorkspaceAction::DeletePreset(name) => {

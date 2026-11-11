@@ -30,7 +30,7 @@ mod macos {
         AppKitDisplayHandle, AppKitWindowHandle, RawDisplayHandle, RawWindowHandle,
     };
     use romueq_analysis::{SpectrumConfig, SpectrumProcessor};
-    use romueq_common::parameter::{global, band};
+    use romueq_common::parameter::{band, global};
     use romueq_common::state::ProjectState;
     use romueq_common::{EqParameters, MAX_BANDS, ParamId};
     use romueq_gui::preset_manager::PresetManager;
@@ -342,12 +342,7 @@ mod macos {
             }
         }
 
-        fn push_pointer_button(
-            &self,
-            event: &NSEvent,
-            button: egui::PointerButton,
-            pressed: bool,
-        ) {
+        fn push_pointer_button(&self, event: &NSEvent, button: egui::PointerButton, pressed: bool) {
             let pos = self.event_pos(event);
             let mods = translate_modifiers(event.modifierFlags());
             self.with_runtime(|rt| {
@@ -489,7 +484,13 @@ mod macos {
                 .formats
                 .iter()
                 .copied()
-                .find(|f| !f.is_srgb() && matches!(f, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Rgba8Unorm))
+                .find(|f| {
+                    !f.is_srgb()
+                        && matches!(
+                            f,
+                            wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Rgba8Unorm
+                        )
+                })
                 .or_else(|| caps.formats.first().copied())
                 .unwrap_or(wgpu::TextureFormat::Bgra8Unorm);
 
@@ -516,7 +517,8 @@ mod macos {
             populate_factory_presets(&mut preset_manager);
 
             let sr = shared.sample_rate().max(8000.0);
-            let spectrum_processor = SpectrumProcessor::new(SpectrumConfig::new(FFT_SIZE, sr as f64));
+            let spectrum_processor =
+                SpectrumProcessor::new(SpectrumConfig::new(FFT_SIZE, sr as f64));
 
             Ok(Self {
                 shared,
@@ -829,8 +831,8 @@ mod macos {
                 if !host.is_null() {
                     unsafe {
                         if let Some(get_ext) = (*host).get_extension {
-                            let ptr = get_ext(host, CLAP_EXT_PARAMS.as_ptr())
-                                as *const clap_host_params;
+                            let ptr =
+                                get_ext(host, CLAP_EXT_PARAMS.as_ptr()) as *const clap_host_params;
                             if !ptr.is_null() {
                                 if let Some(req) = (*ptr).request_flush {
                                     req(host);
@@ -994,9 +996,8 @@ mod macos {
                 }
             });
 
-            let timer = unsafe {
-                NSTimer::timerWithTimeInterval_repeats_block(1.0 / 60.0, true, &block)
-            };
+            let timer =
+                unsafe { NSTimer::timerWithTimeInterval_repeats_block(1.0 / 60.0, true, &block) };
             unsafe {
                 let run_loop = NSRunLoop::currentRunLoop();
                 run_loop.addTimer_forMode(&timer, NSRunLoopCommonModes);
@@ -1053,10 +1054,10 @@ pub use macos::{CocoaEditor, EDITOR_HEIGHT, EDITOR_WIDTH};
 
 #[cfg(not(target_os = "macos"))]
 mod fallback {
+    use crate::RomuEqSharedInner;
+    use clap_sys::host::clap_host;
     use std::ffi::c_void;
     use std::sync::Arc;
-    use clap_sys::host::clap_host;
-    use crate::RomuEqSharedInner;
 
     pub struct CocoaEditor;
     impl CocoaEditor {

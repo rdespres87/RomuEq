@@ -8,7 +8,7 @@ use clack_common::extensions::{
 use clack_plugin::prelude::Plugin;
 use clap_sys::ext::audio_ports::*;
 use clap_sys::plugin::clap_plugin;
-use std::ffi::{c_char, CStr};
+use std::ffi::{CStr, c_char};
 
 #[derive(Copy, Clone)]
 #[allow(dead_code)]
@@ -54,7 +54,11 @@ unsafe extern "C" fn get(
         inf.port_type = CLAP_PORT_STEREO.as_ptr();
         inf.in_place_pair = if is_input { 1 } else { 0 };
 
-        let name_bytes: &[u8] = if is_input { b"Stereo In\0" } else { b"Stereo Out\0" };
+        let name_bytes: &[u8] = if is_input {
+            b"Stereo In\0"
+        } else {
+            b"Stereo Out\0"
+        };
         for (i, &b) in name_bytes.iter().enumerate() {
             if i < inf.name.len() {
                 inf.name[i] = b as c_char;
