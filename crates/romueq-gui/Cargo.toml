@@ -12,7 +12,7 @@ romueq-dsp.workspace = true
 romueq-engine.workspace = true
 romueq-analysis.workspace = true
 egui = { version = "0.31" }
-egui_plot = { version = "0.31" }
+egui_plot = { version = "0.38" }
 eframe = { version = "0.31", features = ["default_fonts"], optional = true }
 cpal = { version = "0.15", optional = true }
 
