@@ -1144,6 +1144,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "Requires physical macOS audio hardware (BlackHole 2ch / Komplete Audio)"]
     fn test_live_streaming_diagnostic() {
         let mut stream = AudioStream::new();
         stream.set_source_mode(AudioSourceMode::PassThrough);
@@ -1413,6 +1414,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "Requires physical macOS 'Haut-parleurs' audio device"]
     fn test_audio_stream_start_diagnostic() {
         let host = cpal::default_host();
         let mac_speakers = host

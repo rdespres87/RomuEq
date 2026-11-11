@@ -13,6 +13,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      - name: Install Linux audio dev libraries
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
       - run: rustup show
       - run: cargo test --workspace --all-features
       - run: cargo build --workspace --all-targets

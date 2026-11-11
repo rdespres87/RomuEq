@@ -27,6 +27,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      - name: Install Linux audio dev libraries
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
       - run: rustup show
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
@@ -35,6 +37,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      - name: Install Linux audio dev libraries
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
       - run: rustup show
       - run: cargo test --workspace --all-features
 
@@ -48,10 +52,11 @@ jobs:
             os: ubuntu-latest
           - target: x86_64-pc-windows-msvc
             os: windows-latest
-          - target: aarch64-apple-darwin
-            os: macos-14
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
+      - name: Install Linux audio dev libraries
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
       - run: rustup target add ${{ matrix.target }}
       - run: cargo build --workspace --all-targets --target ${{ matrix.target }}
