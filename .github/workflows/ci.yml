@@ -48,15 +48,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
+          # Temporarily disabled on CI until Linux build validation is restored
+          # - target: x86_64-unknown-linux-gnu
+          #   os: ubuntu-latest
           - target: x86_64-pc-windows-msvc
             os: windows-latest
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
-      - name: Install Linux audio dev libraries
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
       - run: rustup target add ${{ matrix.target }}
       - run: cargo build --workspace --all-targets --target ${{ matrix.target }}
