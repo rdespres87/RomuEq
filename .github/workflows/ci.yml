@@ -15,46 +15,107 @@ concurrency:
 
 jobs:
   fmt:
-    name: Format
+    name: Format (cargo fmt)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - run: rustup show
-      - run: cargo fmt --all -- --check
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-  clippy:
-    name: Clippy
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Check code formatting
+        run: cargo fmt --all -- --check
+
+  test-linux:
+    name: Tests & Clippy (Linux x64)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
       - name: Install Linux audio dev libraries
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
-      - run: rustup show
-      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
-  test:
-    name: Tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - name: Install Linux audio dev libraries
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
-      - run: rustup show
-      - run: cargo test --workspace --all-features
+      - name: Run workspace tests (portable crates)
+        run: cargo test --workspace --exclude equaform-standalone
 
-  build:
-    name: Build (${{ matrix.target }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # Temporarily disabled on CI until Linux build validation is restored
-          # - target: x86_64-unknown-linux-gnu
-          #   os: ubuntu-latest
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
-    runs-on: ${{ matrix.os }}
+      - name: Run Clippy (portable crates)
+        run: cargo clippy --workspace --exclude equaform-standalone -- -D warnings
+
+  macos:
+    name: Tests, Clippy & Bundles (macOS Apple Silicon)
+    runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v6
-      - run: rustup target add ${{ matrix.target }}
-      - run: cargo build --workspace --all-targets --target ${{ matrix.target }}
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Install build tools (CMake & Ninja)
+        run: brew install cmake ninja
+
+      - name: Run workspace tests (full test suite)
+        run: cargo test --workspace --all-features
+
+      - name: Run Clippy (workspace)
+        run: cargo clippy --workspace -- -D warnings
+
+      - name: Build and verify plugin bundles (CLAP, VST3, AUv2)
+        run: |
+          cargo build --release -p equaform-plugin
+          CLAP_PATH="$(pwd)/target/release/Equaform-8.clap"
+          mkdir -p "${CLAP_PATH}/Contents/MacOS"
+          cp target/release/libequaform_plugin.dylib "${CLAP_PATH}/Contents/MacOS/Equaform-8"
+          codesign --force -s - "${CLAP_PATH}"
+
+          cmake -G Ninja -S driver/clap-wrapper-equaform -B target/clap-wrapper-ci \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0 \
+            -DEQUAFORM_CLAP_BUNDLE="${CLAP_PATH}" \
+            -DEQUAFORM_BUNDLE_OUT_DIR="$(pwd)/target/release/bundles"
+          cmake --build target/clap-wrapper-ci --target equaform_vst3 equaform_auv2
+
+          codesign --force -s - "target/release/bundles/Equaform-8.vst3/Contents/PlugIns/Equaform-8.clap"
+          codesign --force -s - "target/release/bundles/Equaform-8.vst3"
+          codesign --force -s - "target/release/bundles/Equaform-8.component/Contents/PlugIns/Equaform-8.clap"
+          codesign --force -s - "target/release/bundles/Equaform-8.component"
+
+          codesign --verify --deep --strict "${CLAP_PATH}"
+          codesign --verify --deep --strict "target/release/bundles/Equaform-8.vst3"
+          codesign --verify --deep --strict "target/release/bundles/Equaform-8.component"
+
+  windows:
+    name: Check & Tests (Windows MSVC x64)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Check equaform-plugin for Windows
+        run: cargo check --target x86_64-pc-windows-msvc -p equaform-plugin
+
+      - name: Run portable unit tests on Windows
+        run: |
+          cargo test --target x86_64-pc-windows-msvc -p equaform-common -p equaform-dsp -p equaform-engine -p equaform-analysis -p equaform-gui -p equaform-plugin

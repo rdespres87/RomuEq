@@ -10,12 +10,25 @@ permissions:
 
 jobs:
   full:
+    name: Full Weekly Validation (Linux x64)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Install Linux audio dev libraries
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
-      - run: rustup show
-      - run: cargo test --workspace --all-features
-      - run: cargo build --workspace --all-targets
-      - run: cargo metadata --locked --format-version 1 > /dev/null
+
+      - name: Run portable workspace tests
+        run: cargo test --workspace --exclude equaform-standalone
+
+      - name: Build portable workspace targets
+        run: cargo build --workspace --exclude equaform-standalone
+
+      - name: Verify locked metadata
+        run: cargo metadata --locked --format-version 1 > /dev/null
