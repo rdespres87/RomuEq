@@ -1,0 +1,26 @@
+flowchart TD
+ COMMON["equaform-common"]
+ DSP["equaform-dsp"]
+ ENGINE["equaform-engine"]
+ ANALYSIS["equaform-analysis"]
+ GUI["equaform-gui"]
+ PLUGIN["equaform-plugin"]
+ STANDALONE["equaform-standalone"]
+ CLI["equaform-cli"]
+ TESTS["equaform-integration-tests"]
+ DSP --> COMMON
+ ENGINE --> COMMON
+ ENGINE --> DSP
+ ANALYSIS --> COMMON
+ GUI --> COMMON
+ PLUGIN --> COMMON
+ PLUGIN --> ENGINE
+ PLUGIN --> GUI
+ STANDALONE --> ENGINE
+ STANDALONE --> GUI
+ CLI --> COMMON
+ CLI --> ENGINE
+ TESTS --> COMMON
+ TESTS --> DSP
+ TESTS --> ENGINE
+ TESTS --> ANALYSIS

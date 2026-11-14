@@ -1,0 +1,15 @@
+flowchart TB
+ subgraph RT["REAL-TIME DOMAIN"]
+  AUDIO["Audio Thread"] --> PARAMRT["RT Parameter Snapshot"] --> DSP["DSP Processor"] --> METER["RT Meter State"]
+ end
+ subgraph NRT["NON-REAL-TIME DOMAIN"]
+  GUI["GUI / Main Thread"]
+  HOST["Host Control"]
+  ANALYSIS["Analysis Worker"]
+  STATE["State / Preset I/O"]
+ end
+ GUI --> HOST
+ HOST --> PARAMRT
+ DSP -. bounded telemetry .-> ANALYSIS
+ ANALYSIS --> GUI
+ GUI --> STATE
