@@ -27,10 +27,10 @@ enum {
     kObjectID_Mute_Output   = 6,
 };
 
-#define kDeviceName         "RomuEq"
-#define kManufacturerName   "RomuEq Audio"
-#define kDeviceUID          "com.romueq.audio.device"
-#define kModelUID           "com.romueq.audio.model"
+#define kDeviceName         "Equaform-8"
+#define kManufacturerName   "Equaform Audio"
+#define kDeviceUID          "com.equaform.audio.device"
+#define kModelUID           "com.equaform.audio.model"
 
 #define kChannelCount       2U
 #define kRingBufferFrames   65536U
@@ -206,13 +206,18 @@ static AudioServerPlugInDriverRef gDriverRef = &gDriverInterfacePtr;
 // ============================================================================
 
 __attribute__((visibility("default")))
-void* RomuEqDriver_Create(CFAllocatorRef inAllocator, CFUUIDRef inRequestedTypeUUID) {
+void* EquaformDriver_Create(CFAllocatorRef inAllocator, CFUUIDRef inRequestedTypeUUID) {
     (void)inAllocator;
     if (CFEqual(inRequestedTypeUUID, kAudioServerPlugInTypeUUID)) {
         RomuEq_AddRef(gDriverRef);
         return gDriverRef;
     }
     return NULL;
+}
+
+__attribute__((visibility("default")))
+void* RomuEqDriver_Create(CFAllocatorRef inAllocator, CFUUIDRef inRequestedTypeUUID) {
+    return EquaformDriver_Create(inAllocator, inRequestedTypeUUID);
 }
 
 // ============================================================================

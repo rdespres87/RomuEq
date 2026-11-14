@@ -91,7 +91,7 @@ pub fn render_workspace(
     // 1. Top toolbar: Brand + Bypass + Output/Host info + Status
     ui.horizontal(|ui| {
         ui.label(
-            egui::RichText::new("RomuEq")
+            egui::RichText::new("Equaform-8")
                 .strong()
                 .size(15.0)
                 .color(egui::Color32::from_rgb(0, 205, 255)),

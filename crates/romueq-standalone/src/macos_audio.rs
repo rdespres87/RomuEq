@@ -27,7 +27,9 @@ pub mod macos_impl {
         mElement: 0,
     };
 
-    const EMBEDDED_ROMUEQ_DRIVER_PKG: &[u8] = include_bytes!("../resources/RomuEqDriver.pkg");
+    const EMBEDDED_EQUAFORM_DRIVER_PKG: &[u8] = include_bytes!("../resources/EquaformDriver.pkg");
+    #[allow(dead_code)]
+    const EMBEDDED_ROMUEQ_DRIVER_PKG: &[u8] = EMBEDDED_EQUAFORM_DRIVER_PKG;
 
     unsafe extern "C" {
         fn atexit(cb: extern "C" fn()) -> i32;
@@ -52,10 +54,13 @@ pub mod macos_impl {
     }
 
     extern "C" fn restore_on_process_exit() {
-        // If current macOS default output is RomuEq/BlackHole, restore to user's selected physical output
+        // If current macOS default output is Equaform-8/RomuEq/BlackHole, restore to user's selected physical output
         if let Some(cur_id) = get_default_output_device_id() {
             let cur_name = get_device_name(cur_id).unwrap_or_default().to_lowercase();
-            if cur_name.contains("romueq") || cur_name.contains("blackhole") {
+            if cur_name.contains("equaform")
+                || cur_name.contains("romueq")
+                || cur_name.contains("blackhole")
+            {
                 if let Some(saved) = load_saved_output_device() {
                     if let Some((phys_id, _)) = find_device_by_name(&saved) {
                         let _ = set_default_output_device(phys_id);
@@ -251,7 +256,18 @@ pub mod macos_impl {
         }
     }
 
-    /// Check whether the RomuEq native driver bundle is present on the filesystem and up to date (version >= 2 / 1.1.0).
+    /// Check whether the Equaform native driver bundle is present on the filesystem and up to date (version >= 2 / 1.1.0).
+    pub fn is_equaform_driver_installed_on_disk() -> bool {
+        let plist_path = "/Library/Audio/Plug-Ins/HAL/Equaform.driver/Contents/Info.plist";
+        if let Ok(content) = std::fs::read_to_string(plist_path) {
+            content.contains("<string>1.1.0</string>") || content.contains("<string>2</string>")
+        } else {
+            false
+        }
+    }
+
+    /// Check whether the legacy RomuEq native driver bundle is present on the filesystem.
+    #[allow(dead_code)]
     pub fn is_romueq_driver_installed_on_disk() -> bool {
         let plist_path = "/Library/Audio/Plug-Ins/HAL/RomuEq.driver/Contents/Info.plist";
         if let Ok(content) = std::fs::read_to_string(plist_path) {
@@ -261,29 +277,51 @@ pub mod macos_impl {
         }
     }
 
-    /// Check if the native RomuEq CoreAudio HAL driver (`RomuEqDriver_Create`) is installed and recognized by CoreAudio.
+    /// Check if either the Equaform or legacy RomuEq driver is installed on disk.
+    pub fn is_driver_installed_on_disk() -> bool {
+        is_equaform_driver_installed_on_disk()
+    }
+
+    /// Check if the native Equaform CoreAudio HAL driver (`EquaformDriver_Create`) is installed and recognized by CoreAudio.
     #[allow(dead_code)]
-    pub fn is_romueq_driver_available() -> bool {
+    pub fn is_equaform_driver_available() -> bool {
         let is_native_bundle =
-            std::fs::read("/Library/Audio/Plug-Ins/HAL/RomuEq.driver/Contents/Info.plist")
+            std::fs::read("/Library/Audio/Plug-Ins/HAL/Equaform.driver/Contents/Info.plist")
                 .map(|bytes| {
                     bytes
-                        .windows(b"RomuEqDriver_Create".len())
-                        .any(|w| w == b"RomuEqDriver_Create")
+                        .windows(b"EquaformDriver_Create".len())
+                        .any(|w| w == b"EquaformDriver_Create")
                 })
                 .unwrap_or(false);
 
-        is_native_bundle && find_device_by_name("RomuEq").is_some()
+        is_native_bundle && find_device_by_name("Equaform-8").is_some()
     }
 
-    /// Install the native RomuEq virtual audio driver via macOS administrator dialog.
-    pub fn install_romueq_driver() -> Result<(), String> {
-        let tmp_path = "/tmp/RomuEqDriver.pkg";
-        std::fs::write(tmp_path, EMBEDDED_ROMUEQ_DRIVER_PKG)
+    #[allow(dead_code)]
+    pub fn is_romueq_driver_available() -> bool {
+        is_equaform_driver_available() || {
+            let is_native_bundle =
+                std::fs::read("/Library/Audio/Plug-Ins/HAL/RomuEq.driver/Contents/Info.plist")
+                    .map(|bytes| {
+                        bytes
+                            .windows(b"RomuEqDriver_Create".len())
+                            .any(|w| w == b"RomuEqDriver_Create")
+                    })
+                    .unwrap_or(false);
+
+            is_native_bundle && find_device_by_name("RomuEq").is_some()
+        }
+    }
+
+    /// Install the native Equaform virtual audio driver via macOS administrator dialog.
+    /// Cleans up legacy RomuEq.driver during installation.
+    pub fn install_equaform_driver() -> Result<(), String> {
+        let tmp_path = "/tmp/EquaformDriver.pkg";
+        std::fs::write(tmp_path, EMBEDDED_EQUAFORM_DRIVER_PKG)
             .map_err(|e| format!("Impossible d'écrire le paquet d'installation temporaire: {e}"))?;
 
         let script = format!(
-            "do shell script \"rm -rf /Library/Audio/Plug-Ins/HAL/RomuEq.driver && installer -pkg {tmp_path} -target / && killall coreaudiod\" with administrator privileges with prompt \"RomuEq souhaite installer son pilote CoreAudio natif 'RomuEq'.\""
+            "do shell script \"rm -rf /Library/Audio/Plug-Ins/HAL/RomuEq.driver /Library/Audio/Plug-Ins/HAL/Equaform.driver && installer -pkg {tmp_path} -target / && killall coreaudiod\" with administrator privileges with prompt \"Equaform-8 souhaite installer son pilote CoreAudio natif 'Equaform-8'.\""
         );
 
         let output = std::process::Command::new("osascript")
@@ -306,6 +344,11 @@ pub mod macos_impl {
         }
     }
 
+    #[allow(dead_code)]
+    pub fn install_romueq_driver() -> Result<(), String> {
+        install_equaform_driver()
+    }
+
     /// Guard struct that saves original physical output and switches system output to virtual device.
     /// Restores the chosen hardware device when dropped (app quit or panic).
     pub struct SystemAudioRoutingGuard {
@@ -315,7 +358,7 @@ pub mod macos_impl {
     }
 
     impl SystemAudioRoutingGuard {
-        /// Create guard and intercept system audio if RomuEq is available.
+        /// Create guard and intercept system audio if Equaform-8 is available.
         pub fn activate() -> Self {
             let mut guard = Self {
                 original_device_id: None,
@@ -331,8 +374,9 @@ pub mod macos_impl {
             if let Some(cur_id) = get_default_output_device_id() {
                 let name = get_device_name(cur_id).unwrap_or_else(|| "Inconnu".to_string());
                 let lower = name.to_lowercase();
-                // If macOS is currently set to a physical device, preserve it and sync it with RomuEq's saved output
-                if !lower.contains("romueq")
+                // If macOS is currently set to a physical device, preserve it and sync it with saved output
+                if !lower.contains("equaform")
+                    && !lower.contains("romueq")
                     && !lower.contains("blackhole")
                     && !lower.contains("eqmac")
                 {
@@ -340,7 +384,7 @@ pub mod macos_impl {
                     guard.original_device_name = Some(name.clone());
                     save_selected_output_device(&name);
                 } else {
-                    // macOS was already on RomuEq (e.g. after a restart): check user's last selected physical output first
+                    // macOS was already on Equaform/RomuEq: check user's last selected physical output first
                     let saved_phys =
                         load_saved_output_device().and_then(|saved| find_device_by_name(&saved));
                     if let Some((phys_id, phys_name)) = saved_phys
@@ -354,12 +398,14 @@ pub mod macos_impl {
                 }
             }
 
-            // Look for "RomuEq" virtual device, with a short micro-poll if HAL driver was just loaded
-            let mut target_virtual_device = find_device_by_name("RomuEq");
-            if target_virtual_device.is_none() && is_romueq_driver_installed_on_disk() {
+            // Look for "Equaform-8" (or legacy "RomuEq") virtual device, with a short micro-poll if HAL driver was just loaded
+            let mut target_virtual_device =
+                find_device_by_name("Equaform-8").or_else(|| find_device_by_name("RomuEq"));
+            if target_virtual_device.is_none() && is_driver_installed_on_disk() {
                 for _ in 0..5 {
                     std::thread::sleep(std::time::Duration::from_millis(20));
-                    target_virtual_device = find_device_by_name("RomuEq");
+                    target_virtual_device =
+                        find_device_by_name("Equaform-8").or_else(|| find_device_by_name("RomuEq"));
                     if target_virtual_device.is_some() {
                         break;
                     }
@@ -376,7 +422,7 @@ pub mod macos_impl {
 
                     if needs_sync {
                         println!(
-                            "[RomuEq] Synchronizing {virt_name} to hardware sample rate: {target_sr} Hz"
+                            "[Equaform-8] Synchronizing {virt_name} to hardware sample rate: {target_sr} Hz"
                         );
                         let _ = set_device_sample_rate(virt_id, target_sr);
                         // Verify property take-effect in CoreAudio HAL with fast 10ms intervals
@@ -386,7 +432,7 @@ pub mod macos_impl {
                             if let Some(new_sr) = get_device_sample_rate(virt_id) {
                                 if (new_sr - target_sr).abs() < 1.0 {
                                     println!(
-                                        "[RomuEq] {virt_name} sample rate verified and locked at {target_sr} Hz"
+                                        "[Equaform-8] {virt_name} sample rate verified and locked at {target_sr} Hz"
                                     );
                                     verified = true;
                                     break;
@@ -395,21 +441,21 @@ pub mod macos_impl {
                         }
                         if !verified {
                             eprintln!(
-                                "[RomuEq] Warning: CoreAudio HAL sample rate synchronization timed out. Proceeding with routing."
+                                "[Equaform-8] Warning: CoreAudio HAL sample rate synchronization timed out. Proceeding with routing."
                             );
                         }
                     } else {
                         println!(
-                            "[RomuEq] {virt_name} sample rate already locked to hardware: {target_sr} Hz"
+                            "[Equaform-8] {virt_name} sample rate already locked to hardware: {target_sr} Hz"
                         );
                     }
                 }
 
                 if let Err(e) = set_default_output_device(virt_id) {
-                    eprintln!("[RomuEq] Failed to route system output to {virt_name}: {e}");
+                    eprintln!("[Equaform-8] Failed to route system output to {virt_name}: {e}");
                 } else {
                     println!(
-                        "[RomuEq] macOS system audio successfully routed to {virt_name} (ID: {virt_id})"
+                        "[Equaform-8] macOS system audio successfully routed to {virt_name} (ID: {virt_id})"
                     );
                     guard.routing_active = true;
                 }
@@ -421,7 +467,7 @@ pub mod macos_impl {
         /// Restore the chosen physical output device (or original default output device).
         pub fn restore(&mut self) {
             if self.routing_active {
-                // Prefer the output device currently chosen inside RomuEq
+                // Prefer the output device currently chosen inside Equaform-8
                 let target = load_saved_output_device()
                     .and_then(|saved| find_device_by_name(&saved))
                     .or_else(|| {
@@ -438,11 +484,11 @@ pub mod macos_impl {
                 if let Some((target_id, target_name)) = target {
                     if let Err(e) = set_default_output_device(target_id) {
                         eprintln!(
-                            "[RomuEq] Échec de restauration de la sortie système ({target_name}): {e}"
+                            "[Equaform-8] Échec de restauration de la sortie système ({target_name}): {e}"
                         );
                     } else {
                         println!(
-                            "[RomuEq] Sortie système macOS restaurée sur {target_name} (ID: {target_id})"
+                            "[Equaform-8] Sortie système macOS restaurée sur {target_name} (ID: {target_id})"
                         );
                     }
                 }
@@ -516,10 +562,13 @@ mod tests {
 
     #[test]
     fn test_driver_installed_on_disk() {
-        let on_disk = is_romueq_driver_installed_on_disk();
-        println!("RomuEq driver installed on disk: {on_disk}");
+        let on_disk = is_driver_installed_on_disk() || is_romueq_driver_installed_on_disk();
+        println!("Driver installed on disk: {on_disk}");
         if on_disk {
-            println!("Driver available: {}", is_romueq_driver_available());
+            println!(
+                "Driver available: {}",
+                is_equaform_driver_available() || is_romueq_driver_available()
+            );
         }
     }
 }

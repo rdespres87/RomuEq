@@ -8,10 +8,10 @@ DRIVER_SRC="$ROOT_DIR/driver/romueq-hal/src/RomuEqDriver.c"
 DRIVER_PLIST="$ROOT_DIR/driver/romueq-hal/Info.plist"
 BUILD_DIR="$ROOT_DIR/target/driver-build"
 PKG_ROOT="$BUILD_DIR/pkgroot"
-DRIVER_BUNDLE="$PKG_ROOT/Library/Audio/Plug-Ins/HAL/RomuEq.driver"
-OUTPUT_PKG="$ROOT_DIR/crates/romueq-standalone/resources/RomuEqDriver.pkg"
+DRIVER_BUNDLE="$PKG_ROOT/Library/Audio/Plug-Ins/HAL/Equaform.driver"
+OUTPUT_PKG="$ROOT_DIR/crates/romueq-standalone/resources/EquaformDriver.pkg"
 
-echo "==> Compiling native CoreAudio HAL driver (RomuEq.driver)..."
+echo "==> Compiling native CoreAudio HAL driver (Equaform.driver)..."
 rm -rf "$BUILD_DIR"
 mkdir -p "$DRIVER_BUNDLE/Contents/MacOS"
 
@@ -22,20 +22,23 @@ clang -std=c11 -O3 -Wall -Wextra -Werror \
     -framework CoreAudio \
     -framework CoreFoundation \
     "$DRIVER_SRC" \
-    -o "$DRIVER_BUNDLE/Contents/MacOS/RomuEq"
+    -o "$DRIVER_BUNDLE/Contents/MacOS/Equaform"
 
 cp "$DRIVER_PLIST" "$DRIVER_BUNDLE/Contents/Info.plist"
 
-echo "==> Signing RomuEq.driver bundle..."
+echo "==> Signing Equaform.driver bundle..."
 codesign --force --deep -s - "$DRIVER_BUNDLE"
 
-echo "==> Packaging RomuEqDriver.pkg installer..."
+echo "==> Packaging EquaformDriver.pkg installer..."
 pkgbuild \
     --root "$PKG_ROOT" \
-    --identifier "com.romueq.audio.driver.pkg" \
-    --version "1.0.0" \
+    --identifier "com.equaform.audio.driver.pkg" \
+    --version "1.1.0" \
     --install-location "/" \
     "$OUTPUT_PKG"
 
-echo "==> Native RomuEqDriver.pkg built successfully: $OUTPUT_PKG"
+# Also maintain RomuEqDriver.pkg as a symlink/copy so legacy builds don't fail
+cp "$OUTPUT_PKG" "$ROOT_DIR/crates/romueq-standalone/resources/RomuEqDriver.pkg"
+
+echo "==> Native EquaformDriver.pkg built successfully: $OUTPUT_PKG"
 

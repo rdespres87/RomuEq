@@ -1,7 +1,31 @@
-# Session State - RomuEq
+# Session State - Equaform-8 (RomuEq)
 
 **Date:** 2026-11-14  
-**Status:** ALL TESTS GREEN (192 tests passing), CI VALIDATED, ZERO-STUTTER DRIVER V1.1.0 PACKAGED & INSTALLED
+**Status:** ALL TESTS GREEN (192 tests passing), COMMERCIAL BRANDING "Equaform-8" INSTALLED, BUNDLES SIGNED & PACKAGED
+
+## Commercial Branding Transition
+- **Official Commercial Product Name:** `Equaform-8`
+- **Vendor / Manufacturer:** `Equaform Audio`
+- **Tagline:** *"The Geometry of Pure Balance"*
+- **CoreAudio HAL Driver Renaming:**
+  - Driver Bundle: `/Library/Audio/Plug-Ins/HAL/Equaform.driver`
+  - Audio Device Name: `Equaform-8`
+  - Audio Device Manufacturer: `Equaform Audio`
+  - Package Installer: `EquaformDriver.pkg`
+  - Factory Entry Point: `EquaformDriver_Create` (with backward-compatible `RomuEqDriver_Create`)
+  - Standalone routing cleanly detects and migrates legacy `RomuEq.driver`
+  - Loopback input auto-detection in `crates/romueq-gui/src/lib.rs` and `audio.rs` updated to prioritize `Equaform` bridge, ensuring immediate active streaming and unmuted startup without test chord fallbacks.
+- **Plugin Metadata & Identifiers:**
+  - CLAP / VST3 / AU Identifier: `com.equaform.audio.equalizer`
+  - AUv2 Manufacturer Code: `Eqfm` (Equaform Audio)
+  - AUv2 Subtype Code: `Eqf8` (Equaform-8)
+  - AUv2 Type: `aufx`
+- **State & Preset File Compatibility:** Dual deserialization support accepting both `Equaform-8` and legacy `RomuEq`.
+- **Installed Artifacts:**
+  - `~/Library/Audio/Plug-Ins/CLAP/Equaform-8.clap`
+  - `~/Library/Audio/Plug-Ins/VST3/Equaform-8.vst3`
+  - `~/Library/Audio/Plug-Ins/Components/Equaform-8.component`
+  - `target/release/bundle/Equaform-8.app`
 
 ## Architecture & Implementation Overview
 1. **Clean-Room Native CoreAudio HAL Driver v1.1.0 (`RomuEq.driver`):**

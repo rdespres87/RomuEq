@@ -30,8 +30,8 @@ pub enum AudioSourceMode {
 impl From<u8> for AudioSourceMode {
     fn from(val: u8) -> Self {
         match val {
-            1 => AudioSourceMode::PassThrough,
-            _ => AudioSourceMode::TestSignal,
+            0 => AudioSourceMode::TestSignal,
+            _ => AudioSourceMode::PassThrough,
         }
     }
 }
@@ -330,7 +330,8 @@ impl AudioStream {
             for d in devices {
                 if let Ok(name) = d.name() {
                     let lower = name.to_lowercase();
-                    if lower == "romueq"
+                    if lower.contains("equaform")
+                        || lower == "romueq"
                         || lower.contains("romueq ")
                         || lower.contains("blackhole")
                         || lower.contains("eqmac export")
@@ -546,12 +547,16 @@ impl AudioStream {
                 })
             })
         } else {
-            // Auto-detect virtual loopback bridge (RomuEq prioritized, then BlackHole or eqMac Export)
+            // Auto-detect virtual loopback bridge (Equaform prioritized, then RomuEq, BlackHole or eqMac Export)
             host.input_devices().ok().and_then(|devs| {
                 let dev_list: Vec<_> = devs.collect();
                 dev_list
                     .iter()
-                    .find(|d| d.name().map(|n| n.contains("RomuEq")).unwrap_or(false))
+                    .find(|d| {
+                        d.name()
+                            .map(|n| n.contains("Equaform") || n.contains("RomuEq"))
+                            .unwrap_or(false)
+                    })
                     .or_else(|| {
                         dev_list
                             .iter()
@@ -1108,7 +1113,7 @@ mod macos_virtual_rate_sync {
         let size = std::mem::size_of::<f64>() as u32;
         for (id, name) in list_devices() {
             let l = name.to_lowercase();
-            if l == "romueq" || l.contains("blackhole") {
+            if l.contains("equaform") || l == "romueq" || l.contains("blackhole") {
                 if let Some(cur) = get_device_sample_rate(id) {
                     if (cur - target_sr).abs() > 1.0 {
                         let _ = unsafe {
@@ -1137,7 +1142,11 @@ mod macos_virtual_rate_sync {
 
     pub fn restore_macos_default_output(target_name: &str) {
         let q = target_name.to_lowercase();
-        if q.contains("romueq") || q.contains("blackhole") || q.contains("eqmac") {
+        if q.contains("equaform")
+            || q.contains("romueq")
+            || q.contains("blackhole")
+            || q.contains("eqmac")
+        {
             return;
         }
         let devices = list_devices();

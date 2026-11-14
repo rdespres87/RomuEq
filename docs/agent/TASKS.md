@@ -26,5 +26,12 @@
   - [x] Perfectly symmetric 8.0px margins on all 4 borders (Left, Right, Top, Bottom)
   - [x] Instant zero-lag standalone startup (no spurious root prompts or coreaudiod kills when driver is installed; optimized sample-rate lock)
   - [x] Fix audio stutter / micro-chopping at startup: zero-offset CoreAudio HAL loopback (driver v1.1.0), anti-chopping full-block delivery, and direct 1:1 bit-exact streaming fast-path
-- [x] Rebuild and install all macOS plugin bundles (`RomuEq.vst3`, `RomuEq.component`, `RomuEq.clap`) and standalone application (`RomuEq.app`)
+- [x] Fix loopback device detection for renamed driver `Equaform-8` (preventing fallback to TestSignal chord and startup muted state)
+- [x] Commercial branding transition:
+  - [x] Product name set to `Equaform-8` by `Equaform Audio` ("The Geometry of Pure Balance")
+  - [x] Header badge and standalone window title updated
+  - [x] Rename CoreAudio HAL driver (`Equaform.driver`, device `Equaform-8`, manufacturer `Equaform Audio`, package `EquaformDriver.pkg`)
+  - [x] Plugin descriptors, bundle identifiers (`com.equaform.audio.equalizer`), and AUv2 codes (`Eqfm` / `Eqf8`) updated
+  - [x] Presets and project state serialization updated with backward compatibility for legacy `RomuEq` files
+  - [x] Rebuild, sign, and install `Equaform-8.clap`, `Equaform-8.vst3`, `Equaform-8.component`, and `Equaform-8.app`
 

@@ -18,7 +18,7 @@ impl GuiApp for RomuEqApp {
     }
 
     fn window_title(&self) -> &str {
-        "RomuEq — Parametric Equalizer"
+        "Equaform-8 — Parametric Equalizer"
     }
 
     fn window_size(&self) -> (f32, f32) {
@@ -33,12 +33,12 @@ impl GuiApp for RomuEqApp {
 fn main() {
     #[cfg(target_os = "macos")]
     let mut _audio_guard = {
-        if !macos_audio::is_romueq_driver_installed_on_disk() {
+        if !macos_audio::is_driver_installed_on_disk() {
             println!(
-                "[RomuEq] Virtual audio driver 'RomuEq' not found on system. Launching setup..."
+                "[Equaform-8] Virtual audio driver 'Equaform-8' not found on system. Launching setup..."
             );
-            if let Err(e) = macos_audio::install_romueq_driver() {
-                eprintln!("[RomuEq] Installation of RomuEqDriver skipped or failed: {e}");
+            if let Err(e) = macos_audio::install_equaform_driver() {
+                eprintln!("[Equaform-8] Installation of EquaformDriver skipped or failed: {e}");
             }
         }
         macos_audio::SystemAudioRoutingGuard::activate()

@@ -64,8 +64,8 @@ pub type StateResult<T> = Result<T, StateError>;
 /// The current (and only) persisted state schema version.
 pub const CURRENT_SCHEMA_VERSION: u32 = 1;
 
-/// The product name that identifies RomuEq state files.
-pub const PRODUCT_NAME: &str = "RomuEq";
+/// The product name that identifies Equaform-8 state files.
+pub const PRODUCT_NAME: &str = "Equaform-8";
 
 // ===========================================================================
 // Parameter values map
@@ -275,7 +275,7 @@ impl ProjectState {
             .map_err(|_| StateError::MalformedInput)?;
         offset += product_len;
 
-        if product != PRODUCT_NAME {
+        if product != PRODUCT_NAME && product != "RomuEq" {
             return Err(StateError::UnknownProduct);
         }
 
@@ -529,7 +529,7 @@ impl Preset {
             .map_err(|_| StateError::MalformedInput)?;
         offset += product_len;
 
-        if product != PRODUCT_NAME {
+        if product != PRODUCT_NAME && product != "RomuEq" {
             return Err(StateError::UnknownProduct);
         }
 

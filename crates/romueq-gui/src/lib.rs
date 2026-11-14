@@ -1571,10 +1571,11 @@ pub mod standalone {
             let in_devices = audio::AudioStream::available_input_devices();
             let out_devices = audio::AudioStream::available_output_devices();
 
-            // Detect virtual input bridge (RomuEq prioritized, then BlackHole, then eqMac Export)
+            // Detect virtual input bridge (Equaform prioritized, then RomuEq, then BlackHole, then eqMac Export)
             let detected_in = in_devices
                 .iter()
-                .find(|d| d.contains("RomuEq"))
+                .find(|d| d.contains("Equaform"))
+                .or_else(|| in_devices.iter().find(|d| d.contains("RomuEq")))
                 .or_else(|| in_devices.iter().find(|d| d.contains("BlackHole")))
                 .or_else(|| in_devices.iter().find(|d| d.contains("eqMac Export")))
                 .cloned();
@@ -1600,7 +1601,8 @@ pub mod standalone {
                         .iter()
                         .find(|d| {
                             let l = d.to_lowercase();
-                            !l.contains("romueq")
+                            !l.contains("equaform")
+                                && !l.contains("romueq")
                                 && !l.contains("blackhole")
                                 && !l.contains("eqmac")
                         })
@@ -1608,16 +1610,7 @@ pub mod standalone {
                 })
                 .or_else(|| out_devices.first().cloned());
 
-            let is_virtual_bridge = detected_in
-                .as_ref()
-                .map(|d| d.contains("RomuEq") || d.contains("BlackHole") || d.contains("eqMac"))
-                .unwrap_or(false);
-
-            let initial_mode = if is_virtual_bridge {
-                audio::AudioSourceMode::PassThrough
-            } else {
-                audio::AudioSourceMode::TestSignal
-            };
+            let initial_mode = audio::AudioSourceMode::PassThrough;
 
             audio_stream.set_source_mode(initial_mode);
             audio_stream.set_input_device(detected_in.clone());
@@ -1626,19 +1619,14 @@ pub mod standalone {
                 let _ = audio_stream.set_parameters(*eng.eq_parameters());
             }
 
-            let mut audio_active = false;
-            let mut status_message = Some("Ready — Audio devices configured".to_string());
-
-            if initial_mode == audio::AudioSourceMode::PassThrough {
-                if let Err(e) = audio_stream.start() {
-                    status_message = Some(format!("Stream startup error: {e}"));
-                } else {
-                    audio_active = true;
+            let (audio_active, status_message) = match audio_stream.start() {
+                Ok(()) => {
                     client.sample_rate = audio_stream.sample_rate();
                     let out_name = detected_out.as_deref().unwrap_or("Output");
-                    status_message = Some(format!("EQ active → {out_name}"));
+                    (true, Some(format!("EQ active → {out_name}")))
                 }
-            }
+                Err(e) => (false, Some(format!("Stream startup error: {e}"))),
+            };
 
             let spectrum_config = romueq_analysis::SpectrumConfig::new(1024, 48000.0);
             let spectrum_processor = romueq_analysis::SpectrumProcessor::new(spectrum_config);

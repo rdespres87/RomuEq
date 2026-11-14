@@ -63,10 +63,10 @@ use params_map::{
 
 /// Stable descriptor shared across all plugin instances.
 fn get_descriptor() -> PluginDescriptor {
-    PluginDescriptor::new("com.romueq.plugin", "RomuEq")
-        .with_vendor("RomuEq")
-        .with_version("0.1.0")
-        .with_description("Real-time spectral equalizer plugin")
+    PluginDescriptor::new("com.equaform.audio.equalizer", "Equaform-8")
+        .with_vendor("Equaform Audio")
+        .with_version("1.0.0")
+        .with_description("High-Precision 8-Band Parametric Equalizer")
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]

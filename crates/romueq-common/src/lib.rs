@@ -3,7 +3,8 @@
 //! Common types and traits for RomuEq.
 
 /// Default product branding name for UI, installers, and audio bundles.
-pub const PRODUCT_NAME: &str = "RomuEq";
+pub const PRODUCT_NAME: &str = "Equaform-8";
+pub const VENDOR_NAME: &str = "Equaform Audio";
 
 pub mod audio_buffer;
 pub mod audio_ring;

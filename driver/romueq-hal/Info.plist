@@ -3,17 +3,17 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleDevelopmentRegion</key>
-    <string>fr</string>
+    <string>en</string>
     <key>CFBundleExecutable</key>
-    <string>RomuEq</string>
+    <string>Equaform</string>
     <key>CFBundleIdentifier</key>
-    <string>com.romueq.audio.driver</string>
+    <string>com.equaform.audio.driver</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
-    <string>RomuEq</string>
+    <string>Equaform</string>
     <key>CFBundleDisplayName</key>
-    <string>RomuEq Virtual Audio Driver</string>
+    <string>Equaform Audio Driver</string>
     <key>CFBundlePackageType</key>
     <string>BNDL</string>
     <key>CFBundleShortVersionString</key>
@@ -29,7 +29,7 @@
     <key>CFPlugInFactories</key>
     <dict>
         <key>E9B4C2A1-76F0-4E3D-9A12-58C0D91E4B77</key>
-        <string>RomuEqDriver_Create</string>
+        <string>EquaformDriver_Create</string>
     </dict>
     <key>CFPlugInTypes</key>
     <dict>

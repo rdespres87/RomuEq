@@ -1,7 +1,12 @@
 # Handoff - RomuEq
 
 ## Current State
-- **DAW Plugins (`CLAP`, `VST3`, `AUv2`)**: Implemented in `crates/romueq-plugin` (Rust CLAP + Cocoa `NSView` + Metal `wgpu` + `egui-wgpu` sharing `romueq-gui::workspace_ui`) and wrapped via `driver/clap-wrapper-romueq` into VST3 and AUv2 (`aufx` / `RmEq` / `Romu`).
+- **DAW Plugins (`CLAP`, `VST3`, `AUv2`)**: Implemented in `crates/romueq-plugin` (Rust CLAP + Cocoa `NSView` + Metal `wgpu` + `egui-wgpu` sharing `romueq-gui::workspace_ui`) and wrapped via `driver/clap-wrapper-romueq` into VST3 and AUv2 (`aufx` / `Eqf8` / `Eqfm`).
+- **Commercial Identity — Equaform-8 by Equaform Audio**:
+  - Official commercial name: `Equaform-8` (Tagline: "The Geometry of Pure Balance").
+  - Vendor identity: `Equaform Audio` (`com.equaform.audio.equalizer`).
+  - Full backward compatibility for project state and preset files (transparently supports both `Equaform-8` and legacy `RomuEq`).
+  - Bundles packaged and installed: `Equaform-8.clap`, `Equaform-8.vst3`, `Equaform-8.component`, `Equaform-8.app`.
 - **Commercial UI/UX & Standalone Overhaul**:
   - 100% English lingua franca across all controls, filter types, bands, and tooltips.
   - Streamlined `⏻ BYPASS` control with status LED.
@@ -16,8 +21,8 @@
 - **Verification**:
   - `cargo test --workspace` (192 tests passing: all unit/integration tests + doctests) and `cargo clippy --workspace --all-targets -- -D warnings` pass 100% clean with zero warnings.
   - `cargo fmt --check` passes cleanly.
-  - `./scripts/package-macos-plugins.sh` successfully rebuilt and installed updated CLAP, VST3, and AUv2 bundles into `~/Library/Audio/Plug-Ins/`.
-  - `./scripts/package-macos-app.sh` successfully packaged and codesigned `RomuEq.app`.
+  - `./scripts/package-macos-plugins.sh` successfully rebuilt and installed updated CLAP, VST3, and AUv2 bundles (`Equaform-8.clap`, `Equaform-8.vst3`, `Equaform-8.component`) into `~/Library/Audio/Plug-Ins/`.
+  - `./scripts/package-macos-app.sh` successfully packaged and codesigned `Equaform-8.app`.
 - **Git status**: Ready for review and commit validation.
 
 ## Next Logical Action
