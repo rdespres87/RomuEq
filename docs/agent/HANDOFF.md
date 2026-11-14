@@ -1,14 +1,24 @@
 # Handoff - RomuEq
 
 ## Current State
-- **Standalone (`RomuEq.app`)**: Native macOS standalone equalizer with C11 CoreAudio `AudioServerPlugIn` (`RomuEq.driver`), dual plots (EQ curve `[-40 dB .. +40 dB]` and FFT spectrum), stereo VU-meter, and 15 studio/multimedia factory presets.
-- **DAW Plugins (`CLAP`, `VST3`, `AUv2`)**: Implemented in `crates/romueq-plugin` (Rust CLAP + Cocoa `NSView` + Metal `wgpu` + `egui-wgpu` sharing `romueq-gui::workspace_ui` and `~/.romueq/presets/*.req`) and wrapped via `driver/clap-wrapper-romueq` into VST3 and AUv2 (`aufx` / `RmEq` / `Romu`).
+- **DAW Plugins (`CLAP`, `VST3`, `AUv2`)**: Implemented in `crates/romueq-plugin` (Rust CLAP + Cocoa `NSView` + Metal `wgpu` + `egui-wgpu` sharing `romueq-gui::workspace_ui`) and wrapped via `driver/clap-wrapper-romueq` into VST3 and AUv2 (`aufx` / `RmEq` / `Romu`).
+- **Commercial UI/UX & Standalone Overhaul**:
+  - 100% English lingua franca across all controls, filter types, bands, and tooltips.
+  - Streamlined `⏻ BYPASS` control with status LED.
+  - Vertical stereo VU-meter on right flank (-60 to +6 dBFS with peak hold and clip indicator).
+  - Frequency axis margined to `[16 Hz .. 24 kHz]` with standard audio ticks (`20`, `50`, `100`, `200`, `500`, `1k`, `2k`, `5k`, `10k`, `20k`) completely visible without clipping.
+  - Read-only protection on factory presets (cannot be deleted) with stable layout widths.
+  - Glitch-free audio device refresh in standalone mode.
+  - Strictly symmetric 8.0px margins on all 4 borders (Left, Right, Top, Bottom) verified by unit tests.
+  - Instant zero-lag standalone startup: skips spurious administrator prompt / `killall coreaudiod` when driver is already present on disk; fast 10ms sample-rate lock without stalling UI.
+  - Spectrum drawing bug and Auto-Gain compensation calculation fixed and verified.
 - **Verification**:
-  - `cargo test --workspace` (411 tests passed: 409 unit/integration + 2 doctests, 0 failed) and `cargo clippy --workspace -- -D warnings` pass cleanly after all fixes.
-  - `./scripts/package-macos-plugins.sh` builds, embeds `RomuEq.clap`, inside-out ad-hoc signs, verifies (`codesign --verify --deep --strict`), and installs `RomuEq.clap`, `RomuEq.vst3`, and `RomuEq.component` into `~/Library/Audio/Plug-Ins/{CLAP,VST3,Components}/`.
-  - `auval -v aufx RmEq Romu` passes (`AU VALIDATION SUCCEEDED`, 51 automatable parameters, Cocoa view `wrapAsAUV2_inst_cocoaUI_com_romueq_plugin`, stereo `[2, 2]`).
-- **Git status**: Changes for the DAW plugin implementation and remediation fixes are ready on disk and awaiting user approval to commit.
+  - `cargo test --workspace` (192 tests passing: all unit/integration tests + doctests) and `cargo clippy --workspace --all-targets -- -D warnings` pass 100% clean with zero warnings.
+  - `cargo fmt --check` passes cleanly.
+  - `./scripts/package-macos-plugins.sh` successfully rebuilt and installed updated CLAP, VST3, and AUv2 bundles into `~/Library/Audio/Plug-Ins/`.
+  - `./scripts/package-macos-app.sh` successfully packaged and codesigned `RomuEq.app`.
+- **Git status**: Ready for review and commit validation.
 
 ## Next Logical Action
-1. Confirm with the user whether to create a git commit for the DAW plugin changes.
-2. Load **RomuEq** in **Logic Pro** (AUv2), **Ableton Live** (VST3), and **Surge XT / Reaper / Bitwig** (CLAP/VST3) to visually verify the Cocoa Metal UI, mouse drag automation gestures, and preset sync.
+1. Test the new UI in Ableton Live to confirm visual layout, vertical VU-meter, and 20k margins.
+2. Ask user authorization to commit the changes via Security Gate 3.

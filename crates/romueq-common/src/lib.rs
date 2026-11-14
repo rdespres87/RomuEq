@@ -2,6 +2,9 @@
 
 //! Common types and traits for RomuEq.
 
+/// Default product branding name for UI, installers, and audio bundles.
+pub const PRODUCT_NAME: &str = "RomuEq";
+
 pub mod audio_buffer;
 pub mod audio_ring;
 
@@ -32,6 +35,7 @@ pub use parameter::ParameterCommand;
 pub use parameter::ProcessingMode;
 pub use parameter::Slope;
 pub use parameter::StereoMode;
+pub use parameter::{band, global};
 
 // ---------------------------------------------------------------------------
 // M2-T001/M5-T001: Bounded SPSC transport (exported for analysis handoff)

@@ -807,7 +807,7 @@ impl SpectrumProcessor {
             }
             LogBinMode::OneThirdOctave => {
                 let base_freq = 25.0;
-                let idx = (freq_hz / base_freq).log2().floor() as i64 * 3 + 10;
+                let idx = ((freq_hz / base_freq).log2() * 3.0).floor() as i64 + 10;
                 idx.max(0) as usize
             }
         }
@@ -1001,7 +1001,7 @@ fn one_third_octave_groups(_fft_size: usize, sample_rate: f64) -> usize {
     if nyquist <= base {
         return 1;
     }
-    ((nyquist / base).log2().floor() as i64 * 3 + 10) as usize
+    (((nyquist / base).log2() * 3.0).floor() as i64 + 11).max(1) as usize
 }
 
 /// Returns the band edges for an octave group index.

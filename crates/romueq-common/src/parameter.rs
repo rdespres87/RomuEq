@@ -42,6 +42,7 @@ pub mod global {
     pub const AUTO_GAIN: u32 = 3;
     pub const PROCESSING_MODE: u32 = 4;
     pub const STEREO_MODE: u32 = 5;
+    pub const AUTO_GAIN_COMPENSATION_DB: u32 = 6;
 }
 
 /// Band parameter ID offsets (relative to band base).

@@ -7,10 +7,11 @@
 use romueq_common::{BandParameters, MAX_BANDS, ParamId};
 
 use crate::preset_manager::PresetManager;
+use crate::presets_io::is_factory_preset;
 use crate::{
     AnalysisSnapshot, BandControls, GuiCommandBatch, ParamSnapshot, render_band,
     render_interactive_frequency_response_plot, render_master_section, render_spectrum_analyzer,
-    render_stereo_vu_meter,
+    render_vertical_stereo_vu_meter,
 };
 
 /// Host environment under which the workspace UI is currently rendered.
@@ -87,68 +88,59 @@ pub fn render_workspace(
 
     ui.spacing_mut().item_spacing.y = 4.0;
 
-    // 1. Compact header row: Title + Status message
+    // 1. Top toolbar: Brand + Bypass + Output/Host info + Status
     ui.horizontal(|ui| {
-        ui.heading("RomuEq — Égaliseur Paramétrique");
-        if let Some(status) = status_message {
-            ui.separator();
-            ui.label(
-                egui::RichText::new(status)
-                    .small()
-                    .color(egui::Color32::from_rgb(165, 175, 190)),
-            );
-        }
-    });
+        ui.label(
+            egui::RichText::new("RomuEq")
+                .strong()
+                .size(15.0)
+                .color(egui::Color32::from_rgb(0, 205, 255)),
+        );
 
-    // 2. Top toolbar (Bypass + Master VU + Host/Device info)
-    ui.horizontal(|ui| {
+        ui.separator();
+
+        // Sleek unified Bypass button (LED style)
+        let is_bypassed = snapshot.get(ParamId(1)).map(|v| v >= 0.5).unwrap_or(false);
+        let (bypass_text, bypass_color) = if is_bypassed {
+            ("⏻ BYPASS", egui::Color32::from_rgb(175, 180, 190))
+        } else {
+            ("⏻ ACTIVE", egui::Color32::from_rgb(70, 235, 130))
+        };
+
+        if ui
+            .add(egui::Button::new(
+                egui::RichText::new(bypass_text)
+                    .strong()
+                    .color(bypass_color),
+            ))
+            .on_hover_text(if is_bypassed {
+                "Click to enable EQ processing"
+            } else {
+                "Click to bypass EQ (dry pass-through)"
+            })
+            .clicked()
+        {
+            batch.push(ParamId(1), if is_bypassed { 0.0 } else { 1.0 });
+        }
+
+        ui.separator();
+
         match env {
             HostEnvironment::Standalone {
                 audio_active,
                 current_output,
                 available_outputs,
-                peak_levels_db,
+                ..
             } => {
-                let play_label = if *audio_active {
-                    "⏹ Stop Audio"
-                } else {
-                    "▶ Play Audio"
-                };
-                if ui.button(play_label).clicked() {
+                let mute_label = if *audio_active { "Mute" } else { "Unmute" };
+                if ui.button(mute_label).clicked() {
                     actions.push(WorkspaceAction::TogglePlayStop);
-                }
-
-                // Equalizer On / Off (Direct Bypass) toggle button
-                let is_bypassed = snapshot.get(ParamId(1)).map(|v| v >= 0.5).unwrap_or(false);
-                let eq_text = if is_bypassed {
-                    "⚡ ÉGALISEUR : OFF (BYPASS)"
-                } else {
-                    "✨ ÉGALISEUR : ON"
-                };
-                let eq_color = if is_bypassed {
-                    egui::Color32::from_rgb(180, 180, 180)
-                } else {
-                    egui::Color32::from_rgb(80, 240, 120)
-                };
-
-                if ui
-                    .add(egui::Button::new(
-                        egui::RichText::new(eq_text).strong().color(eq_color),
-                    ))
-                    .on_hover_text(if is_bypassed {
-                        "Cliquez pour activer le traitement d'égalisation (ON)"
-                    } else {
-                        "Cliquez pour passer en flux direct transparent sans traitement (BYPASS DIRECT)"
-                    })
-                    .clicked()
-                {
-                    batch.push(ParamId(1), if is_bypassed { 0.0 } else { 1.0 });
                 }
 
                 ui.separator();
 
                 let mut chosen_out = current_output.clone();
-                ui.label("🔊 Sortie:");
+                ui.label("🔊 Output:");
                 egui::ComboBox::from_id_salt("output_device_select")
                     .selected_text(current_output)
                     .show_ui(ui, |ui| {
@@ -163,90 +155,89 @@ pub fn render_workspace(
 
                 if ui
                     .button("🔄")
-                    .on_hover_text("Actualiser les périphériques audio")
+                    .on_hover_text("Refresh audio devices")
                     .clicked()
                 {
                     actions.push(WorkspaceAction::RefreshDevices);
                 }
-
-                ui.separator();
-                render_stereo_vu_meter(ui, peak_levels_db.0, peak_levels_db.1);
             }
             HostEnvironment::Plugin {
                 host_description,
                 sample_rate: host_sr,
-                peak_levels_db,
+                ..
             } => {
-                // Equalizer On / Off (Direct Bypass) toggle button
-                let is_bypassed = snapshot.get(ParamId(1)).map(|v| v >= 0.5).unwrap_or(false);
-                let eq_text = if is_bypassed {
-                    "⚡ ÉGALISEUR : OFF (BYPASS)"
-                } else {
-                    "✨ ÉGALISEUR : ON"
-                };
-                let eq_color = if is_bypassed {
-                    egui::Color32::from_rgb(180, 180, 180)
-                } else {
-                    egui::Color32::from_rgb(80, 240, 120)
-                };
-
-                if ui
-                    .add(egui::Button::new(
-                        egui::RichText::new(eq_text).strong().color(eq_color),
-                    ))
-                    .on_hover_text("Bypass de l'égaliseur dans le DAW")
-                    .clicked()
-                {
-                    batch.push(ParamId(1), if is_bypassed { 0.0 } else { 1.0 });
-                }
-
-                ui.separator();
-
                 ui.label(
                     egui::RichText::new(format!(
-                        "🎛 {host_description} • {:.1} kHz • Stéréo",
+                        "🎛 {host_description} • {:.1} kHz • Stereo",
                         host_sr / 1000.0
                     ))
                     .small()
                     .color(egui::Color32::from_rgb(170, 180, 195)),
                 );
-
-                ui.separator();
-                render_stereo_vu_meter(ui, peak_levels_db.0, peak_levels_db.1);
             }
+        }
+
+        if let Some(status) = status_message {
+            ui.separator();
+            ui.label(
+                egui::RichText::new(status)
+                    .small()
+                    .color(egui::Color32::from_rgb(165, 175, 190)),
+            );
         }
     });
 
     ui.separator();
 
-    // 3. Two side-by-side plots: Left = Equalizer Curve, Right = Real-Time FFT Spectrum
-    ui.columns(2, |cols| {
-        cols[0].horizontal(|ui| {
-            ui.label(egui::RichText::new("📈 Courbe d'Égalisation (dB)").strong());
-            ui.label(
-                egui::RichText::new("— Glisser: Freq/Gain • Molette: Q")
-                    .small()
-                    .color(egui::Color32::from_rgb(155, 160, 170)),
-            );
-        });
-        render_interactive_frequency_response_plot(
-            &mut cols[0],
-            band_params,
-            sample_rate,
-            512,
-            &mut state.dragged_band,
-            &mut batch,
+    // 2. Central section: Two side-by-side plots + Vertical stereo VU-meter on the right
+    let (peak_l, peak_r) = match env {
+        HostEnvironment::Standalone { peak_levels_db, .. } => *peak_levels_db,
+        HostEnvironment::Plugin { peak_levels_db, .. } => *peak_levels_db,
+    };
+
+    ui.horizontal(|ui| {
+        let meter_w = 47.0;
+        let right_section_w = meter_w + ui.spacing().item_spacing.x * 2.0 + 7.0;
+        let plots_w = (ui.available_width() - right_section_w).max(200.0);
+        ui.allocate_ui_with_layout(
+            egui::vec2(plots_w, 185.0),
+            egui::Layout::left_to_right(egui::Align::Min),
+            |ui| {
+                ui.spacing_mut().item_spacing.x = 12.0;
+                ui.columns(2, |cols| {
+                    cols[0].horizontal(|ui| {
+                        ui.label(egui::RichText::new("📈 EQ Response (dB)").strong());
+                        ui.label(
+                            egui::RichText::new("— Drag: Freq/Gain • Scroll: Q")
+                                .small()
+                                .color(egui::Color32::from_rgb(155, 160, 170)),
+                        );
+                    });
+                    render_interactive_frequency_response_plot(
+                        &mut cols[0],
+                        band_params,
+                        sample_rate,
+                        512,
+                        &mut state.dragged_band,
+                        &mut batch,
+                    );
+
+                    cols[1].horizontal(|ui| {
+                        ui.label(egui::RichText::new("📊 Real-Time Spectrum (dBFS)").strong());
+                    });
+                    render_spectrum_analyzer(&mut cols[1], analysis, sample_rate, 128);
+                });
+            },
         );
 
-        cols[1].horizontal(|ui| {
-            ui.label(egui::RichText::new("📊 Spectre FFT Temps-Réel (dBFS)").strong());
-        });
-        render_spectrum_analyzer(&mut cols[1], analysis, sample_rate, 128);
+        ui.separator();
+
+        render_vertical_stereo_vu_meter(ui, peak_l, peak_r, 180.0);
     });
 
     ui.separator();
 
-    // 4. Unified Master & Preset bar on a single compact row
+    // 3. Unified Master & Preset bar on a single compact row
     ui.horizontal(|ui| {
         render_master_section(ui, snapshot, &mut batch);
 
@@ -255,13 +246,14 @@ pub fn render_workspace(
         ui.label(egui::RichText::new("Preset:").strong());
         let presets: Vec<String> = preset_manager.iter().map(|p| p.name.clone()).collect();
         let selected_text = if current_preset.is_empty() {
-            "Choisir un preset".to_string()
+            "Select Preset...".to_string()
         } else {
             current_preset.to_string()
         };
 
         let mut chosen_preset = current_preset.to_string();
         egui::ComboBox::new("preset_select", "")
+            .width(170.0)
             .selected_text(selected_text)
             .show_ui(ui, |ui| {
                 for name in &presets {
@@ -275,11 +267,11 @@ pub fn render_workspace(
 
         ui.add(
             egui::TextEdit::singleline(&mut state.preset_name_input)
-                .desired_width(110.0)
-                .hint_text("Nom du preset..."),
+                .desired_width(130.0)
+                .hint_text("Preset name..."),
         );
 
-        if ui.button("💾 Sauvegarder").clicked() {
+        if ui.button("💾 Save").clicked() {
             let name = if !state.preset_name_input.trim().is_empty() {
                 state.preset_name_input.trim().to_string()
             } else if !current_preset.trim().is_empty() {
@@ -291,14 +283,24 @@ pub fn render_workspace(
             state.preset_name_input.clear();
         }
 
-        if ui.button("🗑 Supprimer").clicked() && !current_preset.is_empty() {
+        let is_factory = is_factory_preset(current_preset);
+        let can_delete = !current_preset.is_empty() && !is_factory;
+        if ui
+            .add_enabled(can_delete, egui::Button::new("🗑 Delete"))
+            .on_hover_text(if is_factory {
+                "Factory presets cannot be deleted"
+            } else {
+                "Delete selected preset"
+            })
+            .clicked()
+        {
             actions.push(WorkspaceAction::DeletePreset(current_preset.to_string()));
         }
     });
 
     ui.separator();
 
-    // 5. 8 equal-width columns Channel Strip grid
+    // 4. 8 equal-width columns Channel Strip grid
     ui.columns(8, |cols| {
         let band_controls = BandControls::new();
         for (i, col) in cols.iter_mut().enumerate() {

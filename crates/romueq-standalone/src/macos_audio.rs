@@ -251,7 +251,14 @@ pub mod macos_impl {
         }
     }
 
+    /// Check whether the RomuEq native driver bundle is present on the filesystem.
+    pub fn is_romueq_driver_installed_on_disk() -> bool {
+        std::path::Path::new("/Library/Audio/Plug-Ins/HAL/RomuEq.driver/Contents/Info.plist")
+            .exists()
+    }
+
     /// Check if the native RomuEq CoreAudio HAL driver (`RomuEqDriver_Create`) is installed and recognized by CoreAudio.
+    #[allow(dead_code)]
     pub fn is_romueq_driver_available() -> bool {
         let is_native_bundle =
             std::fs::read("/Library/Audio/Plug-Ins/HAL/RomuEq.driver/Contents/Info.plist")
@@ -343,34 +350,54 @@ pub mod macos_impl {
                 }
             }
 
-            // Look for "RomuEq" virtual device
-            let target_virtual_device = find_device_by_name("RomuEq");
+            // Look for "RomuEq" virtual device, with a short micro-poll if HAL driver was just loaded
+            let mut target_virtual_device = find_device_by_name("RomuEq");
+            if target_virtual_device.is_none() && is_romueq_driver_installed_on_disk() {
+                for _ in 0..5 {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                    target_virtual_device = find_device_by_name("RomuEq");
+                    if target_virtual_device.is_some() {
+                        break;
+                    }
+                }
+            }
 
             if let Some((virt_id, virt_name)) = target_virtual_device {
                 if let Some(target_sr) = guard.original_device_id.and_then(get_device_sample_rate) {
-                    println!(
-                        "[RomuEq] Synchronizing {virt_name} to hardware sample rate: {target_sr} Hz"
-                    );
-                    let _ = set_device_sample_rate(virt_id, target_sr);
-                    // Verify property take-effect in CoreAudio HAL
-                    let mut verified = false;
-                    for _ in 0..25 {
-                        if let Some(current_sr) = get_device_sample_rate(virt_id) {
-                            if (current_sr - target_sr).abs() < 1.0 {
-                                println!(
-                                    "[RomuEq] {virt_name} sample rate verified and locked at {target_sr} Hz"
-                                );
-                                verified = true;
-                                break;
+                    let current_sr = get_device_sample_rate(virt_id);
+                    let needs_sync = match current_sr {
+                        Some(sr) => (sr - target_sr).abs() >= 1.0,
+                        None => true,
+                    };
+
+                    if needs_sync {
+                        println!(
+                            "[RomuEq] Synchronizing {virt_name} to hardware sample rate: {target_sr} Hz"
+                        );
+                        let _ = set_device_sample_rate(virt_id, target_sr);
+                        // Verify property take-effect in CoreAudio HAL with fast 10ms intervals
+                        let mut verified = false;
+                        for _ in 0..20 {
+                            std::thread::sleep(std::time::Duration::from_millis(10));
+                            if let Some(new_sr) = get_device_sample_rate(virt_id) {
+                                if (new_sr - target_sr).abs() < 1.0 {
+                                    println!(
+                                        "[RomuEq] {virt_name} sample rate verified and locked at {target_sr} Hz"
+                                    );
+                                    verified = true;
+                                    break;
+                                }
                             }
                         }
-                        std::thread::sleep(std::time::Duration::from_millis(100));
-                    }
-                    if !verified {
-                        eprintln!(
-                            "[RomuEq] ERROR: CoreAudio HAL could not verify {virt_name} sample rate match within 2.5s. Aborting system output reroute to avoid audio degradation."
+                        if !verified {
+                            eprintln!(
+                                "[RomuEq] Warning: CoreAudio HAL sample rate synchronization timed out. Proceeding with routing."
+                            );
+                        }
+                    } else {
+                        println!(
+                            "[RomuEq] {virt_name} sample rate already locked to hardware: {target_sr} Hz"
                         );
-                        return guard;
                     }
                 }
 
@@ -480,6 +507,15 @@ mod tests {
                     "Device '{name}' (ID {id}) nominal sample rate: {sr} Hz (status: {status})"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn test_driver_installed_on_disk() {
+        let on_disk = is_romueq_driver_installed_on_disk();
+        println!("RomuEq driver installed on disk: {on_disk}");
+        if on_disk {
+            println!("Driver available: {}", is_romueq_driver_available());
         }
     }
 }

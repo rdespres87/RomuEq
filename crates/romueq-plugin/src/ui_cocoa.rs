@@ -48,7 +48,7 @@ mod macos {
     };
 
     pub const EDITOR_WIDTH: f64 = 1180.0;
-    pub const EDITOR_HEIGHT: f64 = 560.0;
+    pub const EDITOR_HEIGHT: f64 = 485.0;
     const FFT_SIZE: usize = 1024;
 
     /// Minimal synchronous poll helper for Metal adapter/device futures (resolve immediately on macOS).
@@ -423,6 +423,7 @@ mod macos {
         spectrum_frame_num: u64,
         last_spectrum_sr: f32,
         fft_ring: VecDeque<f32>,
+        idle_frames: u32,
     }
 
     impl EditorRuntime {
@@ -517,8 +518,13 @@ mod macos {
             populate_factory_presets(&mut preset_manager);
 
             let sr = shared.sample_rate().max(8000.0);
-            let spectrum_processor =
-                SpectrumProcessor::new(SpectrumConfig::new(FFT_SIZE, sr as f64));
+            let spectrum_processor = SpectrumProcessor::new(SpectrumConfig {
+                fft_size: FFT_SIZE,
+                smoothing_factor: 0.4,
+                window_type: romueq_analysis::WindowType::Hann,
+                log_bin_mode: romueq_analysis::LogBinMode::None,
+                min_db: -120.0,
+            });
 
             Ok(Self {
                 shared,
@@ -546,6 +552,7 @@ mod macos {
                 spectrum_frame_num: 0,
                 last_spectrum_sr: sr,
                 fft_ring: VecDeque::with_capacity(FFT_SIZE * 2),
+                idle_frames: 0,
             })
         }
 
@@ -574,25 +581,44 @@ mod macos {
             // 1. Collect audio & telemetry from lock-free shared state
             let sample_rate = self.shared.sample_rate().max(8000.0);
             if (sample_rate - self.last_spectrum_sr).abs() > 1.0 {
-                self.spectrum_processor
-                    .reconfigure(SpectrumConfig::new(FFT_SIZE, sample_rate as f64));
+                self.spectrum_processor.reconfigure(SpectrumConfig {
+                    fft_size: FFT_SIZE,
+                    smoothing_factor: 0.4,
+                    window_type: romueq_analysis::WindowType::Hann,
+                    log_bin_mode: romueq_analysis::LogBinMode::None,
+                    min_db: -120.0,
+                });
                 self.last_spectrum_sr = sample_rate;
             }
 
             let consumer = self.shared.ring_consumer();
             let mut tmp_l = [0.0f32; 512];
             let mut tmp_r = [0.0f32; 512];
+            let mut popped_any = false;
             loop {
                 let n = consumer.pop_slice(&mut tmp_l, &mut tmp_r);
                 if n == 0 {
                     break;
                 }
+                popped_any = true;
                 for i in 0..n {
                     self.fft_ring.push_back(0.5 * (tmp_l[i] + tmp_r[i]));
                     if self.fft_ring.len() > FFT_SIZE {
                         self.fft_ring.pop_front();
                     }
                 }
+            }
+
+            if !popped_any {
+                self.idle_frames = self.idle_frames.saturating_add(1);
+                if self.idle_frames > 4 {
+                    // Host playback is paused or stopped: decay ring samples towards silence
+                    for s in self.fft_ring.iter_mut() {
+                        *s *= 0.85;
+                    }
+                }
+            } else {
+                self.idle_frames = 0;
             }
 
             let peak_levels_db = self.shared.peak_levels_db();
@@ -602,7 +628,7 @@ mod macos {
             analysis.rms[0] = peak_levels_db.0;
             analysis.rms[1] = peak_levels_db.1;
 
-            if self.fft_ring.len() >= FFT_SIZE {
+            if self.fft_ring.len() >= FFT_SIZE && self.idle_frames < 60 {
                 let samples: Vec<f32> = self.fft_ring.iter().copied().collect();
                 self.spectrum_frame_num += 1;
                 let frame = self.spectrum_processor.process(
@@ -610,19 +636,25 @@ mod macos {
                     sample_rate as f64,
                     self.spectrum_frame_num,
                 );
-                let mut pts = Vec::with_capacity(frame.num_log_groups);
-                for g in 0..frame.num_log_groups {
-                    if let Some((low, high)) = frame.log_group_edges(g) {
-                        let center = (low * high).sqrt();
-                        let db = frame.log_binned_magnitudes_db[g] as f64;
-                        pts.push([center, db]);
-                    }
-                }
-                analysis.spectrum_data = pts;
+                // Subtract unnormalized DFT gain 20*log10(N/2) (~54.18 dB for N=1024) so 1.0 full-scale = 0 dBFS
+                let dft_norm_db = 20.0 * ((frame.fft_size as f64) * 0.5).log10();
+                analysis.spectrum_data = (0..frame.num_bins)
+                    .map(|b| {
+                        [
+                            frame.bin_frequency(b),
+                            (frame.magnitudes_db[b] as f64) - dft_norm_db,
+                        ]
+                    })
+                    .collect();
             }
 
             let eq = self.shared.read_eq_parameters();
-            let snapshot = eq_to_param_snapshot(&eq);
+            let auto_gain_comp_db = if eq.global.auto_gain {
+                romueq_engine::calculate_auto_gain_compensation_db(&eq.bands, sample_rate)
+            } else {
+                0.0
+            };
+            let snapshot = eq_to_param_snapshot(&eq, auto_gain_comp_db);
 
             // 2. Run egui frame with shared Workspace UI
             let events = std::mem::take(&mut self.pending_events);
@@ -701,7 +733,7 @@ mod macos {
                         if self.current_preset == name {
                             self.current_preset.clear();
                         }
-                        self.status_message = Some(format!("Preset « {name} » supprimé"));
+                        self.status_message = Some(format!("Preset '{name}' deleted"));
                     }
                     _ => {}
                 }
@@ -798,7 +830,7 @@ mod macos {
             }
             self.shared.write_eq_parameters_from_ui(&eq);
             self.current_preset = name.to_string();
-            self.status_message = Some(format!("Preset « {name} » appliqué"));
+            self.status_message = Some(format!("Preset '{name}' applied"));
             true
         }
 
@@ -814,14 +846,14 @@ mod macos {
             match self.preset_manager.create_from_state(name, &state) {
                 Ok(()) => {
                     if let Err(err) = persist_preset_to_disk(&mut self.preset_manager, name) {
-                        self.status_message = Some(format!("Erreur sauvegarde : {err}"));
+                        self.status_message = Some(format!("Save error: {err}"));
                     } else {
                         self.current_preset = name.to_string();
-                        self.status_message = Some(format!("Preset « {name} » enregistré"));
+                        self.status_message = Some(format!("Preset '{name}' saved"));
                     }
                 }
                 Err(err) => {
-                    self.status_message = Some(format!("Erreur : {err}"));
+                    self.status_message = Some(format!("Error: {err}"));
                 }
             }
         }
@@ -845,8 +877,8 @@ mod macos {
         }
     }
 
-    fn eq_to_param_snapshot(eq: &EqParameters) -> ParamSnapshot {
-        let mut vals = Vec::with_capacity(PARAM_COUNT_USIZE);
+    fn eq_to_param_snapshot(eq: &EqParameters, auto_gain_comp_db: f32) -> ParamSnapshot {
+        let mut vals = Vec::with_capacity(PARAM_COUNT_USIZE + 1);
         vals.push(ParamValue {
             param_id: ParamId(global::BYPASS),
             value: if eq.global.bypass { 1.0 } else { 0.0 },
@@ -858,6 +890,10 @@ mod macos {
         vals.push(ParamValue {
             param_id: ParamId(global::AUTO_GAIN),
             value: if eq.global.auto_gain { 1.0 } else { 0.0 },
+        });
+        vals.push(ParamValue {
+            param_id: ParamId(global::AUTO_GAIN_COMPENSATION_DB),
+            value: auto_gain_comp_db,
         });
 
         for i in 0..MAX_BANDS {

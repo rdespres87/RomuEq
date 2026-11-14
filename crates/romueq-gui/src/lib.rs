@@ -357,12 +357,12 @@ fn log_freq_axis_formatter(mark: GridMark, _range: &std::ops::RangeInclusive<f64
     if freq >= 990.0 {
         let khz = freq / 1000.0;
         if (khz - khz.round()).abs() < 0.05 {
-            format!("{:.0} kHz", khz.round())
+            format!("{:.0}k", khz.round())
         } else {
-            format!("{khz:.1} kHz")
+            format!("{khz:.1}k")
         }
     } else {
-        format!("{freq:.0} Hz")
+        format!("{freq:.0}")
     }
 }
 
@@ -384,15 +384,15 @@ pub fn render_band(
 ) {
     let band_names = [
         "Sub",
-        "Graves",
-        "Bas-Méd",
-        "Médiums",
-        "Ht-Méd",
-        "Présence",
-        "Brillance",
+        "Low",
+        "Low-Mid",
+        "Mid",
+        "High-Mid",
+        "Presence",
+        "Brilliance",
         "Air",
     ];
-    let band_name = band_names.get(band_index).copied().unwrap_or("Bande");
+    let band_name = band_names.get(band_index).copied().unwrap_or("Band");
 
     let color = match band_index % 8 {
         0 => egui::Color32::from_rgb(255, 80, 80),   // Red
@@ -406,6 +406,7 @@ pub fn render_band(
     };
 
     ui.group(|ui| {
+        ui.set_width(ui.available_width());
         ui.vertical_centered(|ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
 
@@ -455,7 +456,7 @@ pub fn render_band(
             // 3. Vertical Gain Fader (top-to-bottom console strip) + compact dB DragValue
             let mut gain_val = snapshot.get(params.gain_db()).unwrap_or(0.0);
             let is_pass = ft_idx == 3 || ft_idx == 4;
-            ui.spacing_mut().slider_width = 58.0;
+            ui.spacing_mut().slider_width = 68.0;
             if is_pass {
                 ui.add_enabled(
                     false,
@@ -478,7 +479,7 @@ pub fn render_band(
                             .vertical()
                             .show_value(false),
                     )
-                    .on_hover_text("Double-clic pour remettre à 0 dB")
+                    .on_hover_text("Double-click to reset to 0 dB")
                     .changed()
                 {
                     batch.push(params.gain_db(), gain_val);
@@ -513,7 +514,7 @@ pub fn render_band(
                             }
                         }),
                 )
-                .on_hover_text("Fréquence centrale (glisser ou cliquer pour saisir)")
+                .on_hover_text("Center frequency (drag or click to edit)")
                 .changed()
             {
                 batch.push(params.frequency_hz(), freq_val);
@@ -529,7 +530,7 @@ pub fn render_band(
                         .fixed_decimals(2)
                         .prefix("Q "),
                 )
-                .on_hover_text("Largeur de bande (Facteur Q)")
+                .on_hover_text("Bandwidth (Q factor)")
                 .changed()
             {
                 batch.push(params.q(), q_val);
@@ -678,8 +679,8 @@ pub fn render_interactive_frequency_response_plot(
 
     let response = compute_response(sample_rate, bands, width);
 
-    let log_min_x = 20.0_f64.log10();
-    let log_max_x = 20000.0_f64.log10();
+    let log_min_x = 16.0_f64.log10();
+    let log_max_x = 24000.0_f64.log10();
 
     let points: Vec<[f64; 2]> = response
         .iter()
@@ -695,7 +696,7 @@ pub fn render_interactive_frequency_response_plot(
         .color(egui::Color32::from_rgb(0, 185, 255))
         .stroke(egui::Stroke::new(2.2, egui::Color32::from_rgb(0, 185, 255)))
         .fill(0.0)
-        .name("Courbe EQ");
+        .name("EQ Curve");
 
     let is_primary_down = ui.ctx().input(|i| i.pointer.primary_down());
     let is_primary_pressed = ui.ctx().input(|i| i.pointer.primary_pressed());
@@ -717,10 +718,10 @@ pub fn render_interactive_frequency_response_plot(
         .x_grid_spacer(log_freq_grid_spacer)
         .label_formatter(|_name, val| {
             let freq = 10.0_f64.powf(val.x);
-            format!("Freq: {freq:.0} Hz\nGain EQ: {:+.1} dB", val.y)
+            format!("Freq: {freq:.0} Hz\nGain: {:+.1} dB", val.y)
         })
         .show(ui, |plot_ui| {
-            // Lock viewport bounds strictly to [20 Hz .. 20 kHz] x [-40 dB .. +40 dB] so it never slides or clips
+            // Lock viewport bounds strictly to [18 Hz .. 22 kHz] x [-40 dB .. +40 dB] so it never slides or clips
             plot_ui.set_auto_bounds(egui::Vec2b::FALSE);
             plot_ui.set_plot_bounds(egui_plot::PlotBounds::from_min_max(
                 [log_min_x, -40.0],
@@ -996,8 +997,8 @@ pub fn render_spectrum_analyzer(
     let nyquist = sample_rate * 0.5;
 
     // Build frequency bins (logarithmically spaced) for x-axis mapping.
-    let log_min = 20.0_f64.log10();
-    let log_max = (nyquist as f64).min(20000.0).log10();
+    let log_min = 16.0_f64.log10();
+    let log_max = (nyquist as f64).min(24000.0).log10();
 
     let mut bars: Vec<[f64; 2]> = Vec::with_capacity(num_bars);
 
@@ -1072,7 +1073,7 @@ pub fn render_spectrum_analyzer(
         .color(egui::Color32::from_rgb(0, 230, 180)) // Studio cyan/emerald
         .stroke(egui::Stroke::new(1.8, egui::Color32::from_rgb(0, 230, 180)))
         .fill(-90.0)
-        .name("Spectre");
+        .name("Spectrum");
 
     let plot = Plot::new("spectrum")
         .include_x(log_min)
@@ -1089,7 +1090,7 @@ pub fn render_spectrum_analyzer(
         .x_grid_spacer(log_freq_grid_spacer)
         .label_formatter(|_name, val| {
             let freq = 10.0_f64.powf(val.x);
-            format!("Freq: {freq:.0} Hz\nNiveau: {:+.1} dBFS", val.y)
+            format!("Freq: {freq:.0} Hz\nLevel: {:+.1} dBFS", val.y)
         })
         .show(ui, |plot_ui| {
             plot_ui.set_auto_bounds(egui::Vec2b::FALSE);
@@ -1193,6 +1194,150 @@ pub fn render_stereo_vu_meter(ui: &mut egui::Ui, peak_l_db: f32, peak_r_db: f32)
     });
 }
 
+/// Renders a vertical studio stereo VU-meter (L / R) with peak hold and dBFS scale.
+pub fn render_vertical_stereo_vu_meter(
+    ui: &mut egui::Ui,
+    peak_l_db: f32,
+    peak_r_db: f32,
+    height: f32,
+) {
+    let bar_w = 7.0;
+    let gap = 3.0;
+    let label_w = 26.0;
+    let total_w = bar_w * 2.0 + gap + label_w + 4.0;
+
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(total_w, height), egui::Sense::hover());
+    if !ui.is_rect_visible(rect) {
+        return;
+    }
+
+    let painter = ui.painter();
+    let meter_top = rect.min.y + 14.0;
+    let meter_bottom = rect.max.y - 4.0;
+    let meter_h = (meter_bottom - meter_top).max(20.0);
+
+    // Labels at top
+    let l_center_x = rect.min.x + bar_w * 0.5;
+    let r_center_x = rect.min.x + bar_w + gap + bar_w * 0.5;
+    painter.text(
+        egui::pos2(l_center_x, rect.min.y + 5.0),
+        egui::Align2::CENTER_CENTER,
+        "L",
+        egui::FontId::monospace(9.0),
+        egui::Color32::from_rgb(170, 180, 195),
+    );
+    painter.text(
+        egui::pos2(r_center_x, rect.min.y + 5.0),
+        egui::Align2::CENTER_CENTER,
+        "R",
+        egui::FontId::monospace(9.0),
+        egui::Color32::from_rgb(170, 180, 195),
+    );
+
+    // dB marks to render along the right side: +6, 0, -6, -12, -24, -40, -60
+    let db_marks: &[(f32, &str)] = &[
+        (6.0, "+6"),
+        (0.0, "0"),
+        (-6.0, "-6"),
+        (-12.0, "-12"),
+        (-24.0, "-24"),
+        (-40.0, "-40"),
+        (-60.0, "-60"),
+    ];
+
+    let db_to_y = |db: f32| -> f32 {
+        let norm = ((db.clamp(-60.0, 6.0) + 60.0) / 66.0).clamp(0.0, 1.0);
+        meter_bottom - norm * meter_h
+    };
+
+    let text_x = rect.min.x + bar_w * 2.0 + gap + 4.0;
+    for &(db, text) in db_marks {
+        let y = db_to_y(db);
+        let color = if db > 0.0 {
+            egui::Color32::from_rgb(250, 90, 90)
+        } else if db == 0.0 {
+            egui::Color32::from_rgb(240, 240, 240)
+        } else {
+            egui::Color32::from_rgb(120, 130, 145)
+        };
+        painter.text(
+            egui::pos2(text_x, y),
+            egui::Align2::LEFT_CENTER,
+            text,
+            egui::FontId::monospace(8.0),
+            color,
+        );
+        painter.line_segment(
+            [
+                egui::pos2(rect.min.x + bar_w * 2.0 + gap, y),
+                egui::pos2(rect.min.x + bar_w * 2.0 + gap + 2.0, y),
+            ],
+            egui::Stroke::new(0.6, egui::Color32::from_rgb(60, 65, 75)),
+        );
+    }
+
+    // Draw meter channels
+    let draw_channel = |x_min: f32, db: f32| {
+        let channel_rect = egui::Rect::from_min_max(
+            egui::pos2(x_min, meter_top),
+            egui::pos2(x_min + bar_w, meter_bottom),
+        );
+        painter.rect_filled(channel_rect, 1.5, egui::Color32::from_rgb(24, 26, 32));
+
+        let norm = ((db.clamp(-60.0, 6.0) + 60.0) / 66.0).clamp(0.0, 1.0);
+        if norm > 0.005 {
+            let fill_top = meter_bottom - norm * meter_h;
+            // Green segment: up to -12 dB (norm = 48/66 = ~0.727)
+            let green_norm = norm.min(48.0 / 66.0);
+            let green_top = meter_bottom - green_norm * meter_h;
+            let green_rect = egui::Rect::from_min_max(
+                egui::pos2(x_min, green_top),
+                egui::pos2(x_min + bar_w, meter_bottom),
+            );
+            painter.rect_filled(green_rect, 1.5, egui::Color32::from_rgb(45, 215, 115));
+
+            // Amber segment: -12 dB to -3 dB (norm 48/66 to 57/66)
+            if norm > 48.0 / 66.0 {
+                let amber_norm = norm.min(57.0 / 66.0);
+                let amber_top = meter_bottom - amber_norm * meter_h;
+                let amber_rect = egui::Rect::from_min_max(
+                    egui::pos2(x_min, amber_top),
+                    egui::pos2(x_min + bar_w, meter_bottom - (48.0 / 66.0) * meter_h),
+                );
+                painter.rect_filled(amber_rect, 1.0, egui::Color32::from_rgb(245, 195, 50));
+            }
+
+            // Red segment: > -3 dB
+            if norm > 57.0 / 66.0 {
+                let red_rect = egui::Rect::from_min_max(
+                    egui::pos2(x_min, fill_top),
+                    egui::pos2(x_min + bar_w, meter_bottom - (57.0 / 66.0) * meter_h),
+                );
+                painter.rect_filled(red_rect, 1.0, egui::Color32::from_rgb(250, 70, 70));
+            }
+        }
+
+        // Clip LED indicator at very top if clipping (>= -0.1 dB)
+        if db >= -0.1 {
+            let clip_rect = egui::Rect::from_min_max(
+                egui::pos2(x_min, meter_top - 3.0),
+                egui::pos2(x_min + bar_w, meter_top),
+            );
+            painter.rect_filled(clip_rect, 1.0, egui::Color32::from_rgb(255, 40, 40));
+        }
+
+        painter.rect_stroke(
+            channel_rect,
+            1.5,
+            egui::Stroke::new(0.7, egui::Color32::from_rgb(55, 60, 70)),
+            egui::StrokeKind::Inside,
+        );
+    };
+
+    draw_channel(rect.min.x, peak_l_db);
+    draw_channel(rect.min.x + bar_w + gap, peak_r_db);
+}
+
 /// Renders the master section controls: bypass, output gain, and auto-gain.
 ///
 /// These are global parameters that affect the entire EQ signal path.
@@ -1203,17 +1348,6 @@ pub fn render_master_section(
 ) {
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new("Master:").strong());
-        // Bypass checkbox.
-        let bypass_val = snapshot.get(ParamId(1)).unwrap_or(0.0);
-        let mut bypass = bypass_val >= 0.5;
-
-        if ui
-            .checkbox(&mut bypass, "Bypass")
-            .on_hover_text("Bypass the entire EQ")
-            .changed()
-        {
-            batch.push(ParamId(1), if bypass { 1.0 } else { 0.0 });
-        }
 
         // Output gain slider.
         let mut output_gain = snapshot.get(ParamId(2)).unwrap_or(0.0);
@@ -1221,7 +1355,7 @@ pub fn render_master_section(
             .add(
                 egui::Slider::new(&mut output_gain, -24.0..=24.0)
                     .suffix(" dB")
-                    .text("Gain Master"),
+                    .text("Output"),
             )
             .changed()
         {
@@ -1233,7 +1367,9 @@ pub fn render_master_section(
         let mut auto_gain = auto_gain_val >= 0.5;
 
         let auto_gain_label = if auto_gain {
-            let comp = snapshot.get(ParamId(6)).unwrap_or(0.0);
+            let comp = snapshot
+                .get(ParamId(romueq_common::global::AUTO_GAIN_COMPENSATION_DB))
+                .unwrap_or(0.0);
             format!("Auto Gain ({comp:+.1} dB)")
         } else {
             "Auto Gain".to_string()
@@ -1241,7 +1377,7 @@ pub fn render_master_section(
 
         if ui
             .checkbox(&mut auto_gain, auto_gain_label)
-            .on_hover_text("Compensation automatique de gain perceptuel")
+            .on_hover_text("Automatic perceptual gain compensation")
             .changed()
         {
             batch.push(ParamId(3), if auto_gain { 1.0 } else { 0.0 });
@@ -1389,7 +1525,7 @@ pub mod standalone {
         let options = eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
                 .with_inner_size([w, h])
-                .with_min_inner_size([960.0, 535.0])
+                .with_min_inner_size([960.0, 475.0])
                 .with_resizable(true),
             ..Default::default()
         };
@@ -1491,16 +1627,16 @@ pub mod standalone {
             }
 
             let mut audio_active = false;
-            let mut status_message = Some("Prêt — Périphériques audio configurés".to_string());
+            let mut status_message = Some("Ready — Audio devices configured".to_string());
 
             if initial_mode == audio::AudioSourceMode::PassThrough {
                 if let Err(e) = audio_stream.start() {
-                    status_message = Some(format!("Erreur démarrage flux: {e}"));
+                    status_message = Some(format!("Stream startup error: {e}"));
                 } else {
                     audio_active = true;
                     client.sample_rate = audio_stream.sample_rate();
-                    let out_name = detected_out.as_deref().unwrap_or("Sortie");
-                    status_message = Some(format!("Égaliseur actif → {out_name}"));
+                    let out_name = detected_out.as_deref().unwrap_or("Output");
+                    status_message = Some(format!("EQ active → {out_name}"));
                 }
             }
 
@@ -1622,7 +1758,7 @@ pub mod standalone {
                             if self.audio_active {
                                 let _ = audio.stop();
                                 self.audio_active = false;
-                                self.status_message = Some("Audio arrêté".to_string());
+                                self.status_message = Some("Audio muted".to_string());
                             } else {
                                 if let Some(ref engine) = self.client.engine {
                                     let _ = audio.set_parameters(*engine.eq_parameters());
@@ -1632,12 +1768,12 @@ pub mod standalone {
                                         self.audio_active = true;
                                         self.client.sample_rate = audio.sample_rate();
                                         let out_name =
-                                            audio.selected_output_device().unwrap_or("Sortie");
+                                            audio.selected_output_device().unwrap_or("Output");
                                         self.status_message =
-                                            Some(format!("Égaliseur actif → {out_name}"));
+                                            Some(format!("EQ active → {out_name}"));
                                     }
                                     Err(err) => {
-                                        self.status_message = Some(format!("Erreur audio: {err}"));
+                                        self.status_message = Some(format!("Audio error: {err}"));
                                     }
                                 }
                             }
@@ -1656,44 +1792,23 @@ pub mod standalone {
                                     Ok(()) => {
                                         self.audio_active = true;
                                         self.client.sample_rate = audio.sample_rate();
-                                        self.status_message =
-                                            Some(format!("Égaliseur actif → {dev}"));
+                                        self.status_message = Some(format!("EQ active → {dev}"));
                                     }
                                     Err(e) => {
                                         self.audio_active = false;
                                         self.status_message =
-                                            Some(format!("Erreur sortie '{dev}': {e}"));
+                                            Some(format!("Output error '{dev}': {e}"));
                                     }
                                 }
                             } else {
-                                self.status_message = Some(format!("Sortie sélectionnée : {dev}"));
+                                self.status_message = Some(format!("Selected output: {dev}"));
                             }
                         }
                     }
                     WorkspaceAction::RefreshDevices => {
-                        let was_active = self.audio_active;
-                        if was_active {
-                            if let Some(ref mut audio) = self.audio_stream {
-                                let _ = audio.stop();
-                            }
-                        }
                         self.available_outputs = audio::AudioStream::available_output_devices();
                         self.available_inputs = audio::AudioStream::available_input_devices();
-                        if was_active {
-                            if let Some(ref mut audio) = self.audio_stream {
-                                if let Some(ref engine) = self.client.engine {
-                                    let _ = audio.set_parameters(*engine.eq_parameters());
-                                }
-                                if let Err(e) = audio.start() {
-                                    self.status_message =
-                                        Some(format!("Erreur redémarrage flux: {e}"));
-                                    self.audio_active = false;
-                                } else {
-                                    self.audio_active = true;
-                                    self.client.sample_rate = audio.sample_rate();
-                                }
-                            }
-                        }
+                        self.status_message = Some("Audio devices refreshed".to_string());
                     }
                     WorkspaceAction::ApplyPreset(name) => {
                         let _ = self.client.apply_preset(&name);
@@ -1708,18 +1823,17 @@ pub mod standalone {
                                 let _ = audio.set_parameters(*engine.eq_parameters());
                             }
                         }
-                        self.status_message = Some(format!("Preset '{name}' appliqué"));
+                        self.status_message = Some(format!("Preset '{name}' applied"));
                     }
                     WorkspaceAction::SavePreset(name) => {
                         if let Err(e) = self.client.create_preset(&name) {
-                            self.status_message = Some(format!("Erreur preset '{name}': {e}"));
+                            self.status_message = Some(format!("Preset error '{name}': {e}"));
                         } else {
                             self.client._current_preset = name.clone();
                             let _ = persist_preset_to_disk(&mut self.client.preset_manager, &name);
                             save_last_active_preset_name(&name);
                             save_complete_app_state(&self.client);
-                            self.status_message =
-                                Some(format!("Preset '{name}' sauvegardé sur disque"));
+                            self.status_message = Some(format!("Preset '{name}' saved to disk"));
                         }
                     }
                     WorkspaceAction::DeletePreset(name) => {
@@ -1727,7 +1841,7 @@ pub mod standalone {
                         remove_preset_from_disk(&name);
                         self.client._current_preset.clear();
                         save_complete_app_state(&self.client);
-                        self.status_message = Some(format!("Preset '{name}' supprimé"));
+                        self.status_message = Some(format!("Preset '{name}' deleted"));
                     }
                 }
             }
@@ -2141,7 +2255,7 @@ pub mod standalone {
                     value: Self::stereo_mode_to_f32(params.global.stereo_mode),
                 });
                 values.push(ParamValue {
-                    param_id: ParamId(6),
+                    param_id: ParamId(romueq_common::global::AUTO_GAIN_COMPENSATION_DB),
                     value: eng.auto_gain_compensation_db(),
                 });
 

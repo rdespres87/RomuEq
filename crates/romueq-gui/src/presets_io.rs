@@ -77,6 +77,37 @@ pub fn load_last_active_preset_name() -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// Standard factory preset names (including localized aliases).
+pub const FACTORY_PRESETS: &[&str] = &[
+    "Flat",
+    "Bass Boost (+6 dB)",
+    "Electronic / EDM",
+    "Rock / Metal",
+    "Hip-Hop / R&B",
+    "Jazz / Warmth",
+    "Modern Pop",
+    "Acoustic Clarity",
+    "Vocal Air",
+    "Podcast / Voice",
+    "Cinema / Dialog",
+    "Gaming / FPS",
+    "Audiophile (Harman)",
+    "Night Listening",
+    "Loudness",
+    // Legacy French aliases for backward compatibility with existing states
+    "Électro / EDM",
+    "Pop Moderne",
+    "Podcast / Voix",
+    "Cinéma / Dialogues",
+    "Casque Audiophile (Harman)",
+    "Écoute Nocturne (Night Mode)",
+];
+
+/// Returns `true` if `name` corresponds to a built-in factory preset.
+pub fn is_factory_preset(name: &str) -> bool {
+    FACTORY_PRESETS.contains(&name)
+}
+
 /// Populates the preset manager with the 15 standard factory presets.
 pub fn populate_factory_presets(preset_manager: &mut PresetManager) {
     let mut add = |name: &str, configure: fn(&mut EqParameters)| {
@@ -121,7 +152,7 @@ pub fn populate_factory_presets(preset_manager: &mut PresetManager) {
         p.bands[0].gain_db = 6.0;
         p.bands[1].gain_db = 3.5;
     });
-    add("Électro / EDM", |p| {
+    add("Electronic / EDM", |p| {
         p.bands[0].gain_db = 5.5;
         p.bands[1].gain_db = 4.0;
         p.bands[3].gain_db = -2.5;
@@ -154,7 +185,7 @@ pub fn populate_factory_presets(preset_manager: &mut PresetManager) {
         p.bands[6].gain_db = -2.0;
         p.bands[7].gain_db = -2.5;
     });
-    add("Pop Moderne", |p| {
+    add("Modern Pop", |p| {
         p.bands[0].gain_db = 4.0;
         p.bands[1].gain_db = 3.0;
         p.bands[3].gain_db = -2.0;
@@ -176,7 +207,7 @@ pub fn populate_factory_presets(preset_manager: &mut PresetManager) {
         p.bands[5].gain_db = 3.5;
         p.bands[7].gain_db = 5.0;
     });
-    add("Podcast / Voix", |p| {
+    add("Podcast / Voice", |p| {
         p.bands[0].gain_db = -8.0;
         p.bands[1].gain_db = -4.0;
         p.bands[2].gain_db = -2.0;
@@ -184,7 +215,7 @@ pub fn populate_factory_presets(preset_manager: &mut PresetManager) {
         p.bands[5].gain_db = 4.0;
         p.bands[7].gain_db = 1.5;
     });
-    add("Cinéma / Dialogues", |p| {
+    add("Cinema / Dialog", |p| {
         p.bands[0].gain_db = 5.0;
         p.bands[1].gain_db = 2.0;
         p.bands[3].gain_db = -2.5;
@@ -201,7 +232,7 @@ pub fn populate_factory_presets(preset_manager: &mut PresetManager) {
         p.bands[6].gain_db = 4.0;
         p.bands[7].gain_db = -2.0;
     });
-    add("Casque Audiophile (Harman)", |p| {
+    add("Audiophile (Harman)", |p| {
         p.bands[0].gain_db = 4.5;
         p.bands[1].gain_db = 2.5;
         p.bands[2].gain_db = -0.5;
@@ -209,7 +240,7 @@ pub fn populate_factory_presets(preset_manager: &mut PresetManager) {
         p.bands[6].gain_db = 1.0;
         p.bands[7].gain_db = 1.5;
     });
-    add("Écoute Nocturne (Night Mode)", |p| {
+    add("Night Listening", |p| {
         p.bands[0].gain_db = -9.0;
         p.bands[1].gain_db = -5.0;
         p.bands[2].gain_db = -2.0;

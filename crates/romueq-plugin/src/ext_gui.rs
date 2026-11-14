@@ -1,5 +1,5 @@
 //! CLAP GUI extension implementation for RomuEq.
-//! Supports Cocoa NSView parenting at fixed studio dimensions 1180x560.
+//! Supports Cocoa NSView parenting at fixed studio dimensions 1180x485.
 
 use clack_common::extensions::{
     Extension, ExtensionImplementation, PluginExtensionSide, RawExtension,
@@ -158,7 +158,7 @@ unsafe extern "C" fn get_size(
     }
     unsafe {
         *width = 1180;
-        *height = 560;
+        *height = 485;
     }
     true
 }
@@ -180,7 +180,7 @@ unsafe extern "C" fn get_resize_hints(
         h.can_resize_vertically = false;
         h.preserve_aspect_ratio = true;
         h.aspect_ratio_width = 1180;
-        h.aspect_ratio_height = 560;
+        h.aspect_ratio_height = 485;
     }
     true
 }
@@ -195,13 +195,13 @@ unsafe extern "C" fn adjust_size(
     }
     unsafe {
         *width = 1180;
-        *height = 560;
+        *height = 485;
     }
     true
 }
 
 unsafe extern "C" fn set_size(_plugin: *const clap_plugin, width: u32, height: u32) -> bool {
-    width == 1180 && height == 560
+    width == 1180 && height == 485
 }
 
 unsafe extern "C" fn set_parent<P: Plugin>(

@@ -22,7 +22,7 @@ impl GuiApp for RomuEqApp {
     }
 
     fn window_size(&self) -> (f32, f32) {
-        (1180.0, 560.0)
+        (1180.0, 485.0)
     }
 
     fn update(&mut self, client: &mut dyn romueq_gui::GuiClient) {
@@ -33,12 +33,12 @@ impl GuiApp for RomuEqApp {
 fn main() {
     #[cfg(target_os = "macos")]
     let mut _audio_guard = {
-        if !macos_audio::is_romueq_driver_available() {
+        if !macos_audio::is_romueq_driver_installed_on_disk() {
             println!(
-                "[RomuEq] Pilote audio virtuel 'RomuEq' non détecté. Lancement de l'installateur..."
+                "[RomuEq] Virtual audio driver 'RomuEq' not found on system. Launching setup..."
             );
             if let Err(e) = macos_audio::install_romueq_driver() {
-                eprintln!("[RomuEq] Installation de RomuEqDriver: {e}");
+                eprintln!("[RomuEq] Installation of RomuEqDriver skipped or failed: {e}");
             }
         }
         macos_audio::SystemAudioRoutingGuard::activate()
