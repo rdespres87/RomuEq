@@ -1,4 +1,4 @@
-# Tasks & Progress - Equaform
+# Tasks & Progress - Equaform-8
 
 - [x] Align 8-band EQ nodes with response curve
 - [x] Compact window layout (`1180 × 560`) with full vertical band faders visible
@@ -36,8 +36,16 @@
   - [x] Rebuild, sign, and install `Equaform-8.clap`, `Equaform-8.vst3`, `Equaform-8.component`, and `Equaform-8.app`
 - [x] Global codebase & documentation cleanup:
   - [x] Purge 85+ obsolete local AI evidence and report files (`docs/development/evidence/`, `gates/`, `review/`)
-  - [x] Rename all crates from `equaform-*` to `equaform-*`
+  - [x] Rename all crates from `romueq-*` to `equaform-*`
   - [x] Rename driver directories and files to `driver/equaform-hal/src/EquaformDriver.c`
-  - [x] Transparent user configuration migration from `~/.equaform` to `~/.equaform`
+  - [x] Transparent user configuration migration from `~/.romueq` to `~/.equaform`
   - [x] All 192 workspace tests validated green with zero warnings
-
+- [x] macOS DAW Plugins Distribution Packaging (Option C):
+  - [x] Automated pipeline `scripts/package-distribution-plugins.sh`
+  - [x] Standalone app and driver strictly excluded from distribution
+  - [x] Modular installer package `Equaform-8-Plugins-Installer.pkg` (AUv2, VST3, CLAP, Presets)
+  - [x] Professional Dark/Light mode adaptive HTML screens in installer
+  - [x] Automated Gatekeeper quarantine stripping (`com.apple.quarantine`) and CoreAudio cache reset
+  - [x] Distributable DMG image `Equaform-8-Plugins-v1.0.0.dmg` with QuickStart, tester guide, 1-click Gatekeeper helper, and uninstaller
+  - [x] Translate all 51 published DAW parameter names to English with unit test verification
+  - [x] Pass adversarial Inquisitor Grill review and Apple `auval` verification

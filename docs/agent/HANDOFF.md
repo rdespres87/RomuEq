@@ -1,30 +1,34 @@
-# Handoff - Equaform
+# Handoff - Equaform-8
 
 ## Current State
-- **DAW Plugins (`CLAP`, `VST3`, `AUv2`)**: Implemented in `crates/equaform-plugin` (Rust CLAP + Cocoa `NSView` + Metal `wgpu` + `egui-wgpu` sharing `equaform-gui::workspace_ui`) and wrapped via `driver/clap-wrapper-equaform` into VST3 and AUv2 (`aufx` / `Eqf8` / `Eqfm`).
-- **Commercial Identity — Equaform-8 by Equaform Audio**:
-  - Official commercial name: `Equaform-8` (Tagline: "The Geometry of Pure Balance").
-  - Vendor identity: `Equaform Audio` (`com.equaform.audio.equalizer`).
-  - Full backward compatibility for project state and preset files (transparently supports both `Equaform-8` and legacy `Equaform`).
-  - Bundles packaged and installed: `Equaform-8.clap`, `Equaform-8.vst3`, `Equaform-8.component`, `Equaform-8.app`.
-- **Commercial UI/UX & Standalone Overhaul**:
-  - 100% English lingua franca across all controls, filter types, bands, and tooltips.
-  - Streamlined `⏻ BYPASS` control with status LED.
-  - Vertical stereo VU-meter on right flank (-60 to +6 dBFS with peak hold and clip indicator).
-  - Frequency axis margined to `[16 Hz .. 24 kHz]` with standard audio ticks (`20`, `50`, `100`, `200`, `500`, `1k`, `2k`, `5k`, `10k`, `20k`) completely visible without clipping.
-  - Read-only protection on factory presets (cannot be deleted) with stable layout widths.
-  - Glitch-free audio device refresh in standalone mode.
-  - Strictly symmetric 8.0px margins on all 4 borders (Left, Right, Top, Bottom) verified by unit tests.
-  - Instant zero-lag standalone startup: skips spurious administrator prompt / `killall coreaudiod` when driver is already present on disk; fast 10ms sample-rate lock without stalling UI.
-  - Zero-stutter audio streaming: CoreAudio HAL loopback SafetyOffset set to 0 (v1.1.0 driver), anti-chopping full-block delivery, and direct 1:1 bit-exact streaming fast-path.
-  - Spectrum drawing bug and Auto-Gain compensation calculation fixed and verified.
+- **DAW Plugins Distribution Package (Option C)**:
+  - Deliverable: `target/release/dist/Equaform-8-Plugins-v1.0.0.dmg` (21 MB, UDZO) with SHA-256 checksum file.
+  - Automated Pipeline: `scripts/package-distribution-plugins.sh` builds release binaries, inside-out ad-hoc codesigns, constructs modular PKGs via `pkgbuild`, synthesizes master installer via `productbuild`, and formats the distributable DMG.
+  - Strict Scope: Standalone application (`Equaform-8.app`) and HAL driver (`Equaform.driver`) strictly excluded from all distribution packaging.
+  - Installer Features:
+    - Modular component selection for AUv2, VST3, CLAP, and Presets.
+    - Professional adaptive HTML screens for Light/Dark mode (`readme.html`, `welcome.html`, `conclusion.html`).
+    - Automated Gatekeeper quarantine stripping (`com.apple.quarantine`).
+    - CoreAudio registrar cache invalidation (`AudioComponentRegistrar`).
+    - Deployment of 15 factory presets to `~/.equaform/presets/`.
+  - DMG Bundle Root:
+    - `Equaform-8-Plugins-Installer.pkg`
+    - `README_TESTER.txt` (concise English QuickStart)
+    - `TEST_GUIDE_MAC.md` (comprehensive English guide with Gatekeeper unlocking, DAW rescan procedures for Logic Pro, Ableton, Bitwig, Reaper, Cubase, and 5-point feedback checklist)
+    - `Open-Installer-Gatekeeper.command` (1-click helper script to bypass Gatekeeper block on unnotarized builds)
+    - `Uninstall-Equaform-Plugins.command` (1-click clean uninstaller)
+    - `Manual-Install/` (raw bundles + user-space install script)
+- **DAW Automation Compliance**:
+  - All 51 parameters exposed to DAWs translated to English (`Master Gain`, `Band 1..8 Active`, `Band 1..8 Frequency`, `Band 1..8 Q Factor`, `Band 1..8 Slope`).
+  - Unit test `test_all_51_param_metadata_english` added to verify all 51 parameters.
 - **Verification**:
-  - `cargo test --workspace` (192 tests passing: all unit/integration tests + doctests) and `cargo clippy --workspace --all-targets -- -D warnings` pass 100% clean with zero warnings.
-  - `cargo fmt --check` passes cleanly.
-  - `./scripts/package-macos-plugins.sh` successfully rebuilt and installed updated CLAP, VST3, and AUv2 bundles (`Equaform-8.clap`, `Equaform-8.vst3`, `Equaform-8.component`) into `~/Library/Audio/Plug-Ins/`.
-  - `./scripts/package-macos-app.sh` successfully packaged and codesigned `Equaform-8.app`.
-- **Git status**: Ready for review and commit validation.
+  - `cargo test --workspace` (193 tests passing: all unit/integration tests + doctests).
+  - `cargo clippy --workspace --all-targets -- -D warnings` (100% clean with zero warnings).
+  - `cargo fmt --check` (clean).
+  - `auval -v aufx Eqf8 Eqfm` (AU VALIDATION SUCCEEDED).
+- **Git Commit**: `18eeb8b` on branch `main`.
 
 ## Next Logical Action
-1. Test the new UI in Ableton Live to confirm visual layout, vertical VU-meter, and 20k margins.
-2. Ask user authorization to commit the changes via Security Gate 3.
+1. Send `target/release/dist/Equaform-8-Plugins-v1.0.0.dmg` to beta testers (musician friend) for initial feedback on DAW detection, preset loading, and sound shaping.
+2. Collect feedback using the structured 5-point checklist in `TEST_GUIDE_MAC.md`.
+3. Proceed to Option A (DSP Pro Features: Mid/Side processing, Band Listen/Solo mode, and Linear-phase EQ) or Option B (Frequency piano keyboard and resizable GUI).
