@@ -49,3 +49,14 @@
   - [x] Distributable DMG image `Equaform-8-Plugins-v1.0.0.dmg` with QuickStart, tester guide, 1-click Gatekeeper helper, and uninstaller
   - [x] Translate all 51 published DAW parameter names to English with unit test verification
   - [x] Pass adversarial Inquisitor Grill review and Apple `auval` verification
+- [x] Windows DAW Plugin Port & Inno Setup Packaging:
+  - [x] Abstract plugin editor lifecycle into cross-platform `PluginEditor` trait (`crates/equaform-plugin/src/editor/`)
+  - [x] Implement native Win32 child window embedding parented to host `HWND` (`src/editor/win32.rs`)
+  - [x] Setup `wgpu` DirectX 12 / Vulkan primary pipelines with D3D12 WARP rasterizer fallback
+  - [x] Win32 `WndProc` event handling with mouse capture (`SetCapture`/`ReleaseCapture`) and keyboard modifier synchronization (`GetKeyState`)
+  - [x] Per-Monitor V2 High-DPI scaling via `GetDpiForWindow` and `WM_DPICHANGED` window resizing
+  - [x] Multiplatform `user_config_dir()` resolving `%APPDATA%\Equaform\presets` on Windows
+  - [x] Inno Setup 6 installer script `scripts/distribution/windows/installer.iss` (64-bit VST3, CLAP, Presets, clean uninstall)
+  - [x] English tester guide (`TEST_GUIDE_WINDOWS.md`) and quick-start (`README_WINDOWS.txt`)
+  - [x] GitHub Actions automated CI/CD workflow (`.github/workflows/windows-release.yml`)
+  - [x] Pass adversarial Inquisitor Grill review and `cargo check --target x86_64-pc-windows-msvc`
