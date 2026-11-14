@@ -31,6 +31,8 @@
    - Targets `{commoncf64}\VST3`, `{commoncf64}\CLAP`, and `%APPDATA%\Equaform\presets\`.
    - VST3 dependency auto-installs CLAP engine companion even on custom selective installs.
    - Clean Windows uninstallation via `{autopf}\Equaform\unins000.exe`.
-3. **Automated CI/CD Workflow (`.github/workflows/windows-release.yml`):**
-   - Automated compilation on `windows-latest` (MSVC 2022, CMake, Ninja, Inno Setup `iscc`).
-   - Automated release artifact packaging and checksum generation.
+3. **Automated CI/CD & Atomic Dual Release Workflow (`.github/workflows/`):**
+   - `.github/workflows/ci.yml`: 3-OS matrix (`macos-latest` Apple Silicon, `windows-latest` MSVC x64, `ubuntu-latest` Linux with ALSA headers). Checks formatting, runs workspace tests and Clippy, and builds/verifies codesigned plugin bundles. Strict `contents: read` permissions.
+   - `.github/workflows/release.yml`: Unified atomic multiplatform release pipeline triggered on `v*` tags or `workflow_dispatch`. Concurrently builds macOS `.dmg` and Windows `.exe` installers with SHA-256 checksums, then publishes all 4 assets together in a single atomic GitHub Release.
+   - `.github/workflows/nightly.yml`: Weekly scheduled Linux validation of portable workspace crates.
+   - `.github/workflows/security.yml`: Dependency review on pull requests and automated `cargo deny` check.

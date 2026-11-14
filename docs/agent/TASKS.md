@@ -59,4 +59,12 @@
   - [x] Inno Setup 6 installer script `scripts/distribution/windows/installer.iss` (64-bit VST3, CLAP, Presets, clean uninstall)
   - [x] English tester guide (`TEST_GUIDE_WINDOWS.md`) and quick-start (`README_WINDOWS.txt`)
   - [x] GitHub Actions automated CI/CD workflow (`.github/workflows/windows-release.yml`)
-  - [x] Pass adversarial Inquisitor Grill review and `cargo check --target x86_64-pc-windows-msvc`
+  - [x] Modernize GitHub Actions CI/CD workflows and automated multiplatform testing & dual releases:
+  - [x] Fix invalid GitHub action versions (`@v6` -> `@v4`) and standardize on `dtolnay/rust-toolchain@stable`
+  - [x] 3-OS matrix CI validation (`ci.yml`: Linux x64, macOS Apple Silicon, Windows MSVC x64)
+  - [x] Inside-out ad-hoc codesigning and bundle verification for CLAP, VST3, AUv2 on macOS CI runner
+  - [x] Unified atomic multiplatform release pipeline (`release.yml`: parallel macOS DMG + Windows Inno Setup EXE builds, single atomic GitHub Release publishing)
+  - [x] Least-privilege permissions hardening (`contents: read` default, `contents: write` scoped to release job)
+  - [x] Nightly and security workflow modernization (`nightly.yml`, `security.yml`)
+  - [x] Pass adversarial Inquisitor Grill review and 100% workspace test validation
+  - [x] Commit changes to git repository (`1c901d2`)
