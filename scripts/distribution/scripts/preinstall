@@ -1,0 +1,33 @@
+#!/bin/bash
+set -euo pipefail
+
+# preinstall script for Equaform-8 DAW Plugins Installer
+# Runs with root privileges during macOS installation
+
+echo "[preinstall] Purging any legacy RomuEq or obsolete Equaform-8 installations..."
+
+# Remove obsolete plugin bundles from system library
+rm -rf "/Library/Audio/Plug-Ins/Components/RomuEq.component"
+rm -rf "/Library/Audio/Plug-Ins/VST3/RomuEq.vst3"
+rm -rf "/Library/Audio/Plug-Ins/CLAP/RomuEq.clap"
+
+rm -rf "/Library/Audio/Plug-Ins/Components/Equaform-8.component"
+rm -rf "/Library/Audio/Plug-Ins/VST3/Equaform-8.vst3"
+rm -rf "/Library/Audio/Plug-Ins/CLAP/Equaform-8.clap"
+
+# Clean duplicate bundles in active user's ~/Library/Audio/Plug-Ins if present
+CONSOLE_USER=$(stat -f '%Su' /dev/console 2>/dev/null || echo "")
+if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ]; then
+    USER_HOME=$(dscl . -read "/Users/$CONSOLE_USER" NFSHomeDirectory 2>/dev/null | awk '{print $2}')
+    if [ -n "$USER_HOME" ] && [ -d "$USER_HOME" ]; then
+        rm -rf "$USER_HOME/Library/Audio/Plug-Ins/Components/RomuEq.component"
+        rm -rf "$USER_HOME/Library/Audio/Plug-Ins/VST3/RomuEq.vst3"
+        rm -rf "$USER_HOME/Library/Audio/Plug-Ins/CLAP/RomuEq.clap"
+
+        rm -rf "$USER_HOME/Library/Audio/Plug-Ins/Components/Equaform-8.component"
+        rm -rf "$USER_HOME/Library/Audio/Plug-Ins/VST3/Equaform-8.vst3"
+        rm -rf "$USER_HOME/Library/Audio/Plug-Ins/CLAP/Equaform-8.clap"
+    fi
+fi
+
+exit 0

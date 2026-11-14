@@ -1,0 +1,53 @@
+#!/bin/bash
+set -euo pipefail
+
+# postinstall script for Equaform-8 DAW Plugins Installer
+# Runs with root privileges during macOS installation
+
+echo "[postinstall] Configuring Equaform-8 DAW Plugins..."
+
+# 1. Strip Gatekeeper quarantine from newly installed bundles
+echo "[postinstall] Stripping quarantine attributes from audio plugins..."
+for BUNDLE in \
+    "/Library/Audio/Plug-Ins/Components/Equaform-8.component" \
+    "/Library/Audio/Plug-Ins/VST3/Equaform-8.vst3" \
+    "/Library/Audio/Plug-Ins/CLAP/Equaform-8.clap"; do
+    if [ -d "$BUNDLE" ]; then
+        xattr -rd com.apple.quarantine "$BUNDLE" 2>/dev/null || true
+        chmod -R 755 "$BUNDLE" 2>/dev/null || true
+        chown -R root:wheel "$BUNDLE" 2>/dev/null || true
+    fi
+done
+
+# 2. Touch plugin directory timestamps only if they exist (avoids creating stray files)
+for DIR in \
+    "/Library/Audio/Plug-Ins/Components" \
+    "/Library/Audio/Plug-Ins/VST3" \
+    "/Library/Audio/Plug-Ins/CLAP"; do
+    if [ -d "$DIR" ]; then
+        touch "$DIR" 2>/dev/null || true
+    fi
+done
+
+# 3. Kill CoreAudio AudioComponentRegistrar daemon so Logic Pro & GarageBand
+# immediately scan and register the new/updated AUv2 component
+echo "[postinstall] Refreshing CoreAudio AudioComponentRegistrar..."
+killall -9 AudioComponentRegistrar 2>/dev/null || true
+
+# 4. Synchronize factory presets into the active console user's ~/.equaform/presets/
+CONSOLE_USER=$(stat -f '%Su' /dev/console 2>/dev/null || echo "")
+if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ]; then
+    USER_HOME=$(dscl . -read "/Users/$CONSOLE_USER" NFSHomeDirectory 2>/dev/null | awk '{print $2}')
+    if [ -n "$USER_HOME" ] && [ -d "$USER_HOME" ]; then
+        USER_PRESETS="$USER_HOME/.equaform/presets"
+        echo "[postinstall] Deploying 15 factory presets to $USER_PRESETS for user $CONSOLE_USER..."
+        mkdir -p "$USER_PRESETS"
+        if [ -d "/Library/Application Support/Equaform/presets" ]; then
+            cp -R "/Library/Application Support/Equaform/presets/"* "$USER_PRESETS/" 2>/dev/null || true
+        fi
+        chown -R "$CONSOLE_USER:staff" "$USER_HOME/.equaform" 2>/dev/null || true
+    fi
+fi
+
+echo "[postinstall] Equaform-8 configuration completed successfully."
+exit 0

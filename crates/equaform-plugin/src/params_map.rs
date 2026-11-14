@@ -216,7 +216,7 @@ pub fn get_param_meta(index: u32) -> Option<ParamMeta> {
     if index == 1 {
         return Some(ParamMeta {
             id: 2,
-            name: "Gain Master",
+            name: "Master Gain",
             module: "Master",
             min_value: -24.0,
             max_value: 24.0,
@@ -250,16 +250,16 @@ pub fn get_param_meta(index: u32) -> Option<ParamMeta> {
         0 => Some(ParamMeta {
             id: base_id,
             name: match band_idx {
-                0 => "Bande 1 Active",
-                1 => "Bande 2 Active",
-                2 => "Bande 3 Active",
-                3 => "Bande 4 Active",
-                4 => "Bande 5 Active",
-                5 => "Bande 6 Active",
-                6 => "Bande 7 Active",
-                _ => "Bande 8 Active",
+                0 => "Band 1 Active",
+                1 => "Band 2 Active",
+                2 => "Band 3 Active",
+                3 => "Band 4 Active",
+                4 => "Band 5 Active",
+                5 => "Band 6 Active",
+                6 => "Band 7 Active",
+                _ => "Band 8 Active",
             },
-            module: "Bandes",
+            module: "Bands",
             min_value: 0.0,
             max_value: 1.0,
             default_value: 1.0,
@@ -268,16 +268,16 @@ pub fn get_param_meta(index: u32) -> Option<ParamMeta> {
         1 => Some(ParamMeta {
             id: base_id + 1,
             name: match band_idx {
-                0 => "Bande 1 Type",
-                1 => "Bande 2 Type",
-                2 => "Bande 3 Type",
-                3 => "Bande 4 Type",
-                4 => "Bande 5 Type",
-                5 => "Bande 6 Type",
-                6 => "Bande 7 Type",
-                _ => "Bande 8 Type",
+                0 => "Band 1 Type",
+                1 => "Band 2 Type",
+                2 => "Band 3 Type",
+                3 => "Band 4 Type",
+                4 => "Band 5 Type",
+                5 => "Band 6 Type",
+                6 => "Band 7 Type",
+                _ => "Band 8 Type",
             },
-            module: "Bandes",
+            module: "Bands",
             min_value: 0.0,
             max_value: 4.0,
             default_value: if band_idx == 0 {
@@ -292,16 +292,16 @@ pub fn get_param_meta(index: u32) -> Option<ParamMeta> {
         2 => Some(ParamMeta {
             id: base_id + 2,
             name: match band_idx {
-                0 => "Bande 1 Fréquence",
-                1 => "Bande 2 Fréquence",
-                2 => "Bande 3 Fréquence",
-                3 => "Bande 4 Fréquence",
-                4 => "Bande 5 Fréquence",
-                5 => "Bande 6 Fréquence",
-                6 => "Bande 7 Fréquence",
-                _ => "Bande 8 Fréquence",
+                0 => "Band 1 Frequency",
+                1 => "Band 2 Frequency",
+                2 => "Band 3 Frequency",
+                3 => "Band 4 Frequency",
+                4 => "Band 5 Frequency",
+                5 => "Band 6 Frequency",
+                6 => "Band 7 Frequency",
+                _ => "Band 8 Frequency",
             },
-            module: "Bandes",
+            module: "Bands",
             min_value: 20.0,
             max_value: 20000.0,
             default_value: match band_idx {
@@ -319,16 +319,16 @@ pub fn get_param_meta(index: u32) -> Option<ParamMeta> {
         3 => Some(ParamMeta {
             id: base_id + 3,
             name: match band_idx {
-                0 => "Bande 1 Gain",
-                1 => "Bande 2 Gain",
-                2 => "Bande 3 Gain",
-                3 => "Bande 4 Gain",
-                4 => "Bande 5 Gain",
-                5 => "Bande 6 Gain",
-                6 => "Bande 7 Gain",
-                _ => "Bande 8 Gain",
+                0 => "Band 1 Gain",
+                1 => "Band 2 Gain",
+                2 => "Band 3 Gain",
+                3 => "Band 4 Gain",
+                4 => "Band 5 Gain",
+                5 => "Band 6 Gain",
+                6 => "Band 7 Gain",
+                _ => "Band 8 Gain",
             },
-            module: "Bandes",
+            module: "Bands",
             min_value: -24.0,
             max_value: 24.0,
             default_value: 0.0,
@@ -337,16 +337,16 @@ pub fn get_param_meta(index: u32) -> Option<ParamMeta> {
         4 => Some(ParamMeta {
             id: base_id + 4,
             name: match band_idx {
-                0 => "Bande 1 Facteur Q",
-                1 => "Bande 2 Facteur Q",
-                2 => "Bande 3 Facteur Q",
-                3 => "Bande 4 Facteur Q",
-                4 => "Bande 5 Facteur Q",
-                5 => "Bande 6 Facteur Q",
-                6 => "Bande 7 Facteur Q",
-                _ => "Bande 8 Facteur Q",
+                0 => "Band 1 Q Factor",
+                1 => "Band 2 Q Factor",
+                2 => "Band 3 Q Factor",
+                3 => "Band 4 Q Factor",
+                4 => "Band 5 Q Factor",
+                5 => "Band 6 Q Factor",
+                6 => "Band 7 Q Factor",
+                _ => "Band 8 Q Factor",
             },
-            module: "Bandes",
+            module: "Bands",
             min_value: 0.1,
             max_value: 20.0,
             default_value: if band_idx == 0 || band_idx == 7 {
@@ -359,21 +359,65 @@ pub fn get_param_meta(index: u32) -> Option<ParamMeta> {
         5 => Some(ParamMeta {
             id: base_id + 5,
             name: match band_idx {
-                0 => "Bande 1 Pente",
-                1 => "Bande 2 Pente",
-                2 => "Bande 3 Pente",
-                3 => "Bande 4 Pente",
-                4 => "Bande 5 Pente",
-                5 => "Bande 6 Pente",
-                6 => "Bande 7 Pente",
-                _ => "Bande 8 Pente",
+                0 => "Band 1 Slope",
+                1 => "Band 2 Slope",
+                2 => "Band 3 Slope",
+                3 => "Band 4 Slope",
+                4 => "Band 5 Slope",
+                5 => "Band 6 Slope",
+                6 => "Band 7 Slope",
+                _ => "Band 8 Slope",
             },
-            module: "Bandes",
+            module: "Bands",
             min_value: 0.0,
             max_value: 3.0,
             default_value: Slope::Db12.to_raw() as f64,
             flags: CLAP_PARAM_IS_STEPPED | CLAP_PARAM_IS_ENUM | CLAP_PARAM_IS_AUTOMATABLE,
         }),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_all_51_param_metadata_english() {
+        assert_eq!(PARAM_COUNT, 51);
+        let mut eq = default_eq_parameters();
+        for idx in 0..PARAM_COUNT {
+            let meta = get_param_meta(idx)
+                .unwrap_or_else(|| panic!("Missing metadata for param index {idx}"));
+            assert!(!meta.name.is_empty());
+            assert!(!meta.module.is_empty());
+            // Verify names and modules are pure ASCII (English, no accents)
+            assert!(
+                meta.name.is_ascii(),
+                "Param {idx} name '{}' must be ASCII English",
+                meta.name
+            );
+            assert!(
+                meta.module.is_ascii(),
+                "Param {idx} module '{}' must be ASCII English",
+                meta.module
+            );
+            // Verify get_param_from_eq and apply_param_to_eq work for all 51 IDs
+            let val = get_param_from_eq(&eq, meta.id)
+                .unwrap_or_else(|| panic!("get_param_from_eq failed for id {}", meta.id));
+            assert!(apply_param_to_eq(&mut eq, meta.id, val));
+            // Verify normalize_param_value produces value within min..=max range
+            let norm = normalize_param_value(meta.id, val);
+            let min_val = meta.min_value as f32;
+            let max_val = meta.max_value as f32;
+            let param_id = meta.id;
+            assert!(
+                (min_val..=max_val).contains(&norm),
+                "Normalized value {norm} out of range [{min_val}, {max_val}] for id {param_id}"
+            );
+        }
+        assert!(get_param_meta(PARAM_COUNT).is_none());
+        assert!(get_param_from_eq(&eq, 99999).is_none());
+        assert!(!apply_param_to_eq(&mut eq, 99999, 0.0));
     }
 }

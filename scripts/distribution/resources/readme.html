@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <style>
+        :root {
+            color-scheme: light dark;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+            font-size: 13px;
+            line-height: 1.6;
+            margin: 0;
+            padding: 12px 16px;
+            color: -apple-system-label;
+            background-color: transparent;
+        }
+        h2 {
+            font-size: 15px;
+            font-weight: 600;
+            margin-top: 14px;
+            margin-bottom: 6px;
+            color: -apple-system-label;
+        }
+        p {
+            margin-bottom: 10px;
+            color: -apple-system-secondary-label;
+        }
+        ul {
+            margin-top: 6px;
+            margin-bottom: 12px;
+            padding-left: 20px;
+        }
+        li {
+            margin-bottom: 5px;
+            color: -apple-system-label;
+        }
+        strong {
+            color: -apple-system-label;
+        }
+    </style>
+</head>
+<body>
+    <h2>Requirements & Compatibility</h2>
+    <p>This beta build runs natively on macOS 12.0 or newer for <strong>Apple Silicon (M1/M2/M3/M4)</strong>.</p>
+    <ul>
+        <li><strong>Apple Logic Pro & GarageBand:</strong> Audio Unit (AUv2)</li>
+        <li><strong>Ableton Live:</strong> VST3 and AUv2</li>
+        <li><strong>Bitwig Studio:</strong> Native CLAP and VST3</li>
+        <li><strong>Cockos Reaper:</strong> CLAP, VST3, and AUv2</li>
+        <li><strong>Steinberg Cubase / Nuendo:</strong> VST3</li>
+        <li><strong>Studio One & FL Studio:</strong> VST3 and CLAP</li>
+    </ul>
+
+    <h2>Automatic Post-Install Configuration</h2>
+    <p>The installer automatically performs the following setup tasks:</p>
+    <ul>
+        <li>Cleans macOS quarantine flags (Gatekeeper) from all installed plugins.</li>
+        <li>Refreshes the CoreAudio plugin registrar for immediate detection in Logic Pro.</li>
+        <li>Deploys 15 factory presets into your user presets folder.</li>
+    </ul>
+</body>
+</html>
