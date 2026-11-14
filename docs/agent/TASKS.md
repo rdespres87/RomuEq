@@ -25,5 +25,6 @@
   - [x] Glitch-free audio device refresh without stream interruption
   - [x] Perfectly symmetric 8.0px margins on all 4 borders (Left, Right, Top, Bottom)
   - [x] Instant zero-lag standalone startup (no spurious root prompts or coreaudiod kills when driver is installed; optimized sample-rate lock)
+  - [x] Fix audio stutter / micro-chopping at startup: zero-offset CoreAudio HAL loopback (driver v1.1.0), anti-chopping full-block delivery, and direct 1:1 bit-exact streaming fast-path
 - [x] Rebuild and install all macOS plugin bundles (`RomuEq.vst3`, `RomuEq.component`, `RomuEq.clap`) and standalone application (`RomuEq.app`)
 

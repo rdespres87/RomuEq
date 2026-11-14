@@ -810,11 +810,7 @@ static OSStatus STDMETHODCALLTYPE RomuEq_GetPropertyData(AudioServerPlugInDriver
 
                 case kAudioDevicePropertySafetyOffset:
                     if (inDataSize < sizeof(UInt32)) return kAudioHardwareBadPropertySizeError;
-                    if (inAddress->mScope == kAudioObjectPropertyScopeInput) {
-                        *((UInt32*)outData) = 0;
-                    } else {
-                        *((UInt32*)outData) = 512;
-                    }
+                    *((UInt32*)outData) = 0;
                     *outDataSize = sizeof(UInt32);
                     return kAudioHardwareNoError;
 
@@ -1403,20 +1399,17 @@ static OSStatus STDMETHODCALLTYPE RomuEq_DoIOOperation(AudioServerPlugInDriverRe
             UInt32 ringIdx = (UInt32)(sampleTime & kRingBufferMask);
             UInt64 stamp = atomic_load_explicit(&gFrameStamp[ringIdx], memory_order_acquire);
 
-            // Accept sample if written recently and within the active window (up to half the ring buffer size)
-            if (stamp > 0 && stamp <= (sampleTime + 1) && ((sampleTime + 1) - stamp) < (kRingBufferFrames / 2)) {
+            if (stamp == (sampleTime + 1)) {
                 dst[i * 2]     = gRingBuffer[ringIdx * 2];
                 dst[i * 2 + 1] = gRingBuffer[ringIdx * 2 + 1];
+                // Cleanly zero out consumed frame so silence is maintained if playback pauses
+                gRingBuffer[ringIdx * 2]     = 0.0f;
+                gRingBuffer[ringIdx * 2 + 1] = 0.0f;
+                atomic_store_explicit(&gFrameStamp[ringIdx], 0, memory_order_release);
             } else {
                 dst[i * 2]     = 0.0f;
                 dst[i * 2 + 1] = 0.0f;
             }
-
-            // Zero out trailing samples 8192 frames behind to ensure stale playback loops are cleared
-            UInt32 clearIdx = (UInt32)((sampleTime - 8192U) & kRingBufferMask);
-            gRingBuffer[clearIdx * 2]     = 0.0f;
-            gRingBuffer[clearIdx * 2 + 1] = 0.0f;
-            atomic_store_explicit(&gFrameStamp[clearIdx], 0, memory_order_release);
         }
     }
 

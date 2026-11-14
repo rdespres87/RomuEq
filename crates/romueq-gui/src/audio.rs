@@ -67,8 +67,8 @@ impl Default for ContinuousPiDriftController {
 }
 
 impl ContinuousPiDriftController {
-    /// Safe pre-buffering headroom for external USB audio interfaces (~92 ms at 44.1 kHz).
-    pub const TARGET_FRAMES: usize = 4096;
+    /// Safe pre-buffering headroom for external USB audio interfaces (~46 ms at 44.1 kHz).
+    pub const TARGET_FRAMES: usize = 2048;
 
     pub fn new(rate_ratio: f64) -> Self {
         Self {
@@ -143,9 +143,19 @@ impl ContinuousPiDriftController {
             }
         }
 
-        // 2. Complete buffer starvation (0 frames available):
-        // Output silence for this block, reset sample priming, but DO NOT unprime.
-        if available == 0 && self.leftover_len == 0 {
+        // 2. Buffer starvation protection:
+        // If available frames are 0 or drop below a full block `count`, deliver silence for this cycle
+        // without consuming partial blocks, avoiding audible chopping and exponential decay stutter.
+        if available == 0 {
+            self.underrun_count += 1;
+            self.has_samples = false;
+            self.phase = 0.0;
+            self.leftover_len = 0;
+            left[..count].fill(0.0);
+            right[..count].fill(0.0);
+            return;
+        }
+        if available < count && self.leftover_len == 0 {
             self.underrun_count += 1;
             self.has_samples = false;
             self.phase = 0.0;
@@ -157,12 +167,29 @@ impl ContinuousPiDriftController {
         // 3. Smooth EMA tracking of buffer level
         self.smoothed_available = 0.98 * self.smoothed_available + 0.02 * (available as f64);
 
-        // 4. Smooth PI / proportional step calculation
+        // 4. Smooth PI / proportional step calculation with generous ±512 frames deadband
         let error = self.smoothed_available - (Self::TARGET_FRAMES as f64);
-        let step = if error.abs() < 128.0 && (self.rate_ratio - 1.0).abs() < 1e-6 {
+        let in_deadband = error.abs() < 512.0;
+        let is_1to1 = (self.rate_ratio - 1.0).abs() < 1e-6;
+
+        // Bit-exact fast-path: direct slice transfer without fractional resampling interpolation
+        if is_1to1 && in_deadband && self.leftover_len == 0 && available >= count {
+            let popped = consumer.pop_slice(&mut left[..count], &mut right[..count]);
+            if popped == count {
+                self.prev_l = left[count - 1];
+                self.prev_r = right[count - 1];
+                self.curr_l = self.prev_l;
+                self.curr_r = self.prev_r;
+                self.has_samples = true;
+                self.phase = 0.0;
+                return;
+            }
+        }
+
+        let step = if in_deadband && is_1to1 {
             1.0
         } else {
-            let drift_ppm = ((error / (Self::TARGET_FRAMES as f64)) * 0.002).clamp(-0.005, 0.005);
+            let drift_ppm = ((error / (Self::TARGET_FRAMES as f64)) * 0.001).clamp(-0.003, 0.003);
             self.rate_ratio * (1.0 + drift_ppm)
         };
 

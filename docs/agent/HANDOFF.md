@@ -11,6 +11,7 @@
   - Glitch-free audio device refresh in standalone mode.
   - Strictly symmetric 8.0px margins on all 4 borders (Left, Right, Top, Bottom) verified by unit tests.
   - Instant zero-lag standalone startup: skips spurious administrator prompt / `killall coreaudiod` when driver is already present on disk; fast 10ms sample-rate lock without stalling UI.
+  - Zero-stutter audio streaming: CoreAudio HAL loopback SafetyOffset set to 0 (v1.1.0 driver), anti-chopping full-block delivery, and direct 1:1 bit-exact streaming fast-path.
   - Spectrum drawing bug and Auto-Gain compensation calculation fixed and verified.
 - **Verification**:
   - `cargo test --workspace` (192 tests passing: all unit/integration tests + doctests) and `cargo clippy --workspace --all-targets -- -D warnings` pass 100% clean with zero warnings.

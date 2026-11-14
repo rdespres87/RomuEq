@@ -251,10 +251,14 @@ pub mod macos_impl {
         }
     }
 
-    /// Check whether the RomuEq native driver bundle is present on the filesystem.
+    /// Check whether the RomuEq native driver bundle is present on the filesystem and up to date (version >= 2 / 1.1.0).
     pub fn is_romueq_driver_installed_on_disk() -> bool {
-        std::path::Path::new("/Library/Audio/Plug-Ins/HAL/RomuEq.driver/Contents/Info.plist")
-            .exists()
+        let plist_path = "/Library/Audio/Plug-Ins/HAL/RomuEq.driver/Contents/Info.plist";
+        if let Ok(content) = std::fs::read_to_string(plist_path) {
+            content.contains("<string>1.1.0</string>") || content.contains("<string>2</string>")
+        } else {
+            false
+        }
     }
 
     /// Check if the native RomuEq CoreAudio HAL driver (`RomuEqDriver_Create`) is installed and recognized by CoreAudio.
