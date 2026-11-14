@@ -20,7 +20,7 @@ serde_json = "1"
 romueq-analysis = { path = "../romueq-analysis" }
 egui = "0.31"
 egui-wgpu = "0.31"
-wgpu = "24"
+wgpu = "30"
 raw-window-handle = "0.6"
 block2 = "0.6"
 objc2 = "0.6"
