@@ -1,0 +1,33 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/equaform-common",
+    "crates/equaform-dsp",
+    "crates/equaform-engine",
+    "crates/equaform-analysis",
+    "crates/equaform-gui",
+    "crates/equaform-plugin",
+    "crates/equaform-standalone",
+    "crates/equaform-cli",
+    "crates/equaform-integration-tests",
+]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.88"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/equaform-audio/equaform"
+homepage = "https://equaform.audio"
+readme = "README.md"
+
+[workspace.dependencies]
+equaform-common = { path = "crates/equaform-common" }
+equaform-dsp = { path = "crates/equaform-dsp" }
+equaform-engine = { path = "crates/equaform-engine" }
+equaform-analysis = { path = "crates/equaform-analysis" }
+equaform-gui = { path = "crates/equaform-gui" }
+equaform-plugin = { path = "crates/equaform-plugin" }
+
+rustfft = "6.2"
+eframe = { version = "0.31", features = ["default_fonts"] }
+hound = "3.5"

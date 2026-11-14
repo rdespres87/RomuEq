@@ -1,0 +1,21 @@
+name: Nightly Validation
+
+on:
+  schedule:
+    - cron: "41 2 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  full:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Linux audio dev libraries
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
+      - run: rustup show
+      - run: cargo test --workspace --all-features
+      - run: cargo build --workspace --all-targets
+      - run: cargo metadata --locked --format-version 1 > /dev/null
