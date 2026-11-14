@@ -8,7 +8,19 @@ use crate::preset_manager::PresetManager;
 use equaform_common::EqParameters;
 use equaform_common::state::Preset;
 
+/// Returns the configuration directory for Equaform (`%APPDATA%\Equaform` on Windows).
+#[cfg(target_os = "windows")]
+pub fn user_config_dir() -> std::path::PathBuf {
+    let base = std::env::var("APPDATA")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_else(|_| "C:\\ProgramData".to_string());
+    let dir = std::path::PathBuf::from(&base).join("Equaform");
+    let _ = std::fs::create_dir_all(dir.join("presets"));
+    dir
+}
+
 /// Returns the configuration directory for Equaform (`~/.equaform`), migrating from legacy `~/.romueq` if present.
+#[cfg(not(target_os = "windows"))]
 pub fn user_config_dir() -> std::path::PathBuf {
     let base = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
     let new_dir = std::path::PathBuf::from(&base).join(".equaform");
@@ -274,14 +286,36 @@ pub fn populate_factory_presets(preset_manager: &mut PresetManager) {
         p.bands[7].gain_db = 4.0;
     });
 
-    // Load any user-saved presets from ~/.romueq/presets/
+    // Load any user-saved presets from presets directory
     let presets_dir = user_config_dir().join("presets");
-    if let Ok(entries) = std::fs::read_dir(presets_dir) {
+    if let Ok(entries) = std::fs::read_dir(&presets_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) == Some("req") {
                 if let Some(p_str) = path.to_str() {
                     let _ = preset_manager.load_from_file(p_str);
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        // Also load from %ProgramData%\Equaform\presets if present
+        if let Ok(progdata) = std::env::var("ProgramData") {
+            let common_presets = std::path::PathBuf::from(progdata)
+                .join("Equaform")
+                .join("presets");
+            if common_presets.exists() && common_presets != presets_dir {
+                if let Ok(entries) = std::fs::read_dir(common_presets) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.extension().and_then(|e| e.to_str()) == Some("req") {
+                            if let Some(p_str) = path.to_str() {
+                                let _ = preset_manager.load_from_file(p_str);
+                            }
+                        }
+                    }
                 }
             }
         }

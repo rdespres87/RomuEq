@@ -4,6 +4,7 @@
 //! lock-free parameter automation, state persistence, audio ports, and an
 //! embedded macOS Cocoa (`NSView`) `egui` workspace UI.
 
+pub mod editor;
 pub mod ext_gui;
 pub mod ext_params;
 pub mod ext_ports;
@@ -11,8 +12,6 @@ pub mod params_map;
 pub mod ui_cocoa;
 
 use std::ffi::CStr;
-#[cfg(target_os = "macos")]
-use std::ffi::c_void;
 use std::io::{Read, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -35,8 +34,6 @@ use clap_sys::events::{
     CLAP_EVENT_PARAM_VALUE, clap_event_header, clap_event_param_gesture, clap_event_param_value,
     clap_output_events,
 };
-#[cfg(target_os = "macos")]
-use clap_sys::ext::gui::CLAP_WINDOW_API_COCOA;
 use clap_sys::ext::gui::clap_window;
 use clap_sys::ext::params::{CLAP_EXT_PARAMS, CLAP_PARAM_RESCAN_VALUES, clap_host_params};
 use clap_sys::ext::state::{CLAP_EXT_STATE, clap_plugin_state};
@@ -426,17 +423,17 @@ impl EquaformParamsImplementation for EquaformShared {
 // Main thread
 // ---------------------------------------------------------------------------
 
-/// Main-thread plugin handle managing parameters, state save/load, and Cocoa GUI.
+/// Main-thread plugin handle managing parameters, state save/load, and GUI.
 pub struct EquaformMainThread<'a> {
     shared: Arc<EquaformSharedInner>,
     host: Option<HostMainThreadHandle<'a>>,
-    editor: ui_cocoa::CocoaEditor,
+    editor: Box<dyn editor::PluginEditor>,
 }
 
 impl Default for EquaformMainThread<'_> {
     fn default() -> Self {
         let shared = Arc::new(EquaformSharedInner::new());
-        let editor = ui_cocoa::CocoaEditor::new(Arc::clone(&shared), None);
+        let editor = editor::create_editor(Arc::clone(&shared), None);
         Self {
             shared,
             host: None,
@@ -448,7 +445,7 @@ impl Default for EquaformMainThread<'_> {
 impl<'a> EquaformMainThread<'a> {
     fn new(shared: Arc<EquaformSharedInner>, host: HostMainThreadHandle<'a>) -> Self {
         let host_ptr = host.as_raw() as *const clap_sys::host::clap_host;
-        let editor = ui_cocoa::CocoaEditor::new(Arc::clone(&shared), Some(host_ptr));
+        let editor = editor::create_editor(Arc::clone(&shared), Some(host_ptr));
         Self {
             shared,
             host: Some(host),
@@ -494,10 +491,7 @@ impl EquaformParamsImplementation for EquaformMainThread<'_> {
 
 impl EquaformGuiImplementation for EquaformMainThread<'_> {
     fn create_ui(&mut self, is_floating: bool) -> bool {
-        if is_floating {
-            return false;
-        }
-        self.editor.create()
+        self.editor.create(is_floating)
     }
 
     fn destroy_ui(&mut self) {
@@ -505,28 +499,7 @@ impl EquaformGuiImplementation for EquaformMainThread<'_> {
     }
 
     unsafe fn set_parent(&mut self, window: *const clap_window) -> bool {
-        if window.is_null() {
-            return false;
-        }
-        unsafe {
-            let api = (*window).api;
-            if api.is_null() {
-                return false;
-            }
-            #[cfg(target_os = "macos")]
-            {
-                if CStr::from_ptr(api) != CLAP_WINDOW_API_COCOA {
-                    return false;
-                }
-                let parent_ptr: *mut c_void = (*window).specific.cocoa;
-                self.editor.set_parent(parent_ptr)
-            }
-            #[cfg(not(target_os = "macos"))]
-            {
-                let _ = api;
-                false
-            }
-        }
+        unsafe { self.editor.set_parent(window) }
     }
 
     fn show_ui(&mut self) -> bool {

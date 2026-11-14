@@ -1,0 +1,97 @@
+name: Windows Release Packaging
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g. 1.0.0)'
+        required: false
+        default: '1.0.0'
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: Build & Package Windows Plugins (x64)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Setup Ninja
+        uses: ilammy/setup-ninja@v1
+
+      - name: Setup MSVC developer environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install Inno Setup
+        run: |
+          choco install innosetup --no-progress
+          echo "C:\Program Files (x86)\Inno Setup 6" >> $env:GITHUB_PATH
+
+      - name: Run workspace tests
+        run: |
+          cargo test --workspace --target x86_64-pc-windows-msvc
+
+      - name: Build equaform-plugin (CLAP DLL)
+        run: |
+          cargo build --release -p equaform-plugin --target x86_64-pc-windows-msvc
+
+      - name: Export 15 factory presets
+        run: |
+          cargo run --release -p equaform-gui --example dump_factory_presets -- target/release/staging/presets
+
+      - name: Assemble CLAP bundle
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path target/release/bundle
+          Copy-Item -Path target/x86_64-pc-windows-msvc/release/equaform_plugin.dll -Destination target/release/bundle/Equaform-8.clap
+
+      - name: Build VST3 wrapper via CMake & Ninja
+        shell: pwsh
+        run: |
+          $clapPath = "$((Get-Location).Path)/target/release/bundle/Equaform-8.clap"
+          $outDir = "$((Get-Location).Path)/target/release/bundle"
+          cmake -G Ninja -S driver/clap-wrapper-equaform -B target/clap-wrapper-build `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DEQUAFORM_CLAP_BUNDLE="$clapPath" `
+            -DEQUAFORM_BUNDLE_OUT_DIR="$outDir"
+          cmake --build target/clap-wrapper-build --target equaform_vst3
+
+      - name: Compile Inno Setup installer
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path target/release/dist
+          ISCC.exe scripts/distribution/windows/installer.iss
+
+      - name: Generate SHA-256 checksums
+        shell: pwsh
+        run: |
+          $installer = Get-Item target/release/dist/Equaform-8-Plugins-Windows-v*.exe
+          $hash = (Get-FileHash -Path $installer.FullName -Algorithm SHA256).Hash
+          Set-Content -Path "$($installer.FullName).sha256" -Value "$hash  $($installer.Name)"
+          Write-Host "Generated installer: $($installer.FullName)"
+          Write-Host "SHA-256: $hash"
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Equaform-8-Plugins-Windows
+          path: |
+            target/release/dist/Equaform-8-Plugins-Windows-v*.exe
+            target/release/dist/Equaform-8-Plugins-Windows-v*.exe.sha256
