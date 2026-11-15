@@ -1,6 +1,8 @@
 use equaform_gui::is_factory_preset;
 use equaform_gui::preset_manager::PresetManager;
-use equaform_gui::workspace_ui::{HostEnvironment, WorkspaceUiState, render_workspace};
+use equaform_gui::workspace_ui::{
+    HostEnvironment, WorkspaceUiContext, WorkspaceUiState, render_workspace,
+};
 use equaform_gui::{
     AnalysisSnapshot, ParamSnapshot, default_8_bands, populate_factory_presets,
     render_vertical_stereo_vu_meter,
@@ -34,18 +36,17 @@ fn test_inspect_layout_geometry() {
     let _output = ctx.run(raw_input, |ctx| {
         egui::CentralPanel::default().show(ctx, |ui| {
             let initial_min_rect = ui.min_rect();
-            let (_batch, _actions) = render_workspace(
-                ui,
-                &mut state,
-                &env,
-                &bands,
+            let ws_ctx = WorkspaceUiContext {
+                env: &env,
+                band_params: &bands,
                 sample_rate,
-                &snapshot,
-                &analysis,
-                &preset_manager,
-                "Flat",
-                Some("Test Status"),
-            );
+                snapshot: &snapshot,
+                analysis: &analysis,
+                preset_manager: &preset_manager,
+                current_preset: "Flat",
+                status_message: Some("Test Status"),
+            };
+            let (_batch, _actions) = render_workspace(ui, &mut state, &ws_ctx);
 
             let rendered_rect = ui.min_rect();
             // Window width is 1180.0, height is 485.0. Default central panel padding is 8.0px.
@@ -91,18 +92,17 @@ fn test_workspace_ui_renders_headless() {
 
     let _output = ctx.run(egui::RawInput::default(), |ctx| {
         egui::CentralPanel::default().show(ctx, |ui| {
-            let (batch, actions) = render_workspace(
-                ui,
-                &mut state,
-                &env,
-                &bands,
+            let ws_ctx = WorkspaceUiContext {
+                env: &env,
+                band_params: &bands,
                 sample_rate,
-                &snapshot,
-                &analysis,
-                &preset_manager,
-                "Flat",
-                Some("Test Status"),
-            );
+                snapshot: &snapshot,
+                analysis: &analysis,
+                preset_manager: &preset_manager,
+                current_preset: "Flat",
+                status_message: Some("Test Status"),
+            };
+            let (batch, actions) = render_workspace(ui, &mut state, &ws_ctx);
             assert!(batch.is_empty());
             assert!(actions.is_empty());
         });
@@ -158,18 +158,17 @@ fn test_standalone_workspace_rendering() {
 
     let _output = ctx.run(egui::RawInput::default(), |ctx| {
         egui::CentralPanel::default().show(ctx, |ui| {
-            let (batch, actions) = render_workspace(
-                ui,
-                &mut state,
-                &env,
-                &bands,
+            let ws_ctx = WorkspaceUiContext {
+                env: &env,
+                band_params: &bands,
                 sample_rate,
-                &snapshot,
-                &analysis,
-                &preset_manager,
-                "Modern Pop",
-                None,
-            );
+                snapshot: &snapshot,
+                analysis: &analysis,
+                preset_manager: &preset_manager,
+                current_preset: "Modern Pop",
+                status_message: None,
+            };
+            let (batch, actions) = render_workspace(ui, &mut state, &ws_ctx);
             assert!(batch.is_empty());
             assert!(actions.is_empty());
         });

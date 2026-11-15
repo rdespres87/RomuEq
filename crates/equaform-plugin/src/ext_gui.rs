@@ -11,6 +11,9 @@ use clap_sys::ext::gui::*;
 use clap_sys::plugin::clap_plugin;
 use std::ffi::{CStr, c_char};
 
+// FFI Sanctuary: `EquaformGui` wraps the CLAP GUI extension handle (`clap_plugin_gui`).
+// It is exposed to and invoked directly by host DAWs (Bitwig, Reaper, etc.) through the CLAP C ABI via `clack-plugin`.
+// The Rust compiler flags it as unused in internal code paths because it is accessed exclusively across FFI boundaries.
 #[derive(Copy, Clone)]
 #[allow(dead_code)]
 pub struct EquaformGui(RawExtension<PluginExtensionSide, clap_plugin_gui>);

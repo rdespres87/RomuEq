@@ -63,20 +63,9 @@ pub mod macos_impl {
     extern "C" fn restore_on_process_exit() {
         // If current macOS default output is Equaform-8/RomuEq, restore to user\'s selected physical output
         if let Some(cur_id) = get_default_output_device_id() {
-            let cur_name = get_device_name(cur_id).unwrap_or_default().to_lowercase();
-            if cur_name.contains("equaform")
-                || cur_name.contains("romueq")
-            {
-                if let Some(saved) = load_saved_output_device() {
-                    if let Some((phys_id, _)) = find_device_by_name(&saved) {
-                        let _ = set_default_output_device(phys_id);
-                        return;
-                    }
-                }
-                if let Some((phys_id, _)) = find_device_by_name("Komplete Audio")
-                    .or_else(|| find_device_by_name("Haut-parleurs"))
-                    .or_else(|| find_device_by_name("MacBook"))
-                {
+            let cur_name = get_device_name(cur_id).unwrap_or_default();
+            if is_virtual_device_name(&cur_name) {
+                if let Some((phys_id, _)) = find_physical_output_device() {
                     let _ = set_default_output_device(phys_id);
                 }
             }
@@ -209,6 +198,62 @@ pub mod macos_impl {
         list_audio_devices()
             .into_iter()
             .find(|(_, name)| name.to_lowercase().contains(&query_lower))
+    }
+
+    /// Check whether a device has output streams (i.e. can output audio).
+    pub fn device_has_output_streams(device_id: u32) -> bool {
+        let addr = AudioObjectPropertyAddress {
+            mSelector: u32::from_be_bytes(*b"strm"),
+            mScope: u32::from_be_bytes(*b"outp"),
+            mElement: 0,
+        };
+        let mut size: u32 = 0;
+        let status = unsafe {
+            AudioObjectGetPropertyDataSize(device_id, &addr, 0, std::ptr::null(), &mut size)
+        };
+        status == 0 && size > 0
+    }
+
+    /// Check if a device name looks like a virtual loopback device rather than physical hardware.
+    pub fn is_virtual_device_name(name: &str) -> bool {
+        let lower = name.to_lowercase();
+        lower.contains("equaform")
+            || lower.contains("romueq")
+            || lower.contains("soundflower")
+            || lower.contains("zoom")
+            || lower.contains("teams")
+    }
+
+    /// Resolves a physical audio output device dynamically across all system locales.
+    /// Prioritizes saved selection, then system default output if non-virtual,
+    /// and falls back to the first non-virtual device with active output streams.
+    pub fn find_physical_output_device() -> Option<(u32, String)> {
+        // 1. Saved device from previous user selection
+        if let Some(saved) = load_saved_output_device() {
+            if let Some((id, name)) = find_device_by_name(&saved) {
+                if !is_virtual_device_name(&name) && device_has_output_streams(id) {
+                    return Some((id, name));
+                }
+            }
+        }
+
+        // 2. Current system default output device if non-virtual
+        if let Some(cur_id) = get_default_output_device_id() {
+            if let Some(name) = get_device_name(cur_id) {
+                if !is_virtual_device_name(&name) && device_has_output_streams(cur_id) {
+                    return Some((cur_id, name));
+                }
+            }
+        }
+
+        // 3. First non-virtual device with output streams
+        for (id, name) in list_audio_devices() {
+            if !is_virtual_device_name(&name) && device_has_output_streams(id) {
+                return Some((id, name));
+            }
+        }
+
+        None
     }
 
     /// Set the nominal sample rate of an AudioDeviceID.
@@ -350,11 +395,6 @@ pub mod macos_impl {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn install_romueq_driver() -> Result<(), String> {
-        install_equaform_driver()
-    }
-
     /// Guard struct that saves original physical output and switches system output to virtual device.
     /// Restores the chosen hardware device when dropped (app quit or panic).
     pub struct SystemAudioRoutingGuard {
@@ -379,23 +419,14 @@ pub mod macos_impl {
             // Detect current default output in macOS before rerouting
             if let Some(cur_id) = get_default_output_device_id() {
                 let name = get_device_name(cur_id).unwrap_or_else(|| "Inconnu".to_string());
-                let lower = name.to_lowercase();
                 // If macOS is currently set to a physical device, preserve it and sync it with saved output
-                if !lower.contains("equaform")
-                    && !lower.contains("romueq")
-                {
+                if !is_virtual_device_name(&name) {
                     guard.original_device_id = Some(cur_id);
                     guard.original_device_name = Some(name.clone());
                     save_selected_output_device(&name);
                 } else {
-                    // macOS was already on Equaform/RomuEq: check user's last selected physical output first
-                    let saved_phys =
-                        load_saved_output_device().and_then(|saved| find_device_by_name(&saved));
-                    if let Some((phys_id, phys_name)) = saved_phys
-                        .or_else(|| find_device_by_name("Komplete Audio"))
-                        .or_else(|| find_device_by_name("Haut-parleurs"))
-                        .or_else(|| find_device_by_name("MacBook"))
-                    {
+                    // macOS was already on Equaform/RomuEq: resolve physical output device dynamically
+                    if let Some((phys_id, phys_name)) = find_physical_output_device() {
                         guard.original_device_id = Some(phys_id);
                         guard.original_device_name = Some(phys_name);
                     }

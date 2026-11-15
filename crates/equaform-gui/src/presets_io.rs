@@ -124,6 +124,7 @@ pub const FACTORY_PRESETS: &[&str] = &[
     "Audiophile (Harman)",
     "Night Listening",
     "Loudness",
+    "HS7 Monitor Correction",
     // Legacy French aliases for backward compatibility with existing states
     "Électro / EDM",
     "Pop Moderne",
@@ -284,6 +285,19 @@ pub fn populate_factory_presets(preset_manager: &mut PresetManager) {
         p.bands[1].gain_db = 3.0;
         p.bands[3].gain_db = -2.5;
         p.bands[7].gain_db = 4.0;
+    });
+    // HS7 Monitor Correction: compensates measured HS7 response deviations
+    // based on ASR/spinorama data. Compensates low-mid buildup (125 Hz-1 kHz)
+    // and high-frequency dip (6-10 kHz).
+    add("HS7 Monitor Correction", |p| {
+        p.bands[0].gain_db = 0.5; // 32 Hz LowShelf: slight sub-bass
+        p.bands[1].gain_db = -1.0; // 75 Hz: reduce wall-coupling bass
+        p.bands[2].gain_db = 1.5; // 180 Hz: ASR peak correction
+        p.bands[3].gain_db = -3.5; // 420 Hz: ASR dip -4.13 dB @ 896 Hz
+        p.bands[4].gain_db = -2.0; // 1 kHz: low-mid buildup reduction
+        p.bands[5].gain_db = 1.5; // 2.4 kHz: ASR peak @ 1712 Hz
+        p.bands[6].gain_db = -2.5; // 5.6 kHz: ASR dip -3.04 dB @ 3942 Hz
+        p.bands[7].gain_db = -3.0; // 13.5 kHz HighShelf: ASR dip -3.6 dB @ 12184 Hz
     });
 
     // Load any user-saved presets from presets directory

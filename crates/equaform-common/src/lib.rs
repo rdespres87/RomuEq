@@ -1,4 +1,4 @@
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 
 //! Common types and traits for Equaform.
 
@@ -8,6 +8,7 @@ pub const VENDOR_NAME: &str = "Equaform Audio";
 
 pub mod audio_buffer;
 pub mod audio_ring;
+pub mod triple_buffer;
 
 /// Maximum number of channels for analysis data (RMS, peak, zero-crossings).
 pub const ANALYSIS_MAX_CHANNELS: usize = 8;
@@ -37,6 +38,7 @@ pub use parameter::ProcessingMode;
 pub use parameter::Slope;
 pub use parameter::StereoMode;
 pub use parameter::{band, global};
+pub use triple_buffer::{TripleBufferConsumer, TripleBufferProducer, create_triple_buffer};
 
 // ---------------------------------------------------------------------------
 // M2-T001/M5-T001: Bounded SPSC transport (exported for analysis handoff)

@@ -65,24 +65,37 @@ pub struct WorkspaceUiState {
     pub preset_name_input: String,
 }
 
+/// Context parameters required to render the Equaform workspace UI.
+pub struct WorkspaceUiContext<'a> {
+    pub env: &'a HostEnvironment,
+    pub band_params: &'a [BandParameters; MAX_BANDS],
+    pub sample_rate: f32,
+    pub snapshot: &'a ParamSnapshot,
+    pub analysis: &'a AnalysisSnapshot,
+    pub preset_manager: &'a PresetManager,
+    pub current_preset: &'a str,
+    pub status_message: Option<&'a str>,
+}
+
 /// Renders the complete Equaform workspace UI.
 ///
 /// Returns a tuple of:
 /// - `GuiCommandBatch`: DSP parameter adjustments made by the user during this frame.
 /// - `Vec<WorkspaceAction>`: High-level actions (preset save/load, playback, device selection).
-#[allow(clippy::too_many_arguments)]
 pub fn render_workspace(
     ui: &mut egui::Ui,
     state: &mut WorkspaceUiState,
-    env: &HostEnvironment,
-    band_params: &[BandParameters; MAX_BANDS],
-    sample_rate: f32,
-    snapshot: &ParamSnapshot,
-    analysis: &AnalysisSnapshot,
-    preset_manager: &PresetManager,
-    current_preset: &str,
-    status_message: Option<&str>,
+    ctx: &WorkspaceUiContext<'_>,
 ) -> (GuiCommandBatch, Vec<WorkspaceAction>) {
+    let env = ctx.env;
+    let band_params = ctx.band_params;
+    let sample_rate = ctx.sample_rate;
+    let snapshot = ctx.snapshot;
+    let analysis = ctx.analysis;
+    let preset_manager = ctx.preset_manager;
+    let current_preset = ctx.current_preset;
+    let status_message = ctx.status_message;
+
     let mut batch = GuiCommandBatch::new();
     let mut actions = Vec::new();
 

@@ -10,6 +10,9 @@ use clap_sys::ext::audio_ports::*;
 use clap_sys::plugin::clap_plugin;
 use std::ffi::{CStr, c_char};
 
+// FFI Sanctuary: `EquaformAudioPorts` wraps the CLAP audio ports extension handle (`clap_plugin_audio_ports`).
+// It is queried and enumerated by host DAWs through the CLAP C ABI via `clack-plugin`.
+// The Rust compiler flags it as unused in internal code paths because it is accessed exclusively across FFI boundaries.
 #[derive(Copy, Clone)]
 #[allow(dead_code)]
 pub struct EquaformAudioPorts(RawExtension<PluginExtensionSide, clap_plugin_audio_ports>);

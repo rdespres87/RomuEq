@@ -16,6 +16,9 @@ use std::ffi::{CStr, c_char};
 
 use crate::params_map::{PARAM_COUNT, get_param_meta};
 
+// FFI Sanctuary: `EquaformParams` wraps the CLAP parameter extension handle (`clap_plugin_params`).
+// It is queried and automated by host DAWs through the CLAP C ABI via `clack-plugin`.
+// The Rust compiler flags it as unused in internal code paths because it is accessed exclusively across FFI boundaries.
 #[derive(Copy, Clone)]
 #[allow(dead_code)]
 pub struct EquaformParams(RawExtension<PluginExtensionSide, clap_plugin_params>);

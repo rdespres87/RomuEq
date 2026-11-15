@@ -10,10 +10,12 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, Stream, StreamConfig};
 use equaform_common::EqParameters;
 use equaform_common::audio_ring::{AudioRingConsumer, create_audio_ring_buffer};
+use equaform_common::triple_buffer::{
+    TripleBufferConsumer, TripleBufferProducer, create_triple_buffer,
+};
 use equaform_engine::EngineLifecycle;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
-use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicUsize, Ordering};
 
 /// Maximum number of scratch frames allocated per block (pre-allocated up-front, never resized).
 pub const MAX_SCRATCH_FRAMES: usize = 8192;
@@ -283,12 +285,13 @@ pub struct AudioStream {
     source_mode: Arc<AtomicU8>,
     selected_output_device: Option<String>,
     selected_input_device: Option<String>,
-    param_sender: Option<SyncSender<EqParameters>>,
+    param_producer: Option<TripleBufferProducer<EqParameters>>,
     current_params: EqParameters,
     delivered_params: Option<EqParameters>,
     peak_l: Arc<AtomicU32>,
     peak_r: Arc<AtomicU32>,
     spectrum_samples: Arc<Vec<AtomicU32>>,
+    stream_errors: Arc<AtomicUsize>,
     sample_rate: f32,
 }
 
@@ -314,13 +317,24 @@ impl AudioStream {
             sample_rate,
             selected_input_device: None,
             selected_output_device: None,
-            param_sender: None,
+            param_producer: None,
             current_params,
             delivered_params: None,
             peak_l: Arc::new(AtomicU32::new(0)),
             peak_r: Arc::new(AtomicU32::new(0)),
             spectrum_samples: Arc::new((0..2048).map(|_| AtomicU32::new(0)).collect()),
+            stream_errors: Arc::new(AtomicUsize::new(0)),
         }
+    }
+
+    /// Number of asynchronous audio stream errors reported by CPAL error callbacks.
+    pub fn stream_error_count(&self) -> usize {
+        self.stream_errors.load(Ordering::Relaxed)
+    }
+
+    /// Shared error counter for external monitoring or telemetry.
+    pub fn stream_errors(&self) -> Arc<AtomicUsize> {
+        Arc::clone(&self.stream_errors)
     }
 
     pub fn available_output_devices() -> Vec<String> {
@@ -422,26 +436,22 @@ impl AudioStream {
     /// Update EQ parameters in real time without locking the audio thread.
     pub fn set_parameters(&mut self, params: EqParameters) -> Result<(), String> {
         self.current_params = params;
-        if let Some(ref sender) = self.param_sender {
-            if sender.try_send(params).is_ok() {
-                self.delivered_params = Some(params);
-            } else {
-                self.delivered_params = None;
-            }
+        if let Some(ref mut producer) = self.param_producer {
+            producer.publish(params);
+            self.delivered_params = Some(params);
         } else {
             self.delivered_params = None;
         }
         Ok(())
     }
 
-    /// Ensures the audio thread has received the latest `params` (retries if the channel was full on a prior frame).
+    /// Ensures the audio thread has received the latest `params`.
     pub fn ensure_parameters_synced(&mut self, params: EqParameters) {
         self.current_params = params;
         if self.delivered_params != Some(params) {
-            if let Some(ref sender) = self.param_sender {
-                if sender.try_send(params).is_ok() {
-                    self.delivered_params = Some(params);
-                }
+            if let Some(ref mut producer) = self.param_producer {
+                producer.publish(params);
+                self.delivered_params = Some(params);
             }
         }
     }
@@ -487,15 +497,20 @@ impl AudioStream {
                     cfg.sample_format(),
                 )
             } else {
-                // Fallback for macOS output-only devices (such as Haut-parleurs MacBook Pro)
-                // where CPAL's default_output_config() fails due to a known CoreAudio bug in CPAL.
+                // Fallback for macOS output-only devices where CPAL's default_output_config()
+                // fails due to a known CoreAudio bug in CPAL.
                 #[cfg(target_os = "macos")]
-                let hw_sr = macos_virtual_rate_sync::get_device_sample_rate_by_name(
-                    self.selected_output_device
+                let hw_sr = {
+                    let dev_name = self
+                        .selected_output_device
+                        .clone()
+                        .or_else(|| output_device.name().ok());
+                    dev_name
                         .as_deref()
-                        .unwrap_or("Haut-parleurs"),
-                )
-                .unwrap_or(44100.0) as f32;
+                        .and_then(macos_virtual_rate_sync::get_device_sample_rate_by_name)
+                        .or_else(macos_virtual_rate_sync::get_default_output_sample_rate)
+                        .unwrap_or(44100.0) as f32
+                };
                 #[cfg(not(target_os = "macos"))]
                 let hw_sr = 44100.0_f32;
                 (2, hw_sr, SampleFormat::F32)
@@ -518,10 +533,9 @@ impl AudioStream {
         // Create lock-free audio ring buffer between input and output threads
         let (audio_producer, audio_consumer) = create_audio_ring_buffer(16384);
 
-        // Create lock-free parameter channel
-        let (param_tx, param_rx) = sync_channel::<EqParameters>(256);
-        let _ = param_tx.try_send(self.current_params);
-        self.param_sender = Some(param_tx);
+        // Create lock-free parameter triple buffer
+        let (param_producer, mut param_consumer) = create_triple_buffer(self.current_params);
+        self.param_producer = Some(param_producer);
         self.delivered_params = Some(self.current_params);
 
         let is_running = Arc::clone(&self.is_running);
@@ -589,33 +603,36 @@ impl AudioStream {
         let mut left_out = vec![0.0f32; MAX_SCRATCH_FRAMES];
         let mut right_out = vec![0.0f32; MAX_SCRATCH_FRAMES];
 
-        let err_fn = |err| eprintln!("Audio output stream error: {err}");
+        let stream_errors_out = Arc::clone(&self.stream_errors);
+        let err_fn = move |_err| {
+            stream_errors_out.fetch_add(1, Ordering::Relaxed);
+        };
 
         let output_stream = match sample_format {
             SampleFormat::F32 => output_device
                 .build_output_stream(
                     &stream_config,
                     move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                        process_output_block(
-                            data,
+                        let mut ctx = AudioRenderContext {
                             channels,
                             sample_rate,
                             block_size,
-                            &mut engine,
-                            &param_rx,
-                            &audio_consumer,
-                            &mut drift,
-                            &is_running,
-                            &source_mode,
-                            &peak_l,
-                            &peak_r,
-                            &spectrum_samples,
-                            &mut phase,
-                            &mut left_in,
-                            &mut right_in,
-                            &mut left_out,
-                            &mut right_out,
-                        );
+                            engine: &mut engine,
+                            param_consumer: &mut param_consumer,
+                            audio_consumer: &audio_consumer,
+                            drift: &mut drift,
+                            is_running: &is_running,
+                            source_mode: &source_mode,
+                            peak_l: &peak_l,
+                            peak_r: &peak_r,
+                            spectrum_samples: &spectrum_samples,
+                            phase: &mut phase,
+                            left_in: &mut left_in,
+                            right_in: &mut right_in,
+                            left_out: &mut left_out,
+                            right_out: &mut right_out,
+                        };
+                        process_output_block(data, &mut ctx);
                     },
                     err_fn,
                     None,
@@ -630,26 +647,26 @@ impl AudioStream {
                             let frames = (data.len() / channels).min(MAX_SCRATCH_FRAMES);
                             let active_len = frames * channels;
                             let scratch_slice = &mut float_scratch[..active_len];
-                            process_output_block(
-                                scratch_slice,
+                            let mut ctx = AudioRenderContext {
                                 channels,
                                 sample_rate,
                                 block_size,
-                                &mut engine,
-                                &param_rx,
-                                &audio_consumer,
-                                &mut drift,
-                                &is_running,
-                                &source_mode,
-                                &peak_l,
-                                &peak_r,
-                                &spectrum_samples,
-                                &mut phase,
-                                &mut left_in,
-                                &mut right_in,
-                                &mut left_out,
-                                &mut right_out,
-                            );
+                                engine: &mut engine,
+                                param_consumer: &mut param_consumer,
+                                audio_consumer: &audio_consumer,
+                                drift: &mut drift,
+                                is_running: &is_running,
+                                source_mode: &source_mode,
+                                peak_l: &peak_l,
+                                peak_r: &peak_r,
+                                spectrum_samples: &spectrum_samples,
+                                phase: &mut phase,
+                                left_in: &mut left_in,
+                                right_in: &mut right_in,
+                                left_out: &mut left_out,
+                                right_out: &mut right_out,
+                            };
+                            process_output_block(scratch_slice, &mut ctx);
                             for (out, &sample) in
                                 data[..active_len].iter_mut().zip(scratch_slice.iter())
                             {
@@ -683,6 +700,8 @@ impl AudioStream {
                 buffer_size: cpal::BufferSize::Default,
             };
             let producer = audio_producer;
+            let stream_errors_in1 = Arc::clone(&self.stream_errors);
+            let stream_errors_in2 = Arc::clone(&self.stream_errors);
 
             let in_res = match in_sample_format {
                 SampleFormat::F32 => input_device.build_input_stream(
@@ -690,7 +709,9 @@ impl AudioStream {
                     move |data: &[f32], _: &cpal::InputCallbackInfo| {
                         producer.push_interleaved(data, in_channels);
                     },
-                    |err| eprintln!("Audio input stream error: {err}"),
+                    move |_err| {
+                        stream_errors_in1.fetch_add(1, Ordering::Relaxed);
+                    },
                     None,
                 ),
                 SampleFormat::I16 => {
@@ -707,7 +728,9 @@ impl AudioStream {
                             }
                             producer.push_interleaved(&conv_scratch[..active_len], in_channels);
                         },
-                        |err| eprintln!("Audio input stream error: {err}"),
+                        move |_err| {
+                            stream_errors_in2.fetch_add(1, Ordering::Relaxed);
+                        },
                         None,
                     )
                 }
@@ -802,28 +825,46 @@ pub fn soft_limit(x: f32) -> f32 {
     }
 }
 
+/// Execution context bundling pre-allocated buffers, drift control, atomic states, and DSP engine.
+pub struct AudioRenderContext<'a> {
+    pub channels: usize,
+    pub sample_rate: f32,
+    pub block_size: usize,
+    pub engine: &'a mut EngineLifecycle,
+    pub param_consumer: &'a mut TripleBufferConsumer<EqParameters>,
+    pub audio_consumer: &'a AudioRingConsumer,
+    pub drift: &'a mut ContinuousPiDriftController,
+    pub is_running: &'a AtomicBool,
+    pub source_mode: &'a AtomicU8,
+    pub peak_l: &'a AtomicU32,
+    pub peak_r: &'a AtomicU32,
+    pub spectrum_samples: &'a [AtomicU32],
+    pub phase: &'a mut f64,
+    pub left_in: &'a mut [f32],
+    pub right_in: &'a mut [f32],
+    pub left_out: &'a mut [f32],
+    pub right_out: &'a mut [f32],
+}
+
 /// Real-time audio block processor: wait-free, zero allocation, zero mutex locks.
-#[allow(clippy::too_many_arguments)]
-fn process_output_block(
-    data: &mut [f32],
-    channels: usize,
-    sample_rate: f32,
-    block_size: usize,
-    engine: &mut EngineLifecycle,
-    param_rx: &Receiver<EqParameters>,
-    audio_consumer: &AudioRingConsumer,
-    drift: &mut ContinuousPiDriftController,
-    is_running: &AtomicBool,
-    source_mode: &AtomicU8,
-    peak_l: &AtomicU32,
-    peak_r: &AtomicU32,
-    spectrum_samples: &[AtomicU32],
-    phase: &mut f64,
-    left_in: &mut [f32],
-    right_in: &mut [f32],
-    left_out: &mut [f32],
-    right_out: &mut [f32],
-) {
+fn process_output_block(data: &mut [f32], ctx: &mut AudioRenderContext<'_>) {
+    let channels = ctx.channels;
+    let sample_rate = ctx.sample_rate;
+    let block_size = ctx.block_size;
+    let engine = &mut *ctx.engine;
+    let param_consumer = &mut *ctx.param_consumer;
+    let audio_consumer = ctx.audio_consumer;
+    let drift = &mut *ctx.drift;
+    let is_running = ctx.is_running;
+    let source_mode = ctx.source_mode;
+    let peak_l = ctx.peak_l;
+    let peak_r = ctx.peak_r;
+    let spectrum_samples = ctx.spectrum_samples;
+    let phase = &mut *ctx.phase;
+    let left_in = &mut *ctx.left_in;
+    let right_in = &mut *ctx.right_in;
+    let left_out = &mut *ctx.left_out;
+    let right_out = &mut *ctx.right_out;
     let frames = (data.len() / channels).min(MAX_SCRATCH_FRAMES);
     if frames == 0 {
         return;
@@ -834,8 +875,8 @@ fn process_output_block(
         return;
     }
 
-    // 1. Drain pending parameter updates non-blocking
-    while let Ok(new_params) = param_rx.try_recv() {
+    // 1. Check for pending parameter updates non-blocking via lock-free triple buffer
+    if let Some(new_params) = param_consumer.read_latest_copy() {
         engine.set_parameters(new_params);
     }
 
@@ -1087,6 +1128,31 @@ mod macos_virtual_rate_sync {
             .and_then(|(id, _)| get_device_sample_rate(id))
     }
 
+    pub fn get_default_output_sample_rate() -> Option<f64> {
+        let addr = AudioObjectPropertyAddress {
+            m_selector: u32::from_be_bytes(*b"dOut"),
+            m_scope: u32::from_be_bytes(*b"glob"),
+            m_element: 0,
+        };
+        let mut dev_id: u32 = 0;
+        let mut size = std::mem::size_of::<u32>() as u32;
+        let status = unsafe {
+            AudioObjectGetPropertyData(
+                SYSTEM_OBJECT,
+                &addr,
+                0,
+                std::ptr::null(),
+                &mut size,
+                &mut dev_id as *mut _ as *mut _,
+            )
+        };
+        if status == 0 && dev_id > 0 {
+            get_device_sample_rate(dev_id)
+        } else {
+            None
+        }
+    }
+
     pub fn sync_virtual_input_rate(target_sr: f64) {
         if target_sr <= 0.0 {
             return;
@@ -1212,25 +1278,36 @@ mod tests {
     #[test]
     fn test_realtime_threaded_streaming() {
         let (producer, consumer) = create_audio_ring_buffer(16384);
-        let running = Arc::new(AtomicBool::new(true));
-        let r_in = Arc::clone(&running);
 
-        let input_thread = std::thread::spawn(move || {
-            let chunk = vec![0.5f32; 1024]; // 512 frames * 2 channels
-            while r_in.load(Ordering::Relaxed) {
-                producer.push_interleaved(&chunk, 2);
-                std::thread::sleep(std::time::Duration::from_micros(11610)); // 512 / 44100 = 11.61 ms
-            }
-        });
-
-        let mut left_out = vec![0.0f32; 512];
-        let mut right_out = vec![0.0f32; 512];
+        // Deterministic step-based streaming simulation:
+        // Replaces non-deterministic thread sleep with discrete frame steps,
+        // simulating producer and consumer clock drift (varying chunk sizes)
+        // with 100% reproducible execution across CI environments.
+        let mut left_out = vec![0.0f32; 1024];
+        let mut right_out = vec![0.0f32; 1024];
         let mut is_primed = false;
         let mut last_l = 0.0f32;
         let mut last_r = 0.0f32;
+        let mut total_frames_consumed = 0;
 
-        for _sec in 0..100 {
-            // 100 iterations of 512 frames ~ 1.16 seconds
+        for step in 0..100 {
+            // Producer pushes frames with controlled drift variations:
+            // - Initial priming phase (steps 0..4): 1024 frames per step to build buffer
+            // - Step 20, 40, 60, 80: 515 frames (producer runs slightly faster than consumer)
+            // - Step 15, 35, 55, 75: 509 frames (producer runs slightly slower than consumer)
+            // - Nominal: 512 frames
+            let input_frames = if step < 4 {
+                1024
+            } else if step % 20 == 0 {
+                515
+            } else if step % 20 == 15 {
+                509
+            } else {
+                512
+            };
+            let chunk = vec![0.5f32; input_frames * 2];
+            producer.push_interleaved(&chunk, 2);
+
             let available = consumer.available_read();
             if !is_primed {
                 if available >= 2048 {
@@ -1254,6 +1331,9 @@ mod tests {
                     &mut left_out[..frames_to_pop],
                     &mut right_out[..frames_to_pop],
                 );
+                assert_eq!(popped, frames_to_pop);
+                total_frames_consumed += popped;
+
                 if frames_to_pop == 513 && popped == 513 {
                     left_out[511] = (left_out[511] + left_out[512]) * 0.5;
                     right_out[511] = (right_out[511] + right_out[512]) * 0.5;
@@ -1268,8 +1348,14 @@ mod tests {
                 last_r = right_out[511];
             }
         }
-        running.store(false, Ordering::Relaxed);
-        let _ = input_thread.join();
+
+        assert!(is_primed, "Stream must successfully prime");
+        assert!(
+            total_frames_consumed >= 45000,
+            "Stream must consume expected audio frames ({total_frames_consumed} frames consumed)"
+        );
+        assert_eq!(last_l, 0.5);
+        assert_eq!(last_r, 0.5);
     }
 
     #[test]
@@ -1434,25 +1520,19 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Requires physical macOS 'Haut-parleurs' audio device"]
+    #[ignore = "Requires physical audio device"]
     fn test_audio_stream_start_diagnostic() {
         let host = cpal::default_host();
-        let mac_speakers = host
-            .devices()
-            .unwrap()
-            .find(|d| {
-                d.name()
-                    .map(|n| n.contains("Haut-parleurs"))
-                    .unwrap_or(false)
-            })
-            .expect("Haut-parleurs not found");
-        println!("Found Mac speakers: {:?}", mac_speakers.name());
+        let default_output = host
+            .default_output_device()
+            .expect("Default output device not found");
+        println!("Found default output device: {:?}", default_output.name());
         let config = StreamConfig {
             channels: 2,
             sample_rate: cpal::SampleRate(44100),
             buffer_size: cpal::BufferSize::Default,
         };
-        let stream = mac_speakers.build_output_stream(
+        let stream = default_output.build_output_stream(
             &config,
             |data: &mut [f32], _| {
                 data.fill(0.0);
@@ -1461,48 +1541,19 @@ mod tests {
             None,
         );
         println!(
-            "Building output stream on Mac speakers: {:?}",
+            "Building output stream on default device: {:?}",
             stream.is_ok()
         );
         assert!(stream.is_ok());
-        let mac_speakers = host
-            .devices()
-            .unwrap()
-            .find(|d| {
-                d.name()
-                    .map(|n| n.contains("Haut-parleurs"))
-                    .unwrap_or(false)
-            })
-            .expect("Haut-parleurs not found");
-        println!("Found Mac speakers: {:?}", mac_speakers.name());
-        let config = StreamConfig {
-            channels: 2,
-            sample_rate: cpal::SampleRate(44100),
-            buffer_size: cpal::BufferSize::Default,
-        };
-        let stream = mac_speakers.build_output_stream(
-            &config,
-            |data: &mut [f32], _| {
-                data.fill(0.0);
-            },
-            |e| eprintln!("err: {e}"),
-            None,
-        );
+
         println!(
-            "Building output stream on Mac speakers: {:?}",
-            stream.is_ok()
+            "Default output: {:?}, config: {:?}",
+            default_output.name(),
+            default_output.default_output_config()
         );
-        assert!(stream.is_ok());
-        if let Some(out) = host.default_output_device() {
-            println!(
-                "Default output: {:?}, config: {:?}",
-                out.name(),
-                out.default_output_config()
-            );
-            if let Ok(configs) = out.supported_output_configs() {
-                for c in configs {
-                    println!("  Supported config: {c:?}");
-                }
+        if let Ok(configs) = default_output.supported_output_configs() {
+            for c in configs {
+                println!("  Supported config: {c:?}");
             }
         }
         if let Some(inp) = host.default_input_device() {
@@ -1521,19 +1572,34 @@ mod tests {
             AudioStream::available_input_devices()
         );
         let mut stream = AudioStream::new();
-        stream.set_output_device(Some("Haut-parleurs MacBook Pro".to_string()));
+        let out_name = default_output.name().ok();
+        stream.set_output_device(out_name.clone());
         match stream.start() {
             Ok(()) => {
                 println!(
-                    "Audio stream to Haut-parleurs MacBook Pro started successfully! Active: {}",
+                    "Audio stream to {out_name:?} started successfully! Active: {}",
                     stream.is_active()
                 );
                 std::thread::sleep(std::time::Duration::from_millis(100));
                 stream.stop().unwrap();
             }
             Err(e) => {
-                println!("Audio stream to Haut-parleurs MacBook Pro failed to start: {e}");
+                println!("Audio stream to {out_name:?} failed to start: {e}");
             }
         }
+    }
+
+    #[test]
+    fn test_audio_stream_triple_buffer_and_error_counter() {
+        let mut stream = AudioStream::new();
+        assert_eq!(stream.stream_error_count(), 0);
+
+        let mut params = EqParameters::default();
+        params.bands[0].gain_db = 6.0;
+        assert!(stream.set_parameters(params).is_ok());
+
+        // Stream error increment
+        stream.stream_errors().fetch_add(1, Ordering::Relaxed);
+        assert_eq!(stream.stream_error_count(), 1);
     }
 }

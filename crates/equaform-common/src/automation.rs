@@ -239,56 +239,65 @@ impl AutomationValueProvider {
     /// Returns the value of the event whose sample_offset matches, or the
     /// interpolated/hold value for the interval between events.
     /// If no event has ever been seen for the parameter, returns `None`.
+    ///
+    /// **RT-safe:** performs zero heap allocations.
     pub fn value_at_sample(
         &self,
         param_id: ParamId,
         sample: u32,
         last_known: Option<f32>,
     ) -> Option<f32> {
-        // Collect all events for this parameter, sorted by offset
-        let relevant: Vec<&AutomationEvent> = self
-            .events
-            .iter()
-            .filter(|e| e.param_id == param_id)
-            .collect();
+        let mut prev: Option<&AutomationEvent> = None;
+        let mut next: Option<&AutomationEvent> = None;
 
-        if relevant.is_empty() {
-            return last_known;
+        for e in self.events.iter().filter(|e| e.param_id == param_id) {
+            if e.sample_offset <= sample {
+                prev = Some(e);
+            } else {
+                next = Some(e);
+                break;
+            }
         }
 
-        // Find the last event at or before the sample
-        let prev_idx = relevant.iter().rposition(|e| e.sample_offset <= sample);
-
-        match prev_idx {
-            Some(idx) => {
-                let prev = relevant[idx];
-                // If we found an exact match, return its value
-                if prev.sample_offset == sample {
-                    return Some(prev.value);
+        match prev {
+            Some(prev_ev) => {
+                if prev_ev.sample_offset == sample || self.interpolation == InterpolationMode::Hold
+                {
+                    return Some(prev_ev.value);
                 }
 
-                if self.interpolation == InterpolationMode::Hold {
-                    return Some(prev.value);
-                }
-
-                // Linear interpolation: find the next event after the sample
-                if let Some(next) = relevant.get(idx + 1) {
-                    let range = (next.sample_offset as f64 - prev.sample_offset as f64).max(1.0);
-                    let t = (sample as f64 - prev.sample_offset as f64) / range;
-                    let prev_v = prev.value as f64;
-                    let curr_v = next.value as f64;
+                if let Some(next_ev) = next {
+                    let range =
+                        (next_ev.sample_offset as f64 - prev_ev.sample_offset as f64).max(1.0);
+                    let t = (sample as f64 - prev_ev.sample_offset as f64) / range;
+                    let prev_v = prev_ev.value as f64;
+                    let curr_v = next_ev.value as f64;
                     return Some((prev_v + t * (curr_v - prev_v)) as f32);
                 }
 
-                // No next event — hold the last known value
-                Some(prev.value)
+                Some(prev_ev.value)
             }
             None => {
-                // All events are after the sample — return the first one
-                // (or last_known if we want to be conservative)
-                last_known.or_else(|| Some(relevant[0].value))
+                // All events are after the sample — return the first one (or last_known)
+                match next {
+                    Some(first_ev) => last_known.or(Some(first_ev.value)),
+                    None => last_known,
+                }
             }
         }
+    }
+
+    /// Returns the last automation value for the given parameter within the block,
+    /// or `None` if no automation event exists for this parameter in the block.
+    ///
+    /// This method performs zero allocations, operates in RT-safe O(E) time where E
+    /// is the number of events in the block, and avoids looping over all samples.
+    pub fn last_value_in_block(&self, param_id: ParamId, block_length: u32) -> Option<f32> {
+        self.events
+            .iter()
+            .rev()
+            .find(|e| e.param_id == param_id && e.sample_offset < block_length)
+            .map(|e| e.value)
     }
 
     /// Iterate over events for a specific parameter.
@@ -574,6 +583,25 @@ mod tests {
 
         let band1_count = provider.events_for_param(ParamId(1)).count();
         assert_eq!(band1_count, 1);
+    }
+
+    #[test]
+    fn test_value_provider_last_value_in_block() {
+        let events = vec![
+            make_event(ParamId(0), 0.1, 10, 1),
+            make_event(ParamId(0), 0.4, 50, 2),
+            make_event(ParamId(0), 0.8, 100, 3),
+            make_event(ParamId(1), 0.5, 20, 4),
+        ];
+        let batch = AutomationBatch::from_raw(events, 256);
+        let provider = AutomationValueProvider::new(batch, InterpolationMode::Hold);
+
+        assert_eq!(provider.last_value_in_block(ParamId(0), 256), Some(0.8));
+        assert_eq!(provider.last_value_in_block(ParamId(0), 100), Some(0.4));
+        assert_eq!(provider.last_value_in_block(ParamId(0), 50), Some(0.1));
+        assert_eq!(provider.last_value_in_block(ParamId(0), 10), None);
+        assert_eq!(provider.last_value_in_block(ParamId(1), 256), Some(0.5));
+        assert_eq!(provider.last_value_in_block(ParamId(2), 256), None);
     }
 
     // -----------------------------------------------------------------------

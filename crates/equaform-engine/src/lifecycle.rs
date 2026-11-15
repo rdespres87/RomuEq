@@ -558,7 +558,7 @@ impl EngineLifecycle {
         let mut block_coeffs = self.cached_coeffs;
 
         if let Some(provider) = automation_provider {
-            let block_start_sample = self.sample_offset as u32;
+            let block_length = block_size as u32;
             let gain_min = BandParameters::gain_db_min();
             let gain_max = BandParameters::gain_db_max();
             let freq_min: f32 = 20.0;
@@ -572,29 +572,37 @@ impl EngineLifecycle {
 
                 let mut automated = false;
                 let mut last_gain = band_params.gain_db;
-                for i in 0..block_size {
-                    let sample_idx = block_start_sample + i as u32;
-                    if let Some(automation_value) =
-                        provider.value_at_sample(band_params.gain_param_id(), sample_idx, None)
-                    {
-                        let gain_range = gain_max - gain_min;
-                        last_gain = gain_min + (automation_value + 1.0) * 0.5 * gain_range;
-                        automated = true;
-                    }
+                if let Some(automation_value) = provider
+                    .last_value_in_block(band_params.gain_param_id(), block_length)
+                    .or_else(|| {
+                        provider.value_at_sample(
+                            band_params.gain_param_id(),
+                            block_length.saturating_sub(1),
+                            None,
+                        )
+                    })
+                {
+                    let gain_range = gain_max - gain_min;
+                    last_gain = gain_min + (automation_value + 1.0) * 0.5 * gain_range;
+                    automated = true;
                 }
                 band_params.gain_db = last_gain;
 
                 let mut last_freq = band_params.frequency_hz;
-                for i in 0..block_size {
-                    let sample_idx = block_start_sample + i as u32;
-                    if let Some(automation_value) =
-                        provider.value_at_sample(band_params.frequency_param_id(), sample_idx, None)
-                    {
-                        // Correct logarithmic frequency interpolation: f(t) = f_min * (f_max / f_min)^t
-                        let t = automation_value * 0.5 + 0.5;
-                        last_freq = freq_min * (freq_max / freq_min).powf(t);
-                        automated = true;
-                    }
+                if let Some(automation_value) = provider
+                    .last_value_in_block(band_params.frequency_param_id(), block_length)
+                    .or_else(|| {
+                        provider.value_at_sample(
+                            band_params.frequency_param_id(),
+                            block_length.saturating_sub(1),
+                            None,
+                        )
+                    })
+                {
+                    // Correct logarithmic frequency interpolation: f(t) = f_min * (f_max / f_min)^t
+                    let t = automation_value * 0.5 + 0.5;
+                    last_freq = freq_min * (freq_max / freq_min).powf(t);
+                    automated = true;
                 }
                 band_params.frequency_hz = last_freq;
 
@@ -607,6 +615,13 @@ impl EngineLifecycle {
                         band_params.slope,
                         sample_rate,
                     );
+                    // Persist updated automated parameters so subsequent blocks retain state
+                    self.eq_params.bands[band_idx] = band_params;
+                    // Synchroniser le cache persistant de coefficients
+                    self.cached_coeffs[band_idx] = *coeff_slot;
+                    if self.eq_params.global.auto_gain {
+                        self.update_auto_gain_db();
+                    }
                 }
             }
         }
@@ -2087,6 +2102,52 @@ mod tests {
         assert!(
             comp_db < 0.0,
             "comp_db should be negative for a boost, got {comp_db}"
+        );
+    }
+
+    #[test]
+    fn test_automation_persistence_across_blocks() {
+        use equaform_common::automation::AutomationEvent;
+
+        let mut engine = EngineLifecycle::new();
+        engine.prepare(48000.0, 128, 1);
+
+        let mut params = EqParameters::default();
+        params.bands[0].enabled = true;
+        params.bands[0].frequency_hz = 1000.0;
+        params.bands[0].gain_db = 0.0;
+        params.bands[0].filter_type = FilterType::Bell;
+        params.bands[0].q = 1.0;
+        engine.set_parameters(params);
+
+        let gain_param_id = params.bands[0].gain_param_id();
+
+        // Enqueue an automation event boosting gain to normalized value 1.0 (+24 dB) at offset 0
+        let event = AutomationEvent::new(gain_param_id, 1.0, 0, 1);
+        engine.push_automation_event(event);
+
+        let pi2 = std::f32::consts::PI * 2.0;
+        let mut input = vec![0.0f32; 128];
+        for (i, sample) in input.iter_mut().enumerate() {
+            *sample = (pi2 * 1000.0 * i as f32 / 48000.0).sin();
+        }
+        let mut out1 = vec![0.0f32; 128];
+        let mut out2 = vec![0.0f32; 128];
+
+        // Process block 1 with automation
+        assert!(engine.process(&[&input], &mut [&mut out1]));
+        assert_eq!(engine.eq_parameters().bands[0].gain_db, 24.0);
+
+        // Process block 2 without any new automation events
+        assert!(engine.process(&[&input], &mut [&mut out2]));
+        // State must persist!
+        assert_eq!(engine.eq_parameters().bands[0].gain_db, 24.0);
+
+        // Crucial DSP check: Verify that block 2 audio remains boosted (+24 dB = factor ~15.8)
+        let peak_block2 = out2.iter().cloned().fold(0.0f32, f32::max);
+        assert!(
+            peak_block2 > 8.0,
+            "Block 2 audio must retain biquad +24 dB gain boost across blocks, got peak {peak_block2}"
         );
     }
 }

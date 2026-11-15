@@ -1719,18 +1719,17 @@ pub mod standalone {
             let mut actions = Vec::new();
 
             egui::CentralPanel::default().show(ctx, |ui| {
-                let (b, a) = render_workspace(
-                    ui,
-                    &mut self.ui_state,
-                    &env,
-                    &self.client.band_params,
-                    self.client.sample_rate,
-                    &self.client.snapshot,
-                    &analysis,
-                    &self.client.preset_manager,
-                    &self.client._current_preset,
-                    self.status_message.as_deref(),
-                );
+                let ws_ctx = WorkspaceUiContext {
+                    env: &env,
+                    band_params: &self.client.band_params,
+                    sample_rate: self.client.sample_rate,
+                    snapshot: &self.client.snapshot,
+                    analysis: &analysis,
+                    preset_manager: &self.client.preset_manager,
+                    current_preset: &self.client._current_preset,
+                    status_message: self.status_message.as_deref(),
+                };
+                let (b, a) = render_workspace(ui, &mut self.ui_state, &ws_ctx);
                 batch = b;
                 actions = a;
             });

@@ -258,10 +258,88 @@ pub fn parameter_info(id: u32) -> Option<ParameterInfo> {
             },
             unit: "",
         }),
-        // Band 0 (100–199)
-        100 => Some(ParameterInfo {
-            id: 100,
-            name: "band[0].enabled",
+        _ => band_parameter_info(id),
+    }
+}
+
+/// Resolves `ParameterInfo` for band parameters (IDs 100..899) via offset mapping.
+fn band_parameter_info(id: u32) -> Option<ParameterInfo> {
+    let band_idx = (id / 100).checked_sub(1)?;
+    if band_idx >= 8 {
+        return None;
+    }
+    let sub = id % 100;
+    static NAMES: [[&str; 6]; 8] = [
+        [
+            "band[0].enabled",
+            "band[0].filter_type",
+            "band[0].frequency_hz",
+            "band[0].gain_db",
+            "band[0].q",
+            "band[0].slope",
+        ],
+        [
+            "band[1].enabled",
+            "band[1].filter_type",
+            "band[1].frequency_hz",
+            "band[1].gain_db",
+            "band[1].q",
+            "band[1].slope",
+        ],
+        [
+            "band[2].enabled",
+            "band[2].filter_type",
+            "band[2].frequency_hz",
+            "band[2].gain_db",
+            "band[2].q",
+            "band[2].slope",
+        ],
+        [
+            "band[3].enabled",
+            "band[3].filter_type",
+            "band[3].frequency_hz",
+            "band[3].gain_db",
+            "band[3].q",
+            "band[3].slope",
+        ],
+        [
+            "band[4].enabled",
+            "band[4].filter_type",
+            "band[4].frequency_hz",
+            "band[4].gain_db",
+            "band[4].q",
+            "band[4].slope",
+        ],
+        [
+            "band[5].enabled",
+            "band[5].filter_type",
+            "band[5].frequency_hz",
+            "band[5].gain_db",
+            "band[5].q",
+            "band[5].slope",
+        ],
+        [
+            "band[6].enabled",
+            "band[6].filter_type",
+            "band[6].frequency_hz",
+            "band[6].gain_db",
+            "band[6].q",
+            "band[6].slope",
+        ],
+        [
+            "band[7].enabled",
+            "band[7].filter_type",
+            "band[7].frequency_hz",
+            "band[7].gain_db",
+            "band[7].q",
+            "band[7].slope",
+        ],
+    ];
+
+    match sub {
+        0 => Some(ParameterInfo {
+            id,
+            name: NAMES[band_idx as usize][0],
             param_type: ParameterType::Bool,
             range: ParameterRange {
                 min: 0.0,
@@ -270,9 +348,9 @@ pub fn parameter_info(id: u32) -> Option<ParameterInfo> {
             },
             unit: "",
         }),
-        101 => Some(ParameterInfo {
-            id: 101,
-            name: "band[0].filter_type",
+        1 => Some(ParameterInfo {
+            id,
+            name: NAMES[band_idx as usize][1],
             param_type: ParameterType::Enum { count: 5 },
             range: ParameterRange {
                 min: 0.0,
@@ -281,9 +359,9 @@ pub fn parameter_info(id: u32) -> Option<ParameterInfo> {
             },
             unit: "",
         }),
-        102 => Some(ParameterInfo {
-            id: 102,
-            name: "band[0].frequency_hz",
+        2 => Some(ParameterInfo {
+            id,
+            name: NAMES[band_idx as usize][2],
             param_type: ParameterType::Continuous,
             range: ParameterRange {
                 min: 20.0,
@@ -292,9 +370,9 @@ pub fn parameter_info(id: u32) -> Option<ParameterInfo> {
             },
             unit: "Hz",
         }),
-        103 => Some(ParameterInfo {
-            id: 103,
-            name: "band[0].gain_db",
+        3 => Some(ParameterInfo {
+            id,
+            name: NAMES[band_idx as usize][3],
             param_type: ParameterType::Continuous,
             range: ParameterRange {
                 min: -24.0,
@@ -303,9 +381,9 @@ pub fn parameter_info(id: u32) -> Option<ParameterInfo> {
             },
             unit: "dB",
         }),
-        104 => Some(ParameterInfo {
-            id: 104,
-            name: "band[0].q",
+        4 => Some(ParameterInfo {
+            id,
+            name: NAMES[band_idx as usize][4],
             param_type: ParameterType::Continuous,
             range: ParameterRange {
                 min: 0.1,
@@ -314,478 +392,9 @@ pub fn parameter_info(id: u32) -> Option<ParameterInfo> {
             },
             unit: "Q",
         }),
-        105 => Some(ParameterInfo {
-            id: 105,
-            name: "band[0].slope",
-            param_type: ParameterType::Enum { count: 4 },
-            range: ParameterRange {
-                min: 0.0,
-                max: 3.0,
-                default: 1.0,
-            },
-            unit: "dB/oct",
-        }),
-        // Band 1 (200–299)
-        200 => Some(ParameterInfo {
-            id: 200,
-            name: "band[1].enabled",
-            param_type: ParameterType::Bool,
-            range: ParameterRange {
-                min: 0.0,
-                max: 1.0,
-                default: 1.0,
-            },
-            unit: "",
-        }),
-        201 => Some(ParameterInfo {
-            id: 201,
-            name: "band[1].filter_type",
-            param_type: ParameterType::Enum { count: 5 },
-            range: ParameterRange {
-                min: 0.0,
-                max: 4.0,
-                default: 0.0,
-            },
-            unit: "",
-        }),
-        202 => Some(ParameterInfo {
-            id: 202,
-            name: "band[1].frequency_hz",
-            param_type: ParameterType::Continuous,
-            range: ParameterRange {
-                min: 20.0,
-                max: 20000.0,
-                default: 1000.0,
-            },
-            unit: "Hz",
-        }),
-        203 => Some(ParameterInfo {
-            id: 203,
-            name: "band[1].gain_db",
-            param_type: ParameterType::Continuous,
-            range: ParameterRange {
-                min: -24.0,
-                max: 24.0,
-                default: 0.0,
-            },
-            unit: "dB",
-        }),
-        204 => Some(ParameterInfo {
-            id: 204,
-            name: "band[1].q",
-            param_type: ParameterType::Continuous,
-            range: ParameterRange {
-                min: 0.1,
-                max: 20.0,
-                default: std::f32::consts::FRAC_1_SQRT_2,
-            },
-            unit: "Q",
-        }),
-        205 => Some(ParameterInfo {
-            id: 205,
-            name: "band[1].slope",
-            param_type: ParameterType::Enum { count: 4 },
-            range: ParameterRange {
-                min: 0.0,
-                max: 3.0,
-                default: 1.0,
-            },
-            unit: "dB/oct",
-        }),
-        // Band 2 (300–399)
-        300 => Some(ParameterInfo {
-            id: 300,
-            name: "band[2].enabled",
-            param_type: ParameterType::Bool,
-            range: ParameterRange {
-                min: 0.0,
-                max: 1.0,
-                default: 1.0,
-            },
-            unit: "",
-        }),
-        301 => Some(ParameterInfo {
-            id: 301,
-            name: "band[2].filter_type",
-            param_type: ParameterType::Enum { count: 5 },
-            range: ParameterRange {
-                min: 0.0,
-                max: 4.0,
-                default: 0.0,
-            },
-            unit: "",
-        }),
-        302 => Some(ParameterInfo {
-            id: 302,
-            name: "band[2].frequency_hz",
-            param_type: ParameterType::Continuous,
-            range: ParameterRange {
-                min: 20.0,
-                max: 20000.0,
-                default: 1000.0,
-            },
-            unit: "Hz",
-        }),
-        303 => Some(ParameterInfo {
-            id: 303,
-            name: "band[2].gain_db",
-            param_type: ParameterType::Continuous,
-            range: ParameterRange {
-                min: -24.0,
-                max: 24.0,
-                default: 0.0,
-            },
-            unit: "dB",
-        }),
-        304 => Some(ParameterInfo {
-            id: 304,
-            name: "band[2].q",
-            param_type: ParameterType::Continuous,
-            range: ParameterRange {
-                min: 0.1,
-                max: 20.0,
-                default: std::f32::consts::FRAC_1_SQRT_2,
-            },
-            unit: "Q",
-        }),
-        305 => Some(ParameterInfo {
-            id: 305,
-            name: "band[2].slope",
-            param_type: ParameterType::Enum { count: 4 },
-            range: ParameterRange {
-                min: 0.0,
-                max: 3.0,
-                default: 1.0,
-            },
-            unit: "dB/oct",
-        }),
-        // Band 3 (400–499)
-        400 => Some(ParameterInfo {
-            id: 400,
-            name: "band[3].enabled",
-            param_type: ParameterType::Bool,
-            range: ParameterRange {
-                min: 0.0,
-                max: 1.0,
-                default: 1.0,
-            },
-            unit: "",
-        }),
-        401 => Some(ParameterInfo {
-            id: 401,
-            name: "band[3].filter_type",
-            param_type: ParameterType::Enum { count: 5 },
-            range: ParameterRange {
-                min: 0.0,
-                max: 4.0,
-                default: 0.0,
-            },
-            unit: "",
-        }),
-        402 => Some(ParameterInfo {
-            id: 402,
-            name: "band[3].frequency_hz",
-            param_type: ParameterType::Continuous,
-            range: ParameterRange {
-                min: 20.0,
-                max: 20000.0,
-                default: 1000.0,
-            },
-            unit: "Hz",
-        }),
-        403 => Some(ParameterInfo {
-            id: 403,
-            name: "band[3].gain_db",
-            param_type: ParameterType::Continuous,
-            range: ParameterRange {
-                min: -24.0,
-                max: 24.0,
-                default: 0.0,
-            },
-            unit: "dB",
-        }),
-        404 => Some(ParameterInfo {
-            id: 404,
-            name: "band[3].q",
-            param_type: ParameterType::Continuous,
-            range: ParameterRange {
-                min: 0.1,
-                max: 20.0,
-                default: std::f32::consts::FRAC_1_SQRT_2,
-            },
-            unit: "Q",
-        }),
-        405 => Some(ParameterInfo {
-            id: 405,
-            name: "band[3].slope",
-            param_type: ParameterType::Enum { count: 4 },
-            range: ParameterRange {
-                min: 0.0,
-                max: 3.0,
-                default: 1.0,
-            },
-            unit: "dB/oct",
-        }),
-        // Band 4 (500–599)
-        500 => Some(ParameterInfo {
-            id: 500,
-            name: "band[4].enabled",
-            param_type: ParameterType::Bool,
-            range: ParameterRange {
-                min: 0.0,
-                max: 1.0,
-                default: 1.0,
-            },
-            unit: "",
-        }),
-        501 => Some(ParameterInfo {
-            id: 501,
-            name: "band[4].filter_type",
-            param_type: ParameterType::Enum { count: 5 },
-            range: ParameterRange {
-                min: 0.0,
-                max: 4.0,
-                default: 0.0,
-            },
-            unit: "",
-        }),
-        502 => Some(ParameterInfo {
-            id: 502,
-            name: "band[4].frequency_hz",
-            param_type: ParameterType::Continuous,
-            range: ParameterRange {
-                min: 20.0,
-                max: 20000.0,
-                default: 1000.0,
-            },
-            unit: "Hz",
-        }),
-        503 => Some(ParameterInfo {
-            id: 503,
-            name: "band[4].gain_db",
-            param_type: ParameterType::Continuous,
-            range: ParameterRange {
-                min: -24.0,
-                max: 24.0,
-                default: 0.0,
-            },
-            unit: "dB",
-        }),
-        504 => Some(ParameterInfo {
-            id: 504,
-            name: "band[4].q",
-            param_type: ParameterType::Continuous,
-            range: ParameterRange {
-                min: 0.1,
-                max: 20.0,
-                default: std::f32::consts::FRAC_1_SQRT_2,
-            },
-            unit: "Q",
-        }),
-        505 => Some(ParameterInfo {
-            id: 505,
-            name: "band[4].slope",
-            param_type: ParameterType::Enum { count: 4 },
-            range: ParameterRange {
-                min: 0.0,
-                max: 3.0,
-                default: 1.0,
-            },
-            unit: "dB/oct",
-        }),
-        // Band 5 (600–699)
-        600 => Some(ParameterInfo {
-            id: 600,
-            name: "band[5].enabled",
-            param_type: ParameterType::Bool,
-            range: ParameterRange {
-                min: 0.0,
-                max: 1.0,
-                default: 1.0,
-            },
-            unit: "",
-        }),
-        601 => Some(ParameterInfo {
-            id: 601,
-            name: "band[5].filter_type",
-            param_type: ParameterType::Enum { count: 5 },
-            range: ParameterRange {
-                min: 0.0,
-                max: 4.0,
-                default: 0.0,
-            },
-            unit: "",
-        }),
-        602 => Some(ParameterInfo {
-            id: 602,
-            name: "band[5].frequency_hz",
-            param_type: ParameterType::Continuous,
-            range: ParameterRange {
-                min: 20.0,
-                max: 20000.0,
-                default: 1000.0,
-            },
-            unit: "Hz",
-        }),
-        603 => Some(ParameterInfo {
-            id: 603,
-            name: "band[5].gain_db",
-            param_type: ParameterType::Continuous,
-            range: ParameterRange {
-                min: -24.0,
-                max: 24.0,
-                default: 0.0,
-            },
-            unit: "dB",
-        }),
-        604 => Some(ParameterInfo {
-            id: 604,
-            name: "band[5].q",
-            param_type: ParameterType::Continuous,
-            range: ParameterRange {
-                min: 0.1,
-                max: 20.0,
-                default: std::f32::consts::FRAC_1_SQRT_2,
-            },
-            unit: "Q",
-        }),
-        605 => Some(ParameterInfo {
-            id: 605,
-            name: "band[5].slope",
-            param_type: ParameterType::Enum { count: 4 },
-            range: ParameterRange {
-                min: 0.0,
-                max: 3.0,
-                default: 1.0,
-            },
-            unit: "dB/oct",
-        }),
-        // Band 6 (700–799)
-        700 => Some(ParameterInfo {
-            id: 700,
-            name: "band[6].enabled",
-            param_type: ParameterType::Bool,
-            range: ParameterRange {
-                min: 0.0,
-                max: 1.0,
-                default: 1.0,
-            },
-            unit: "",
-        }),
-        701 => Some(ParameterInfo {
-            id: 701,
-            name: "band[6].filter_type",
-            param_type: ParameterType::Enum { count: 5 },
-            range: ParameterRange {
-                min: 0.0,
-                max: 4.0,
-                default: 0.0,
-            },
-            unit: "",
-        }),
-        702 => Some(ParameterInfo {
-            id: 702,
-            name: "band[6].frequency_hz",
-            param_type: ParameterType::Continuous,
-            range: ParameterRange {
-                min: 20.0,
-                max: 20000.0,
-                default: 1000.0,
-            },
-            unit: "Hz",
-        }),
-        703 => Some(ParameterInfo {
-            id: 703,
-            name: "band[6].gain_db",
-            param_type: ParameterType::Continuous,
-            range: ParameterRange {
-                min: -24.0,
-                max: 24.0,
-                default: 0.0,
-            },
-            unit: "dB",
-        }),
-        704 => Some(ParameterInfo {
-            id: 704,
-            name: "band[6].q",
-            param_type: ParameterType::Continuous,
-            range: ParameterRange {
-                min: 0.1,
-                max: 20.0,
-                default: std::f32::consts::FRAC_1_SQRT_2,
-            },
-            unit: "Q",
-        }),
-        705 => Some(ParameterInfo {
-            id: 705,
-            name: "band[6].slope",
-            param_type: ParameterType::Enum { count: 4 },
-            range: ParameterRange {
-                min: 0.0,
-                max: 3.0,
-                default: 1.0,
-            },
-            unit: "dB/oct",
-        }),
-        // Band 7 (800–899)
-        800 => Some(ParameterInfo {
-            id: 800,
-            name: "band[7].enabled",
-            param_type: ParameterType::Bool,
-            range: ParameterRange {
-                min: 0.0,
-                max: 1.0,
-                default: 1.0,
-            },
-            unit: "",
-        }),
-        801 => Some(ParameterInfo {
-            id: 801,
-            name: "band[7].filter_type",
-            param_type: ParameterType::Enum { count: 5 },
-            range: ParameterRange {
-                min: 0.0,
-                max: 4.0,
-                default: 0.0,
-            },
-            unit: "",
-        }),
-        802 => Some(ParameterInfo {
-            id: 802,
-            name: "band[7].frequency_hz",
-            param_type: ParameterType::Continuous,
-            range: ParameterRange {
-                min: 20.0,
-                max: 20000.0,
-                default: 1000.0,
-            },
-            unit: "Hz",
-        }),
-        803 => Some(ParameterInfo {
-            id: 803,
-            name: "band[7].gain_db",
-            param_type: ParameterType::Continuous,
-            range: ParameterRange {
-                min: -24.0,
-                max: 24.0,
-                default: 0.0,
-            },
-            unit: "dB",
-        }),
-        804 => Some(ParameterInfo {
-            id: 804,
-            name: "band[7].q",
-            param_type: ParameterType::Continuous,
-            range: ParameterRange {
-                min: 0.1,
-                max: 20.0,
-                default: std::f32::consts::FRAC_1_SQRT_2,
-            },
-            unit: "Q",
-        }),
-        805 => Some(ParameterInfo {
-            id: 805,
-            name: "band[7].slope",
+        5 => Some(ParameterInfo {
+            id,
+            name: NAMES[band_idx as usize][5],
             param_type: ParameterType::Enum { count: 4 },
             range: ParameterRange {
                 min: 0.0,

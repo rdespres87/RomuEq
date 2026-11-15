@@ -23,7 +23,7 @@ mod windows {
         persist_preset_to_disk, populate_factory_presets, remove_preset_from_disk,
     };
     use equaform_gui::workspace_ui::{
-        HostEnvironment, WorkspaceAction, WorkspaceUiState, render_workspace,
+        HostEnvironment, WorkspaceAction, WorkspaceUiContext, WorkspaceUiState, render_workspace,
     };
     use equaform_gui::{AnalysisSnapshot, GuiCommandBatch, ParamSnapshot, ParamValue};
     use raw_window_handle::{
@@ -448,18 +448,17 @@ mod windows {
                             .inner_margin(8.0),
                     )
                     .show(ctx, |ui| {
-                        let (b, a) = render_workspace(
-                            ui,
-                            &mut self.ui_state,
-                            &env,
-                            &eq.bands,
+                        let ws_ctx = WorkspaceUiContext {
+                            env: &env,
+                            band_params: &eq.bands,
                             sample_rate,
-                            &snapshot,
-                            &analysis,
-                            &self.preset_manager,
-                            &self.current_preset,
-                            self.status_message.as_deref(),
-                        );
+                            snapshot: &snapshot,
+                            analysis: &analysis,
+                            preset_manager: &self.preset_manager,
+                            current_preset: &self.current_preset,
+                            status_message: self.status_message.as_deref(),
+                        };
+                        let (b, a) = render_workspace(ui, &mut self.ui_state, &ws_ctx);
                         out_batch = b;
                         out_actions = a;
                     });
