@@ -81,3 +81,16 @@
   - [x] [P3-4] Deterministic discrete frame streaming test replacing flaky `thread::sleep`
   - [x] 100% test pass (377 tests passing), 0 warnings clippy, clean format, AU validation passed (`AU VALIDATION SUCCEEDED`)
   - [x] Commit changes to git repository (`cba6a6c`)
+- [x] Target Directory Disk Space Optimization:
+  - [x] DWARF debuginfo strip for dependencies in `[profile.dev.package."*"] debug = 0`
+  - [x] Sweep script `scripts/clean-target.sh` with `cargo-sweep` v0.8.0
+  - [x] Target folder reduced from 14 GB to 2.7 GB (81% reduction)
+  - [x] Commit changes to git repository (`47c8e6a`)
+- [x] Performance, Energy & Memory Optimization (Standalone & DAW Plugins):
+  - [x] In-place zero-allocation spectrum analysis (`process_ref`, `process_into`, persistent buffers in `StandaloneRunner`, `CocoaEditor`, `Win32Editor`)
+  - [x] Eradicate synthetic heap vector allocation in `EngineClient::analysis_snapshot`
+  - [x] Adaptive background GUI throttling (60 FPS interactive, 15 FPS unfocused, 0 FPS occluded/minimized) with zero input latency priority
+  - [x] Ring buffer resynchronization on wakeup to prevent stale audio visualization
+  - [x] FFT idle sleep on DAW transport stop (`!popped_any` counter) and audio silence (-90 dBFS / -84 dBFS Schmitt trigger)
+  - [x] 378 unit and integration tests passing, 0 clippy warnings, AUv2 validation passed (`AU VALIDATION SUCCEEDED`)
+  - [x] Commit changes to git repository (`25b517c`)

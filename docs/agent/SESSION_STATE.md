@@ -1,7 +1,27 @@
 # Session State - Equaform-8 (Equaform)
 
 **Date:** 2026-11-15  
-**Status:** ALL TESTS GREEN (377 tests passing, 0 failures), ADR-007 REAL-TIME SAFETY AUDIT IMPLEMENTED, ZERO ALLOCATION IN DSP/AUDIO CALLBACK
+**Status:** ALL TESTS GREEN (378 tests passing, 0 failures), ADR-007 REAL-TIME SAFETY AUDIT IMPLEMENTED, ZERO ALLOCATION IN DSP/AUDIO CALLBACK, ADAPTIVE GUI THROTTLING & ENERGY OPTIMIZATION
+
+## Performance, Energy & Memory Optimization (Standalone & DAW Plugins)
+- **Zero-Allocation Spectrum Analysis (`crates/equaform-analysis/src/lib.rs` & `crates/equaform-gui/`):**
+  - Added `process_ref(&mut self, ...)` and `process_into(&mut self, ...)` reusing internal frequency bin and EMA smoothing buffers without vector reallocations.
+  - Eradicated 128-point dummy heap vector allocation in `EngineClient::analysis_snapshot()`.
+  - Added persistent pre-allocated `analysis` instances and `sample_buffer` in `StandaloneRunner` (`crates/equaform-gui/src/lib.rs`), `CocoaEditor` (`crates/equaform-plugin/src/editor/cocoa.rs`), and `Win32Editor` (`crates/equaform-plugin/src/editor/win32.rs`).
+- **Adaptive Background GUI Throttling (60 FPS -> 15 FPS -> 0 FPS):**
+  - **Zero Input Latency Priority:** Mouse movement, clicks, drags, or pending events immediately trigger full 60 FPS redraw with zero input lag.
+  - **Standalone Mode:** 60 FPS while focused; throttles to 15 FPS (`request_repaint_after(66ms)`) when unfocused/background; drops to 0 FPS when minimized/hidden.
+  - **DAW Plugin Mode (Cocoa & Win32):** Active check `is_key || is_main || mouse_inside || has_pending_events` ensures 60 FPS during user interaction; throttles to 15 FPS when inactive/unfocused; suspends redraws (0 FPS) when occluded, hidden, or minimized.
+  - **Ring Buffer Resynchronization:** When waking up from 0 FPS dormancy (or when ring buffer fullness exceeds 50%), instant consumer flush (`consumer.clear()` & `fft_ring.clear()`) realigns spectrum visualization with live incoming sound, preventing temporal drift.
+- **FFT Idle Sleep on Transport Stop & Silence:**
+  - DAW transport stop detection via `!popped_any` counter ($\ge 15$ ticks without new audio blocks).
+  - Schmitt trigger hysteresis (-90 dBFS sleep threshold, -84 dBFS wake threshold).
+  - Bypasses FFT computation and logarithmic binning when audio is silent or transport is halted.
+
+## Target Directory Optimization (Freeing 11.3 GB)
+- Configured `Cargo.toml` with `[profile.dev] debug = 1` and `[profile.dev.package."*"] debug = 0` (and `profile.test`), stripping DWARF symbols from 300+ third-party dependencies while preserving full project debuggability.
+- Purged cross-compilation caches and installed `cargo-sweep` v0.8.0.
+- Created `scripts/clean-target.sh`. Total `target/` directory size reduced from 14 GB to 2.7 GB (81% reduction; `target/debug` reduced from 9.4 GB to 1.2 GB).
 
 ## ADR-007 Real-Time Safety & Architecture Hardening
 - **Lock-Free Triple Buffer (`crates/equaform-common/src/triple_buffer.rs`)**:

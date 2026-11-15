@@ -26,15 +26,20 @@
   - Portability: dynamic physical device resolution via CoreAudio HAL native `kAudioHardwarePropertyDefaultOutputDevice`, eliminating hardcoded French strings (`"Haut-parleurs"`).
   - Deterministic audio tests: discrete frame simulation in `audio.rs`, reducing test runtime from 1.2s to <10ms with zero flakiness.
 - **Verification**:
-  - `cargo test --workspace --all-features` (377 tests passing, 0 failures).
+  - `cargo test --workspace --all-features` (378 tests passing, 0 failures).
   - `cargo clippy --workspace --all-targets --all-features -- -D warnings` (clean, 0 warnings).
   - `cargo fmt --all -- --check` (clean).
   - Apple `auval -v aufx Eqf8 Eqfm` (`AU VALIDATION SUCCEEDED`).
+- **Performance & Energy Optimizations**:
+  - Zero-allocation spectrum processing (`process_ref`, `process_into`, static buffer reuse).
+  - Adaptive GUI throttling (60 FPS active, 15 FPS unfocused, 0 FPS occluded/minimized with immediate ring-buffer resync).
+  - Transport stop and silence detection with Schmitt trigger hysteresis (-90 dBFS / -84 dBFS), bypassing FFT computation during silence.
 - **Git Commits**:
   - `cba6a6c` — `feat(audio, architecture): ADR-007 real-time safety, lock-free triple buffer, zero-allocation automation, and context structs`
+  - `47c8e6a` — `chore(cargo): optimize target disk usage with selective debuginfo and sweep script`
+  - `25b517c` — `perf(gui, plugin): adaptive background throttling, zero-allocation spectrum, and FFT idle sleep`
   - Current branch: `main`
 
 ## Next Logical Action
 1. Test the freshly built and installed standalone application (`open target/release/bundle/Equaform-8.app`) or DAW plugins (in Logic Pro, Ableton Live, Bitwig, Reaper).
-2. If desired, push to GitHub (`git push origin main`) to trigger CI validation on GitHub Actions.
-3. Proceed to Option A (DSP Pro Features: Mid/Side processing, Band Listen/Solo mode, and Linear-phase EQ) or Option B (Frequency piano keyboard and vector resizable GUI).
+2. Proceed to Option A (DSP Pro Features: Mid/Side processing, Band Listen/Solo mode, and Linear-phase EQ) or Option B (Frequency piano keyboard and vector resizable GUI).
