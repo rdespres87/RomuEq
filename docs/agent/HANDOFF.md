@@ -30,6 +30,9 @@
   - `cargo clippy --workspace --all-targets --all-features -- -D warnings` (clean, 0 warnings).
   - `cargo fmt --all -- --check` (clean).
   - Apple `auval -v aufx Eqf8 Eqfm` (`AU VALIDATION SUCCEEDED`).
+  - Automated CI Code Coverage via `cargo-llvm-cov` with $\ge 90\%$ line coverage enforced on core crates (`equaform-common`, `equaform-dsp`, `equaform-analysis`, `equaform-engine`).
+- **Methodology & Standards**:
+  - Spec-Driven TDD Protocol documented in `docs/development/TDD_METHODOLOGY.md` (Spec/ADR -> Red -> Green -> Refactor -> Gate).
 - **Performance & Energy Optimizations**:
   - Zero-allocation spectrum processing (`process_ref`, `process_into`, static buffer reuse).
   - Adaptive GUI throttling (60 FPS active, 15 FPS unfocused, 0 FPS occluded/minimized with immediate ring-buffer resync).

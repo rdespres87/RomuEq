@@ -94,3 +94,7 @@
   - [x] FFT idle sleep on DAW transport stop (`!popped_any` counter) and audio silence (-90 dBFS / -84 dBFS Schmitt trigger)
   - [x] 378 unit and integration tests passing, 0 clippy warnings, AUv2 validation passed (`AU VALIDATION SUCCEEDED`)
   - [x] Commit changes to git repository (`25b517c`)
+- [x] Spec-Driven TDD Architecture & Automated CI Coverage:
+  - [x] Formalize Spec-Driven TDD protocol in `docs/development/TDD_METHODOLOGY.md`
+  - [x] Update `AI_DEVELOPMENT_PROTOCOL.md` and `TEST_STRATEGY.md` with strict Red-Green-Refactor cycle
+  - [x] Integrate `coverage` job in `.github/workflows/ci.yml` via `cargo-llvm-cov` with `>= 90%` line coverage gate on core DSP & engine crates

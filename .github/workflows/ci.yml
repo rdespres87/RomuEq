@@ -52,6 +52,44 @@ jobs:
       - name: Run Clippy (portable crates)
         run: cargo clippy --workspace --exclude equaform-standalone -- -D warnings
 
+  coverage:
+    name: Coverage & Quality Gate (Linux x64)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Install Linux audio dev libraries
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
+
+      - name: Core DSP & Engine Coverage (Threshold >= 90%)
+        run: |
+          cargo llvm-cov \
+            -p equaform-common \
+            -p equaform-dsp \
+            -p equaform-analysis \
+            -p equaform-engine \
+            --fail-under-lines 90 \
+            --text
+
+      - name: Workspace Coverage Summary
+        if: always()
+        run: |
+          echo "### 📊 Code Coverage Summary" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cargo llvm-cov --workspace --exclude equaform-standalone --text >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
   macos:
     name: Tests, Clippy & Bundles (macOS Apple Silicon)
     runs-on: macos-latest

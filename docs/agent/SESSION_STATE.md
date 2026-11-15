@@ -3,6 +3,16 @@
 **Date:** 2026-11-15  
 **Status:** ALL TESTS GREEN (378 tests passing, 0 failures), ADR-007 REAL-TIME SAFETY AUDIT IMPLEMENTED, ZERO ALLOCATION IN DSP/AUDIO CALLBACK, ADAPTIVE GUI THROTTLING & ENERGY OPTIMIZATION
 
+## Spec-Driven TDD & Automated CI Coverage
+- **Formalized TDD Architecture Protocol (`docs/development/TDD_METHODOLOGY.md`)**:
+  - Requires all development to start from specifications and architecture decisions (ADRs, real-time invariants ADR-007, mathematical bounds).
+  - Strict 5-phase lifecycle: Spec/Architecture -> Red (Failing tests first) -> Green (Minimal passing code) -> Refactor (Zero allocations, SIMD, Clippy clean) -> Verification Gate.
+  - Updated `docs/development/AI_DEVELOPMENT_PROTOCOL.md` and `docs/development/TEST_STRATEGY.md`.
+- **Automated CI Coverage Gate (`.github/workflows/ci.yml`)**:
+  - Added `coverage` job running `cargo-llvm-cov` with `taiki-e/install-action@cargo-llvm-cov`.
+  - Core DSP & Engine threshold enforcement: `--fail-under-lines 90` across `equaform-common`, `equaform-dsp`, `equaform-analysis`, and `equaform-engine`.
+  - Continuous step summary reporting of workspace coverage directly into GitHub Actions UI.
+
 ## Performance, Energy & Memory Optimization (Standalone & DAW Plugins)
 - **Zero-Allocation Spectrum Analysis (`crates/equaform-analysis/src/lib.rs` & `crates/equaform-gui/`):**
   - Added `process_ref(&mut self, ...)` and `process_into(&mut self, ...)` reusing internal frequency bin and EMA smoothing buffers without vector reallocations.

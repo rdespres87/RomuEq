@@ -28,6 +28,13 @@ Coefficient generation is finite and bounded for all accepted parameters. Filter
 
 Save/load is lossless for the supported schema within documented serialization constraints. Unknown future fields are handled according to the schema policy. Version migration is tested.
 
+## Code Coverage & TDD Gates
+
+Development strictly follows the Spec-Driven TDD methodology detailed in `docs/development/TDD_METHODOLOGY.md`.
+Code coverage is tracked via `cargo-llvm-cov` and enforced in CI:
+- **Core Real-Time & DSP Crates** (`equaform-dsp`, `equaform-engine`, `equaform-analysis`, `equaform-common`): **$\ge 90\%$ line coverage required**.
+- **Workspace Overall**: Continuously reported in GitHub Actions step summaries.
+
 ## Allocation testing
 
 Use an allocation-counting test harness for engine processing and prove zero allocations over representative block sequences. The harness must distinguish setup-time allocations from `process()` allocations.

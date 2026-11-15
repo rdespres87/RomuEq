@@ -36,10 +36,11 @@ If multiple tasks are independent, prefer the task with P0 priority, then the ta
 
 ### During implementation
 
+- Strictly adhere to the Spec-Driven TDD Protocol (`docs/development/TDD_METHODOLOGY.md`): Write failing tests first (Red), implement minimal passing code (Green), then optimize without allocations (Refactor).
 - Keep changes local to the task.
 - Preserve existing public contracts.
 - Prefer the smallest safe implementation.
-- Add tests at the same time as behavior.
+- Enforce core test coverage thresholds (>= 90% on DSP/Engine/Analysis/Common crates).
 - Record any discovered issue in `RISK_REGISTER.md` rather than silently changing scope.
 
 ### After implementation
