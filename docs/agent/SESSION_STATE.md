@@ -3,6 +3,11 @@
 **Date:** 2026-11-15  
 **Status:** ALL TESTS GREEN (378 tests passing, 0 failures), ADR-007 REAL-TIME SAFETY AUDIT IMPLEMENTED, ZERO ALLOCATION IN DSP/AUDIO CALLBACK, ADAPTIVE GUI THROTTLING & ENERGY OPTIMIZATION
 
+## Core Operational Constraints
+- **NO GIT PUSH WITHOUT EXPLICIT STANDALONE USER AUTHORIZATION**: Never run `git push` unless the user explicitly requests it in a specific, dedicated turn. Commits must remain local to preserve GitHub Actions CI runner quota.
+- **SECURITY GATE 3 COMMIT AUTHORIZATION**: Always require explicit user confirmation before creating any git commit.
+- **SCOPE RESTRICTION**: Standalone app (`Equaform-8.app`) and CoreAudio HAL driver (`Equaform.driver`) strictly reserved for personal use; release deliverables restricted to DAW plugins (CLAP, VST3, AUv2) and factory presets.
+
 ## Spec-Driven TDD & Automated CI Coverage
 - **Formalized TDD Architecture Protocol (`docs/development/TDD_METHODOLOGY.md`)**:
   - Requires all development to start from specifications and architecture decisions (ADRs, real-time invariants ADR-007, mathematical bounds).

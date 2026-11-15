@@ -41,7 +41,12 @@
   - `cba6a6c` — `feat(audio, architecture): ADR-007 real-time safety, lock-free triple buffer, zero-allocation automation, and context structs`
   - `47c8e6a` — `chore(cargo): optimize target disk usage with selective debuginfo and sweep script`
   - `25b517c` — `perf(gui, plugin): adaptive background throttling, zero-allocation spectrum, and FFT idle sleep`
+  - `4dde1e9` — `ci(coverage): add cargo-llvm-cov 90% gate and formalize spec-driven TDD protocol`
   - Current branch: `main`
+
+## Operational Invariants & CI Quota Preservation
+- **NEVER PUSH WITHOUT STANDALONE EXPLICIT AUTHORIZATION**: Do not run `git push` unless specifically asked by the user in a dedicated command. Commits must remain local to preserve GitHub Actions runners minutes.
+- **SECURITY GATE 3**: Every commit must be authorized by the user.
 
 ## Next Logical Action
 1. Test the freshly built and installed standalone application (`open target/release/bundle/Equaform-8.app`) or DAW plugins (in Logic Pro, Ableton Live, Bitwig, Reaper).
