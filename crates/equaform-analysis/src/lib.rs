@@ -688,6 +688,14 @@ pub struct SpectrumProcessor {
     input_buffer: Vec<f32>,
     /// Complex buffer for FFT in-place operation.
     complex_buffer: Vec<Complex<f32>>,
+    /// Pre-allocated buffer for linear magnitudes.
+    magnitudes: Vec<f32>,
+    /// Pre-allocated buffer for dB magnitudes.
+    magnitudes_db: Vec<f32>,
+    /// Pre-allocated buffer for log group bin counting.
+    log_group_counts: Vec<usize>,
+    /// Pre-allocated reusable output frame.
+    frame: SpectrumFrame,
 }
 
 impl std::fmt::Debug for SpectrumProcessor {
@@ -725,6 +733,11 @@ impl SpectrumProcessor {
         let (log_linear, _, num_groups) = SpectrumFrame::empty_log_bins(&config);
         let _log_linear = log_linear; // keep for buffer sizing if needed
 
+        let magnitudes = vec![0.0_f32; num_bins];
+        let magnitudes_db = vec![config.min_db; num_bins];
+        let log_group_counts = vec![0usize; num_groups];
+        let frame = SpectrumFrame::empty(&config);
+
         Self {
             config,
             fft_size,
@@ -736,6 +749,10 @@ impl SpectrumProcessor {
             prev_magnitudes: vec![0.0_f32; num_bins],
             input_buffer: vec![0.0_f32; fft_size],
             complex_buffer: vec![Complex { re: 0.0, im: 0.0 }; fft_size],
+            magnitudes,
+            magnitudes_db,
+            log_group_counts,
+            frame,
         }
     }
 
@@ -771,15 +788,19 @@ impl SpectrumProcessor {
             self.prev_magnitudes = vec![0.0_f32; num_bins];
             self.input_buffer = vec![0.0_f32; fft_size];
             self.complex_buffer = vec![Complex { re: 0.0, im: 0.0 }; fft_size];
+            self.magnitudes = vec![0.0_f32; num_bins];
+            self.magnitudes_db = vec![new_config.min_db; num_bins];
             self.fft_size = fft_size;
             self.num_bins = num_bins;
 
             // Recalculate log groups
             let (_, _, num_groups) = SpectrumFrame::empty_log_bins(&new_config);
             self.num_log_groups = num_groups;
+            self.log_group_counts = vec![0usize; num_groups];
         }
 
         self.config = new_config;
+        self.frame = SpectrumFrame::empty(&self.config);
     }
 
     /// Returns the number of log groups.
@@ -826,6 +847,30 @@ impl SpectrumProcessor {
         sample_rate: f64,
         frame_number: u64,
     ) -> SpectrumFrame {
+        self.process_ref(samples, sample_rate, frame_number).clone()
+    }
+
+    /// Performs FFT analysis on the input samples with zero heap allocation,
+    /// populating an existing `SpectrumFrame`.
+    pub fn process_into(
+        &mut self,
+        samples: &[f32],
+        sample_rate: f64,
+        frame_number: u64,
+        out: &mut SpectrumFrame,
+    ) {
+        let frame = self.process_ref(samples, sample_rate, frame_number);
+        out.clone_from(frame);
+    }
+
+    /// Performs FFT analysis on the input samples with zero heap allocation,
+    /// returning a reference to the internal reusable `SpectrumFrame`.
+    pub fn process_ref(
+        &mut self,
+        samples: &[f32],
+        sample_rate: f64,
+        frame_number: u64,
+    ) -> &SpectrumFrame {
         let fft_size = self.fft_size;
 
         // Copy and window the input.
@@ -849,17 +894,15 @@ impl SpectrumProcessor {
         // Perform FFT in-place.
         self.fft.process(&mut self.complex_buffer);
 
-        // Compute magnitudes from complex FFT output.
-        let mut magnitudes = vec![0.0_f32; self.num_bins];
-
+        // Compute magnitudes from complex FFT output into pre-allocated buffer.
         for (bin, comp) in self.complex_buffer.iter().take(self.num_bins).enumerate() {
-            magnitudes[bin] = (comp.re * comp.re + comp.im * comp.im).sqrt();
+            self.magnitudes[bin] = (comp.re * comp.re + comp.im * comp.im).sqrt();
         }
 
         // Apply equal-power normalization for window type.
         let window_energy = self.compute_window_energy();
         if window_energy > 0.0 {
-            for m in magnitudes.iter_mut() {
+            for m in self.magnitudes.iter_mut() {
                 *m /= window_energy;
             }
         }
@@ -867,37 +910,36 @@ impl SpectrumProcessor {
         // Apply EMA smoothing across frames (skip on first frame to avoid all-zero output).
         if self.first_frame {
             self.first_frame = false;
-            self.prev_magnitudes.clone_from(&magnitudes);
+            self.prev_magnitudes.copy_from_slice(&self.magnitudes);
         } else {
             let alpha = self.config.smoothing_factor;
-            for (prev, cur) in self.prev_magnitudes.iter_mut().zip(magnitudes.iter()) {
+            for (prev, cur) in self.prev_magnitudes.iter_mut().zip(self.magnitudes.iter()) {
                 *prev = alpha * cur + (1.0 - alpha) * (*prev);
             }
         }
-        magnitudes = self.prev_magnitudes.clone();
+        self.magnitudes.copy_from_slice(&self.prev_magnitudes);
 
         // Convert to dB.
         let min_db = self.config.min_db;
-        let magnitudes_db: Vec<f32> = magnitudes
-            .iter()
-            .map(|m| if *m < 1e-30 { min_db } else { 20.0 * m.log10() })
-            .map(|db| db.max(min_db))
-            .collect();
+        for (bin, &m) in self.magnitudes.iter().enumerate() {
+            let db = if m < 1e-30 { min_db } else { 20.0 * m.log10() };
+            self.magnitudes_db[bin] = db.max(min_db);
+        }
 
-        // Compute log-binned magnitudes.
-        let (log_binned_linear, log_binned_db, num_groups) =
-            self.compute_log_bins(&magnitudes, &magnitudes_db, sample_rate);
+        // Compute log-binned magnitudes directly into self.frame.
+        self.compute_log_bins_into(sample_rate);
 
-        let mut frame = SpectrumFrame::empty(&self.config);
-        frame.sample_rate = sample_rate;
-        frame.frame_number = frame_number;
-        frame.magnitudes_linear = magnitudes;
-        frame.magnitudes_db = magnitudes_db;
-        frame.log_binned_magnitudes_linear = log_binned_linear;
-        frame.log_binned_magnitudes_db = log_binned_db;
-        frame.num_log_groups = num_groups;
+        self.frame.sample_rate = sample_rate;
+        self.frame.frame_number = frame_number;
+        self.frame
+            .magnitudes_linear
+            .copy_from_slice(&self.magnitudes);
+        self.frame
+            .magnitudes_db
+            .copy_from_slice(&self.magnitudes_db);
+        self.frame.num_log_groups = self.num_log_groups;
 
-        frame
+        &self.frame
     }
 
     /// Computes the window energy for equal-power normalization.
@@ -906,57 +948,44 @@ impl SpectrumProcessor {
         (sum_sq / self.fft_size as f32).sqrt()
     }
 
-    /// Groups linear bins into log-scaled frequency bands.
-    fn compute_log_bins(
-        &self,
-        linear_mag: &[f32],
-        _linear_db: &[f32],
-        sample_rate: f64,
-    ) -> (Vec<f32>, Vec<f32>, usize) {
-        if self.config.log_bin_mode == LogBinMode::None {
-            return (Vec::new(), Vec::new(), 0);
+    /// Groups linear bins into log-scaled frequency bands directly into `self.frame`.
+    fn compute_log_bins_into(&mut self, sample_rate: f64) {
+        if self.config.log_bin_mode == LogBinMode::None || self.num_log_groups == 0 {
+            return;
         }
 
         let num_groups = self.num_log_groups;
-        if num_groups == 0 {
-            return (Vec::new(), Vec::new(), 0);
-        }
+        let min_db = self.config.min_db;
 
-        let mut group_mags = vec![0.0_f32; num_groups];
-        let mut group_counts = vec![0usize; num_groups];
+        self.frame.log_binned_magnitudes_linear.fill(0.0);
+        self.log_group_counts.fill(0);
 
-        for (bin, &mag) in linear_mag.iter().enumerate().take(self.num_bins) {
+        for (bin, &mag) in self.magnitudes.iter().enumerate().take(self.num_bins) {
             let freq = self.bin_frequency(sample_rate, bin);
             let group = self.freq_to_log_group(freq);
             if group < num_groups {
-                // Accumulate in linear domain (power sum).
-                group_mags[group] += mag * mag;
-                group_counts[group] += 1;
+                self.frame.log_binned_magnitudes_linear[group] += mag * mag;
+                self.log_group_counts[group] += 1;
             }
         }
 
-        // Convert power sums to magnitude (average then sqrt).
-        let log_linear: Vec<f32> = group_mags
-            .iter()
-            .zip(group_counts.iter())
-            .map(|(sum, count)| {
-                if *count > 0 {
-                    (*sum / *count as f32).sqrt()
+        for group in 0..num_groups {
+            let count = self.log_group_counts[group];
+            if count > 0 {
+                let sum = self.frame.log_binned_magnitudes_linear[group];
+                let lin = (sum / count as f32).sqrt();
+                self.frame.log_binned_magnitudes_linear[group] = lin;
+                let db = if lin < 1e-30 {
+                    min_db
                 } else {
-                    0.0
-                }
-            })
-            .collect();
-
-        // Convert to dB.
-        let min_db = self.config.min_db;
-        let log_db: Vec<f32> = log_linear
-            .iter()
-            .map(|m| if *m < 1e-30 { min_db } else { 20.0 * m.log10() })
-            .map(|db| db.max(min_db))
-            .collect();
-
-        (log_linear, log_db, num_groups)
+                    20.0 * lin.log10()
+                };
+                self.frame.log_binned_magnitudes_db[group] = db.max(min_db);
+            } else {
+                self.frame.log_binned_magnitudes_linear[group] = 0.0;
+                self.frame.log_binned_magnitudes_db[group] = min_db;
+            }
+        }
     }
 }
 
@@ -1784,6 +1813,26 @@ mod tests {
         // Second process call — should produce identical bin count.
         let _frame2 = processor.process(&samples, 44100.0, 1);
         assert_eq!(_frame2.num_bins, 512 / 2 + 1);
+    }
+
+    #[test]
+    fn test_spectrum_process_ref_and_process_into() {
+        let config = SpectrumConfig::new(512, 44100.0);
+        let mut processor = SpectrumProcessor::new(config.clone());
+        let samples = vec![0.25_f32; 512];
+
+        let (bins, len) = {
+            let ref_frame = processor.process_ref(&samples, 44100.0, 42);
+            assert_eq!(ref_frame.num_bins, 512 / 2 + 1);
+            assert_eq!(ref_frame.frame_number, 42);
+            (ref_frame.num_bins, ref_frame.magnitudes_linear.len())
+        };
+
+        let mut out_frame = SpectrumFrame::empty(&config);
+        processor.process_into(&samples, 44100.0, 43, &mut out_frame);
+        assert_eq!(out_frame.frame_number, 43);
+        assert_eq!(out_frame.num_bins, bins);
+        assert_eq!(out_frame.magnitudes_linear.len(), len);
     }
 
     #[test]

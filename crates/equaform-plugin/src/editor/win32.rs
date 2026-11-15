@@ -107,7 +107,6 @@ mod windows {
         spectrum_proc: SpectrumProcessor,
         fft_ring: VecDeque<f32>,
         spectrum_frame_num: u64,
-        idle_frames: u32,
         ui_state: WorkspaceUiState,
         preset_manager: PresetManager,
         current_preset: String,
@@ -118,6 +117,12 @@ mod windows {
         pending_events: Vec<egui::Event>,
         modifiers: egui::Modifiers,
         mouse_in_window: bool,
+        analysis: AnalysisSnapshot,
+        fft_sample_buffer: Vec<f32>,
+        frame_counter: u32,
+        was_in_zero_fps: bool,
+        silence_frames: u32,
+        idle_transport_frames: u32,
     }
 
     impl Win32EditorRuntime {
@@ -217,6 +222,12 @@ mod windows {
                 min_db: -120.0,
             });
 
+            let analysis = AnalysisSnapshot {
+                spectrum_data: Vec::with_capacity(513),
+                ..Default::default()
+            };
+            let fft_sample_buffer = Vec::with_capacity(FFT_SIZE);
+
             Some(Self {
                 hwnd,
                 shared,
@@ -231,7 +242,6 @@ mod windows {
                 spectrum_proc,
                 fft_ring: VecDeque::with_capacity(FFT_SIZE * 4),
                 spectrum_frame_num: 0,
-                idle_frames: 0,
                 ui_state: WorkspaceUiState::default(),
                 preset_manager,
                 current_preset: String::new(),
@@ -242,6 +252,12 @@ mod windows {
                 pending_events: Vec::new(),
                 modifiers: egui::Modifiers::default(),
                 mouse_in_window: false,
+                analysis,
+                fft_sample_buffer,
+                frame_counter: 0,
+                was_in_zero_fps: false,
+                silence_frames: 0,
+                idle_transport_frames: 0,
             })
         }
 
@@ -356,6 +372,14 @@ mod windows {
         fn render_frame(&mut self) {
             let sample_rate = self.shared.sample_rate().max(8000.0);
             let consumer = self.shared.ring_consumer();
+
+            // Ring buffer resynchronization upon waking up from 0 FPS or if buffer is >= 50% full
+            if self.was_in_zero_fps || consumer.available_read() >= (consumer.capacity() / 2) {
+                consumer.clear();
+                self.fft_ring.clear();
+                self.was_in_zero_fps = false;
+            }
+
             let mut tmp_l = [0.0f32; 512];
             let mut tmp_r = [0.0f32; 512];
             let mut popped_any = false;
@@ -375,40 +399,53 @@ mod windows {
             }
 
             if !popped_any {
-                self.idle_frames = self.idle_frames.saturating_add(1);
-                if self.idle_frames > 4 {
+                self.idle_transport_frames = self.idle_transport_frames.saturating_add(1);
+                if self.idle_transport_frames > 4 {
                     for s in self.fft_ring.iter_mut() {
                         *s *= 0.85;
                     }
                 }
             } else {
-                self.idle_frames = 0;
+                self.idle_transport_frames = 0;
             }
 
             let peak_levels_db = self.shared.peak_levels_db();
-            let mut analysis = AnalysisSnapshot::default();
-            analysis.peak[0] = peak_levels_db.0;
-            analysis.peak[1] = peak_levels_db.1;
-            analysis.rms[0] = peak_levels_db.0;
-            analysis.rms[1] = peak_levels_db.1;
+            self.analysis.peak[0] = peak_levels_db.0;
+            self.analysis.peak[1] = peak_levels_db.1;
+            self.analysis.rms[0] = peak_levels_db.0;
+            self.analysis.rms[1] = peak_levels_db.1;
 
-            if self.fft_ring.len() >= FFT_SIZE && self.idle_frames < 60 {
-                let samples: Vec<f32> = self.fft_ring.iter().copied().collect();
+            let max_peak = peak_levels_db.0.max(peak_levels_db.1);
+            let is_audio_silent = max_peak <= -90.0;
+            let is_idle = (self.idle_transport_frames >= 15) || is_audio_silent;
+
+            if is_idle {
+                self.silence_frames = self.silence_frames.saturating_add(1);
+            } else if max_peak > -84.0 {
+                self.silence_frames = 0;
+            }
+
+            if self.fft_ring.len() >= FFT_SIZE && self.silence_frames < 15 {
+                self.fft_sample_buffer.clear();
+                self.fft_sample_buffer.extend(self.fft_ring.iter().copied());
                 self.spectrum_frame_num += 1;
-                let frame = self.spectrum_proc.process(
-                    &samples,
+                let frame = self.spectrum_proc.process_ref(
+                    &self.fft_sample_buffer,
                     sample_rate as f64,
                     self.spectrum_frame_num,
                 );
                 let dft_norm_db = 20.0 * ((frame.fft_size as f64) * 0.5).log10();
-                analysis.spectrum_data = (0..frame.num_bins)
-                    .map(|b| {
+                self.analysis.spectrum_data.clear();
+                self.analysis
+                    .spectrum_data
+                    .extend((0..frame.num_bins).map(|b| {
                         [
                             frame.bin_frequency(b),
                             (frame.magnitudes_db[b] as f64) - dft_norm_db,
                         ]
-                    })
-                    .collect();
+                    }));
+            } else {
+                self.analysis.spectrum_data.clear();
             }
 
             let eq = self.shared.read_eq_parameters();
@@ -453,7 +490,7 @@ mod windows {
                             band_params: &eq.bands,
                             sample_rate,
                             snapshot: &snapshot,
-                            analysis: &analysis,
+                            analysis: &self.analysis,
                             preset_manager: &self.preset_manager,
                             current_preset: &self.current_preset,
                             status_message: self.status_message.as_deref(),
@@ -742,6 +779,32 @@ mod windows {
                 0
             }
             WM_TIMER => {
+                let root_hwnd = unsafe { GetAncestor(hwnd, GA_ROOT) };
+                let is_visible = unsafe { IsWindowVisible(hwnd) != 0 };
+                let is_iconic = if !root_hwnd.is_null() {
+                    unsafe { IsIconic(root_hwnd) != 0 }
+                } else {
+                    false
+                };
+
+                if !is_visible || is_iconic {
+                    runtime.was_in_zero_fps = true;
+                    return 0; // 0 FPS
+                }
+
+                let fg_hwnd = unsafe { GetForegroundWindow() };
+                let is_focused = fg_hwnd == root_hwnd || fg_hwnd == hwnd;
+                let has_pending_events = !runtime.pending_events.is_empty();
+                let is_active = is_focused || runtime.mouse_in_window || has_pending_events;
+
+                runtime.frame_counter = runtime.frame_counter.wrapping_add(1);
+
+                if has_pending_events {
+                    runtime.frame_counter = 0; // Force immediate frame
+                } else if !is_active && (runtime.frame_counter % 4 != 0) {
+                    return 0; // 15 FPS: drop 3 out of 4 frames in background
+                }
+
                 runtime.render_frame();
                 0
             }

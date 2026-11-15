@@ -1554,6 +1554,10 @@ pub mod standalone {
         spectrum_processor: equaform_analysis::SpectrumProcessor,
         spectrum_frame_num: u64,
         status_message: Option<String>,
+        analysis: AnalysisSnapshot,
+        sample_buffer: Vec<f32>,
+        silence_frames: u32,
+        was_in_zero_fps: bool,
     }
 
     impl<A: GuiApp> StandaloneRunner<A> {
@@ -1627,6 +1631,11 @@ pub mod standalone {
 
             let spectrum_config = equaform_analysis::SpectrumConfig::new(1024, 48000.0);
             let spectrum_processor = equaform_analysis::SpectrumProcessor::new(spectrum_config);
+            let analysis = AnalysisSnapshot {
+                spectrum_data: Vec::with_capacity(513),
+                ..Default::default()
+            };
+            let sample_buffer = Vec::with_capacity(2048);
 
             Self {
                 app,
@@ -1639,12 +1648,34 @@ pub mod standalone {
                 spectrum_processor,
                 spectrum_frame_num: 0,
                 status_message,
+                analysis,
+                sample_buffer,
+                silence_frames: 0,
+                was_in_zero_fps: false,
             }
         }
     }
 
     impl<A: GuiApp> App for StandaloneRunner<A> {
         fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+            let is_focused = ctx.input(|i| i.focused);
+            let is_minimized = ctx.input(|i| i.viewport().minimized.unwrap_or(false));
+            let has_interaction =
+                ctx.input(|i| i.pointer.any_down() || i.pointer.delta() != egui::Vec2::ZERO);
+
+            if is_minimized {
+                self.was_in_zero_fps = true;
+                ctx.request_repaint_after(std::time::Duration::from_millis(500));
+                return;
+            }
+
+            if self.was_in_zero_fps {
+                if let Some(ref audio) = self.audio_stream {
+                    audio.clear_spectrum_buffer();
+                }
+                self.was_in_zero_fps = false;
+            }
+
             ctx.set_visuals(egui::Visuals::dark());
 
             // Update DPI scaling.
@@ -1652,34 +1683,52 @@ pub mod standalone {
 
             // Query engine state.
             let _snapshot = self.client.snapshot();
-            let mut analysis = self.client.analysis_snapshot();
+            let engine_analysis = self.client.analysis_snapshot();
+            self.analysis.dropped = engine_analysis.dropped;
 
             // Compute real FFT spectrum from audio stream if running
             if self.audio_active {
                 if let Some(ref audio) = self.audio_stream {
-                    let samples = audio.get_latest_output_samples();
-                    if !samples.is_empty() {
+                    let (peak_l, peak_r) = audio.peak_levels_db();
+                    self.analysis.peak[0] = peak_l;
+                    self.analysis.peak[1] = peak_r;
+                    self.analysis.rms[0] = peak_l;
+                    self.analysis.rms[1] = peak_r;
+
+                    audio.copy_latest_output_samples(&mut self.sample_buffer);
+                    let max_peak = peak_l.max(peak_r);
+                    let is_silent = max_peak <= -90.0 || self.sample_buffer.is_empty();
+
+                    if is_silent {
+                        self.silence_frames = self.silence_frames.saturating_add(1);
+                    } else if max_peak > -84.0 {
+                        self.silence_frames = 0;
+                    }
+
+                    if self.silence_frames < 15 && !self.sample_buffer.is_empty() {
                         let sr = audio.sample_rate();
-                        let frame = self.spectrum_processor.process(
-                            &samples,
+                        let frame = self.spectrum_processor.process_ref(
+                            &self.sample_buffer,
                             sr as f64,
                             self.spectrum_frame_num,
                         );
                         self.spectrum_frame_num += 1;
-                        // Subtract unnormalized DFT gain 20*log10(N/2) (~54.18 dB for N=1024) so 1.0 full-scale = 0 dBFS
                         let dft_norm_db = 20.0 * ((frame.fft_size as f64) * 0.5).log10();
-                        analysis.spectrum_data = (0..frame.num_bins)
-                            .map(|b| {
+                        self.analysis.spectrum_data.clear();
+                        self.analysis
+                            .spectrum_data
+                            .extend((0..frame.num_bins).map(|b| {
                                 [
                                     frame.bin_frequency(b),
                                     (frame.magnitudes_db[b] as f64) - dft_norm_db,
                                 ]
-                            })
-                            .collect();
+                            }));
+                    } else {
+                        self.analysis.spectrum_data.clear();
                     }
                 }
             } else {
-                analysis.spectrum_data.clear();
+                self.analysis.spectrum_data.clear();
             }
 
             // Process any pending commands from client.
@@ -1724,7 +1773,7 @@ pub mod standalone {
                     band_params: &self.client.band_params,
                     sample_rate: self.client.sample_rate,
                     snapshot: &self.client.snapshot,
-                    analysis: &analysis,
+                    analysis: &self.analysis,
                     preset_manager: &self.client.preset_manager,
                     current_preset: &self.client._current_preset,
                     status_message: self.status_message.as_deref(),
@@ -1861,8 +1910,12 @@ pub mod standalone {
                 }
             }
 
-            // Repaint continuously for real-time response.
-            ctx.request_repaint();
+            // Repaint adaptively based on focus and user interaction.
+            if is_focused || has_interaction {
+                ctx.request_repaint();
+            } else {
+                ctx.request_repaint_after(std::time::Duration::from_millis(66));
+            }
         }
 
         fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
@@ -2421,81 +2474,11 @@ pub mod standalone {
                 dropped = frame.dropped;
             }
 
-            // Generate spectrum data from the current EQ frequency response.
-            // Without a real audio input (Phase 6), we render the filter curve
-            // as the spectrum so the user sees the EQ shape in real time.
-            let mut spectrum = Vec::new();
-            let sr = self.sample_rate;
-            let nyquist = sr * 0.5;
-            let num_bins = 128;
-            let log_min = 20.0_f64.log10();
-            let log_max = (nyquist as f64).log10();
-
-            // We use the band_params (which get updated from commands) to
-            // create a simple synthetic spectrum by evaluating the EQ response.
-            for i in 0..num_bins {
-                let t = if num_bins == 1 {
-                    0.5_f64
-                } else {
-                    i as f64 / (num_bins - 1) as f64
-                };
-                let freq = 10.0_f64.powf(log_min + t * (log_max - log_min));
-
-                // Compute magnitude at this frequency from the EQ bands.
-                let mut mag_db: f32 = 0.0;
-                for bp in &self.band_params {
-                    if !bp.enabled {
-                        continue;
-                    }
-                    let freq_f32 = bp.frequency_hz;
-                    let gain = bp.gain_db;
-                    let ft = bp.filter_type;
-
-                    // Simple approximation: apply the band's gain near its center freq.
-                    let ratio = (freq / freq_f32 as f64).log2().abs();
-                    let attenuation = match ft {
-                        equaform_common::FilterType::Bell => ratio * 2.0,
-                        equaform_common::FilterType::LowShelf => {
-                            if freq > freq_f32 as f64 {
-                                ratio * 0.5
-                            } else {
-                                0.0
-                            }
-                        }
-                        equaform_common::FilterType::HighShelf => {
-                            if freq < freq_f32 as f64 {
-                                ratio * 0.5
-                            } else {
-                                0.0
-                            }
-                        }
-                        equaform_common::FilterType::LowPass => {
-                            if freq > freq_f32 as f64 {
-                                ratio * 6.0
-                            } else {
-                                0.0
-                            }
-                        }
-                        equaform_common::FilterType::HighPass => {
-                            if freq < freq_f32 as f64 {
-                                ratio * 6.0
-                            } else {
-                                0.0
-                            }
-                        }
-                    };
-                    let mag = ((gain as f64) * (1.0 / (1.0 + attenuation))) as f32;
-                    mag_db += mag;
-                }
-
-                spectrum.push([freq, mag_db as f64]);
-            }
-
             AnalysisSnapshot {
                 rms,
                 peak,
                 dropped,
-                spectrum_data: spectrum,
+                spectrum_data: Vec::new(),
             }
         }
 

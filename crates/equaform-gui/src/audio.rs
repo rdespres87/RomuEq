@@ -791,6 +791,23 @@ impl AudioStream {
         }
     }
 
+    /// Copies the latest output samples into a pre-allocated vector for zero-allocation GUI analysis.
+    pub fn copy_latest_output_samples(&self, dest: &mut Vec<f32>) {
+        dest.clear();
+        dest.extend(
+            self.spectrum_samples
+                .iter()
+                .map(|s| f32::from_bits(s.load(Ordering::Relaxed))),
+        );
+    }
+
+    /// Resets the spectrum samples buffer to zero to prevent stale telemetry display on wake-up.
+    pub fn clear_spectrum_buffer(&self) {
+        for s in self.spectrum_samples.iter() {
+            s.store(0, Ordering::Relaxed);
+        }
+    }
+
     /// Returns a copy of the latest output samples for GUI spectrum analysis.
     pub fn get_latest_output_samples(&self) -> Vec<f32> {
         self.spectrum_samples

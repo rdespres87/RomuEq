@@ -32,7 +32,7 @@ mod macos {
     use objc2::{AnyThread, DefinedClass, MainThreadOnly, define_class, msg_send};
     use objc2_app_kit::{
         NSEvent, NSEventModifierFlags, NSPasteboard, NSPasteboardTypeString, NSResponder,
-        NSTrackingArea, NSTrackingAreaOptions, NSView,
+        NSTrackingArea, NSTrackingAreaOptions, NSView, NSWindowOcclusionState,
     };
     use objc2_foundation::{
         MainThreadMarker, NSObject, NSPoint, NSRect, NSRunLoop, NSRunLoopCommonModes, NSSize,
@@ -133,10 +133,18 @@ mod macos {
                 self.push_pointer_button(event, egui::PointerButton::Middle, false);
             }
 
+            #[unsafe(method(mouseEntered:))]
+            fn mouse_entered(&self, _event: &NSEvent) {
+                self.with_runtime(|rt| {
+                    rt.mouse_inside = true;
+                });
+            }
+
             #[unsafe(method(mouseMoved:))]
             fn mouse_moved(&self, event: &NSEvent) {
                 let pos = self.event_pos(event);
                 self.with_runtime(|rt| {
+                    rt.mouse_inside = true;
                     rt.last_pos = pos;
                     rt.pending_events.push(egui::Event::PointerMoved(pos));
                 });
@@ -146,6 +154,7 @@ mod macos {
             fn mouse_dragged(&self, event: &NSEvent) {
                 let pos = self.event_pos(event);
                 self.with_runtime(|rt| {
+                    rt.mouse_inside = true;
                     rt.last_pos = pos;
                     rt.pending_events.push(egui::Event::PointerMoved(pos));
                 });
@@ -155,6 +164,7 @@ mod macos {
             fn right_mouse_dragged(&self, event: &NSEvent) {
                 let pos = self.event_pos(event);
                 self.with_runtime(|rt| {
+                    rt.mouse_inside = true;
                     rt.last_pos = pos;
                     rt.pending_events.push(egui::Event::PointerMoved(pos));
                 });
@@ -163,6 +173,7 @@ mod macos {
             #[unsafe(method(mouseExited:))]
             fn mouse_exited(&self, _event: &NSEvent) {
                 self.with_runtime(|rt| {
+                    rt.mouse_inside = false;
                     if rt.pointer_down {
                         rt.pointer_down = false;
                         rt.ui_state.dragged_band = None;
@@ -423,7 +434,13 @@ mod macos {
         spectrum_frame_num: u64,
         last_spectrum_sr: f32,
         fft_ring: VecDeque<f32>,
-        idle_frames: u32,
+        analysis: AnalysisSnapshot,
+        fft_sample_buffer: Vec<f32>,
+        frame_counter: u32,
+        mouse_inside: bool,
+        was_in_zero_fps: bool,
+        silence_frames: u32,
+        idle_transport_frames: u32,
     }
 
     impl EditorRuntime {
@@ -526,6 +543,12 @@ mod macos {
                 min_db: -120.0,
             });
 
+            let analysis = AnalysisSnapshot {
+                spectrum_data: Vec::with_capacity(513),
+                ..Default::default()
+            };
+            let fft_sample_buffer = Vec::with_capacity(FFT_SIZE);
+
             Ok(Self {
                 shared,
                 host,
@@ -552,7 +575,13 @@ mod macos {
                 spectrum_frame_num: 0,
                 last_spectrum_sr: sr,
                 fft_ring: VecDeque::with_capacity(FFT_SIZE * 2),
-                idle_frames: 0,
+                analysis,
+                fft_sample_buffer,
+                frame_counter: 0,
+                mouse_inside: false,
+                was_in_zero_fps: false,
+                silence_frames: 0,
+                idle_transport_frames: 0,
             })
         }
 
@@ -574,9 +603,44 @@ mod macos {
 
         fn render_frame(&mut self, view: &NSView) {
             if !self.alive.load(Ordering::Acquire) || !self.visible.get() {
+                self.was_in_zero_fps = true;
                 return;
             }
+
+            let window = view.window();
+            let is_minimized = window.as_ref().is_some_and(|w| w.isMiniaturized());
+            let is_occluded = window
+                .as_ref()
+                .is_some_and(|w| !w.occlusionState().contains(NSWindowOcclusionState::Visible));
+            let is_hidden = view.isHiddenOrHasHiddenAncestor();
+
+            if is_hidden || is_minimized || is_occluded {
+                self.was_in_zero_fps = true;
+                return; // 0 FPS : pas de FFT, pas de GPU draw
+            }
+
+            let is_key = window.as_ref().is_some_and(|w| w.isKeyWindow());
+            let is_main = window.as_ref().is_some_and(|w| w.isMainWindow());
+            let has_pending_events = !self.pending_events.is_empty();
+            let is_active = is_key || is_main || self.mouse_inside || has_pending_events;
+
+            self.frame_counter = self.frame_counter.wrapping_add(1);
+
+            if has_pending_events {
+                self.frame_counter = 0; // Force immediate frame
+            } else if !is_active && (self.frame_counter % 4 != 0) {
+                return; // 15 FPS: drop 3 out of 4 frames when idle in background
+            }
+
             self.update_backing_scale(view);
+
+            // Ring buffer resynchronization upon waking up from 0 FPS or if buffer is >= 50% full
+            let consumer = self.shared.ring_consumer();
+            if self.was_in_zero_fps || consumer.available_read() >= (consumer.capacity() / 2) {
+                consumer.clear();
+                self.fft_ring.clear();
+                self.was_in_zero_fps = false;
+            }
 
             // 1. Collect audio & telemetry from lock-free shared state
             let sample_rate = self.shared.sample_rate().max(8000.0);
@@ -591,7 +655,6 @@ mod macos {
                 self.last_spectrum_sr = sample_rate;
             }
 
-            let consumer = self.shared.ring_consumer();
             let mut tmp_l = [0.0f32; 512];
             let mut tmp_r = [0.0f32; 512];
             let mut popped_any = false;
@@ -610,42 +673,55 @@ mod macos {
             }
 
             if !popped_any {
-                self.idle_frames = self.idle_frames.saturating_add(1);
-                if self.idle_frames > 4 {
+                self.idle_transport_frames = self.idle_transport_frames.saturating_add(1);
+                if self.idle_transport_frames > 4 {
                     // Host playback is paused or stopped: decay ring samples towards silence
                     for s in self.fft_ring.iter_mut() {
                         *s *= 0.85;
                     }
                 }
             } else {
-                self.idle_frames = 0;
+                self.idle_transport_frames = 0;
             }
 
             let peak_levels_db = self.shared.peak_levels_db();
-            let mut analysis = AnalysisSnapshot::default();
-            analysis.peak[0] = peak_levels_db.0;
-            analysis.peak[1] = peak_levels_db.1;
-            analysis.rms[0] = peak_levels_db.0;
-            analysis.rms[1] = peak_levels_db.1;
+            self.analysis.peak[0] = peak_levels_db.0;
+            self.analysis.peak[1] = peak_levels_db.1;
+            self.analysis.rms[0] = peak_levels_db.0;
+            self.analysis.rms[1] = peak_levels_db.1;
 
-            if self.fft_ring.len() >= FFT_SIZE && self.idle_frames < 60 {
-                let samples: Vec<f32> = self.fft_ring.iter().copied().collect();
+            let max_peak = peak_levels_db.0.max(peak_levels_db.1);
+            let is_audio_silent = max_peak <= -90.0;
+            let is_idle = (self.idle_transport_frames >= 15) || is_audio_silent;
+
+            if is_idle {
+                self.silence_frames = self.silence_frames.saturating_add(1);
+            } else if max_peak > -84.0 {
+                self.silence_frames = 0;
+            }
+
+            if self.fft_ring.len() >= FFT_SIZE && self.silence_frames < 15 {
+                self.fft_sample_buffer.clear();
+                self.fft_sample_buffer.extend(self.fft_ring.iter().copied());
                 self.spectrum_frame_num += 1;
-                let frame = self.spectrum_processor.process(
-                    &samples,
+                let frame = self.spectrum_processor.process_ref(
+                    &self.fft_sample_buffer,
                     sample_rate as f64,
                     self.spectrum_frame_num,
                 );
                 // Subtract unnormalized DFT gain 20*log10(N/2) (~54.18 dB for N=1024) so 1.0 full-scale = 0 dBFS
                 let dft_norm_db = 20.0 * ((frame.fft_size as f64) * 0.5).log10();
-                analysis.spectrum_data = (0..frame.num_bins)
-                    .map(|b| {
+                self.analysis.spectrum_data.clear();
+                self.analysis
+                    .spectrum_data
+                    .extend((0..frame.num_bins).map(|b| {
                         [
                             frame.bin_frequency(b),
                             (frame.magnitudes_db[b] as f64) - dft_norm_db,
                         ]
-                    })
-                    .collect();
+                    }));
+            } else {
+                self.analysis.spectrum_data.clear();
             }
 
             let eq = self.shared.read_eq_parameters();
@@ -690,7 +766,7 @@ mod macos {
                             band_params: &eq.bands,
                             sample_rate,
                             snapshot: &snapshot,
-                            analysis: &analysis,
+                            analysis: &self.analysis,
                             preset_manager: &self.preset_manager,
                             current_preset: &self.current_preset,
                             status_message: self.status_message.as_deref(),
