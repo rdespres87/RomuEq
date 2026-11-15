@@ -31,3 +31,17 @@ equaform-plugin = { path = "crates/equaform-plugin" }
 rustfft = "6.2"
 eframe = { version = "0.31", features = ["default_fonts"] }
 hound = "3.5"
+
+# Optimization of build artifact disk usage:
+# Keep line-tables for backtraces on our crates, but strip debuginfo from 300+ external dependencies.
+[profile.dev]
+debug = 1
+
+[profile.dev.package."*"]
+debug = 0
+
+[profile.test]
+debug = 1
+
+[profile.test.package."*"]
+debug = 0
