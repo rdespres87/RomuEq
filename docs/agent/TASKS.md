@@ -68,3 +68,16 @@
   - [x] Nightly and security workflow modernization (`nightly.yml`, `security.yml`)
   - [x] Pass adversarial Inquisitor Grill review and 100% workspace test validation
   - [x] Commit changes to git repository (`1c901d2`)
+- [x] Comprehensive Architecture Audit (`AUDIT_ACTIONS.md`) & Grill Orchestrator Counter-Expertise:
+  - [x] Adversarial counter-analysis of 17 audit actions (debunked 6 hallucinations/false positives, promoted hidden 8,192 allocs/block bug to P0)
+  - [x] [P0-1] Lock-Free Triple Buffer (`crates/equaform-common/src/triple_buffer.rs`) replacing `sync_channel` in `crates/equaform-gui/src/audio.rs`
+  - [x] [P0-2] Atomic error counters for CPAL stream callbacks replacing synchronous `eprintln!`
+  - [x] [P0-3] Zero-allocation automation provider & DSP parameter/coefficient persistence across blocks
+  - [x] [P1-3] `AudioRenderContext` refactoring (17 arguments -> context struct)
+  - [x] [P1-4] `WorkspaceUiContext` refactoring (10 arguments -> context struct across Standalone, Tests, Cocoa, Win32)
+  - [x] [P2-5] Parameter metadata factorization in `parameter.rs` (-540 redundant lines)
+  - [x] [P3-1] FFI sanctuary documentation for CLAP extensions and dead code cleanup
+  - [x] [P3-2] CoreAudio HAL physical device resolution replacing localized `"Haut-parleurs"` in production
+  - [x] [P3-4] Deterministic discrete frame streaming test replacing flaky `thread::sleep`
+  - [x] 100% test pass (377 tests passing), 0 warnings clippy, clean format, AU validation passed (`AU VALIDATION SUCCEEDED`)
+  - [x] Commit changes to git repository (`cba6a6c`)

@@ -1,7 +1,28 @@
 # Session State - Equaform-8 (Equaform)
 
-**Date:** 2026-11-14  
-**Status:** ALL TESTS GREEN (193 tests passing), CROSS-PLATFORM WINDOWS PORT & MACOS PACKAGING COMPLETE, 100% CI AUTOMATED
+**Date:** 2026-11-15  
+**Status:** ALL TESTS GREEN (377 tests passing, 0 failures), ADR-007 REAL-TIME SAFETY AUDIT IMPLEMENTED, ZERO ALLOCATION IN DSP/AUDIO CALLBACK
+
+## ADR-007 Real-Time Safety & Architecture Hardening
+- **Lock-Free Triple Buffer (`crates/equaform-common/src/triple_buffer.rs`)**:
+  - `LockFreeTripleBuffer<EqParameters>` using contiguous pre-allocated slots (`[UnsafeCell<T>; 3]`) and atomic index swap (`AtomicU8` with dirty bit).
+  - Wait-free $O(1)$ writes from GUI and lock-free $O(1)$ reads in audio thread. Zero allocation, zero deallocation, zero OS mutexes.
+  - Replaced legacy `std::sync::mpsc::sync_channel(256)` in `crates/equaform-gui/src/audio.rs`.
+- **CPAL Error Handlers Sanitization**:
+  - Replaced synchronous `eprintln!` I/O in CPAL stream error callbacks with atomic counter `stream_errors: Arc<AtomicUsize>`.
+- **Zero-Allocation Automation & DSP Continuity (`automation.rs` & `lifecycle.rs`)**:
+  - Eradicated 8,192 heap allocations per 512-sample block in `AutomationValueProvider` (`value_at_sample` and `last_value_in_block`).
+  - Fixed semantic block-relative sample offset indexing ($0 \le \text{offset} < \text{block\_size}$).
+  - Ensured parameter persistence across blocks: updating `self.cached_coeffs[band_idx] = *coeff_slot` and auto-gain re-evaluation on automated blocks to prevent coefficient dropouts.
+- **Context Structs**:
+  - `AudioRenderContext<'a>` grouping 17 arguments in `process_output_block`.
+  - `WorkspaceUiContext<'a>` grouping 10 arguments in `render_workspace` across 4 platforms (Standalone, Headless tests, Cocoa/Metal, Win32/DirectX).
+- **Metadata Factorization**:
+  - Reduced 540 lines of repetitive match arms in `crates/equaform-common/src/parameter.rs` via $O(1)$ band arithmetic mapping.
+- **CoreAudio Portability**:
+  - Eradicated hardcoded localized device names (`"Haut-parleurs"`). Dynamic physical device resolution via `kAudioHardwarePropertyDefaultOutputDevice`.
+- **Deterministic Audio Tests**:
+  - Converted `test_realtime_threaded_streaming` from passive sleep to deterministic step-based discrete frame simulation (<10ms).
 
 ## Multiplatform DAW Plugins Architecture (macOS & Windows)
 - **Plugin Targets:** CLAP (`Equaform-8.clap`), VST3 (`Equaform-8.vst3`), AUv2 (`Equaform-8.component`, macOS only).
