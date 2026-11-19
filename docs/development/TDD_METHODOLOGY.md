@@ -4,6 +4,9 @@
 **Version:** 1.0.0  
 **Scope:** All workspace crates (`crates/`) and native plugins (`driver/`)
 
+> **Global Engineering Standards Apply Automatically**:  
+> General software engineering methodology (strict TDD cycle Red-Green-Refactor, zero-warning CI, 5-phase execution tracking, merciless local audit via LM Studio, and atomic Git commit gates) are enforced **globally** by Antigravity rules (`idiomatic-craft`, `tiered-router`). The sections below describe Equaform-specific audio DSP contracts, invariants, and validation criteria.
+
 ---
 
 ## 1. Core Philosophy
