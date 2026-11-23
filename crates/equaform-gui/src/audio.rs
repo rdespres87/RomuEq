@@ -344,9 +344,7 @@ impl AudioStream {
             for d in devices {
                 if let Ok(name) = d.name() {
                     let lower = name.to_lowercase();
-                    if lower.contains("equaform")
-                        || lower == "romueq"
-                        || lower.contains("romueq ")
+                    if lower.contains("equaform") || lower == "romueq" || lower.contains("romueq ")
                     {
                         continue;
                     }
