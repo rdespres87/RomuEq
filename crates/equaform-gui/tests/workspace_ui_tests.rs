@@ -150,7 +150,7 @@ fn test_standalone_workspace_rendering() {
         audio_active: true,
         current_output: "External Headphones".to_string(),
         available_outputs: vec![
-            "External Headphones".to_string(),
+            "Internal Speakers".to_string(),
             "External Headphones".to_string(),
         ],
         peak_levels_db: (-24.0, -18.0),

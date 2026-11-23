@@ -1604,8 +1604,7 @@ pub mod standalone {
                         .iter()
                         .find(|d| {
                             let l = d.to_lowercase();
-                            !l.contains("equaform")
-                                && !l.contains("romueq")
+                            !l.contains("equaform") && !l.contains("romueq")
                         })
                         .cloned()
                 })

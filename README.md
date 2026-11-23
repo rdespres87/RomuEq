@@ -1,5 +1,7 @@
 # Equaform-8
 
+![Equaform-8 Parametric Equalizer](docs/assets/equaform-8-gui.jpg)
+
 Real-time 8-band parametric equalizer written in Rust, available as a **native macOS standalone application** (with CoreAudio HAL virtual driver) and as **DAW plugins (`CLAP`, `VST3`, `AUv2`)**, plus an offline CLI processor.
 
 ## Implemented Targets & Features
@@ -100,3 +102,9 @@ cargo test --workspace
 cargo clippy --workspace -- -D warnings
 auval -v aufx Eqf8 Eqfm
 ```
+
+## License & Trademarks
+
+- Distributed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT License](LICENSE-MIT) at your option.
+- VST is a registered trademark of Steinberg Media Technologies GmbH.
+

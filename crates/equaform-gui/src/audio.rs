@@ -1211,9 +1211,7 @@ mod macos_virtual_rate_sync {
 
     pub fn restore_macos_default_output(target_name: &str) {
         let q = target_name.to_lowercase();
-        if q.contains("equaform")
-            || q.contains("romueq")
-        {
+        if q.contains("equaform") || q.contains("romueq") {
             return;
         }
         let devices = list_devices();
@@ -1251,7 +1249,7 @@ mod tests {
     fn test_live_streaming_diagnostic() {
         let mut stream = AudioStream::new();
         stream.set_source_mode(AudioSourceMode::PassThrough);
-        stream.set_input_device(Some("External Headphones".to_string()));
+        stream.set_input_device(Some("Equaform-8".to_string()));
         stream.set_output_device(Some("Komplete Audio 6 MK2".to_string()));
 
         println!("Starting diagnostic live stream on Komplete Audio...");

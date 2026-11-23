@@ -1,6 +1,6 @@
 //! macOS CoreAudio System Output Switcher and Driver Installer.
 //!
-//! Allows Equaform to transparently route macOS system audio into Equaform-8,
+//! Allows Equaform to transparently route macOS system audio into its virtual HAL driver,
 //! apply real-time 8-band parametric EQ, and restore the original physical
 //! output (e.g. Komplete Audio 6 MK2) upon exit.
 
@@ -61,7 +61,7 @@ pub mod macos_impl {
     }
 
     extern "C" fn restore_on_process_exit() {
-        // If current macOS default output is Equaform-8/RomuEq, restore to user\'s selected physical output
+        // If current macOS default output is Equaform-8/RomuEq, restore to user's selected physical output
         if let Some(cur_id) = get_default_output_device_id() {
             let cur_name = get_device_name(cur_id).unwrap_or_default();
             if is_virtual_device_name(&cur_name) {
