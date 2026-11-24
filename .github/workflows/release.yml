@@ -80,7 +80,7 @@ jobs:
           fi
 
       - name: Upload RELEASE_NOTES.md artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-notes
           path: /tmp/RELEASE_NOTES.md
@@ -135,7 +135,7 @@ jobs:
           (cd target/release/dist && shasum -a 256 -c "$(basename "${SHA}")")
 
       - name: Upload macOS release artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-macos
           path: |
@@ -220,7 +220,7 @@ jobs:
           Write-Host "SHA-256: $hash"
 
       - name: Upload Windows release artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-windows
           path: |
