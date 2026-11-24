@@ -32,6 +32,8 @@ pub mod filter;
 pub mod frequency_response;
 
 // Re-export the main API for convenience.
-pub use coefficients::{BiquadCoefficients, compute_coefficients};
+pub use coefficients::{
+    BiquadCoefficients, FilterSpecification, compute_coefficients, compute_coefficients_from_spec,
+};
 pub use filter::{BiquadFilter, BiquadState};
 pub use frequency_response::{ResponsePoint, biquad_response_at_frequency, compute_response};

@@ -4,8 +4,16 @@ use crate::widgets::{log_freq_axis_formatter, log_freq_grid_spacer};
 use crate::{BandParams, GuiCommandBatch};
 use egui_plot::{HLine, Line, Plot, Points, Text, VLine};
 use equaform_common::{BandParameters, FilterType, MAX_BANDS};
-use equaform_dsp::coefficients::compute_coefficients;
+use equaform_dsp::coefficients::FilterSpecification;
 use equaform_dsp::{biquad_response_at_frequency, compute_response};
+
+/// Immutable rendering parameters for frequency response plots.
+#[derive(Clone, Copy, Debug)]
+pub struct PlotContext<'a> {
+    pub bands: &'a [BandParameters; MAX_BANDS],
+    pub sample_rate: f32,
+    pub width: usize,
+}
 
 const LOG_MIN_X: f64 = 1.204_119_982_655_924_8; // 16.0_f64.log10()
 const LOG_MAX_X: f64 = 4.380_211_241_711_606; // 24000.0_f64.log10()
@@ -79,15 +87,13 @@ fn draw_reference_lines(plot_ui: &mut egui_plot::PlotUi) {
 
 fn draw_individual_band_curves(
     plot_ui: &mut egui_plot::PlotUi,
-    bands: &[BandParameters; MAX_BANDS],
-    sample_rate: f32,
-    width: usize,
+    plot_ctx: PlotContext<'_>,
 ) {
     let log_min = 20.0_f32.log10();
     let log_max = 20_000.0_f32.log10();
-    let denom = (width - 1).max(1) as f32;
+    let denom = (plot_ctx.width - 1).max(1) as f32;
 
-    for (i, band) in bands.iter().enumerate() {
+    for (i, band) in plot_ctx.bands.iter().enumerate() {
         let is_active_curve = band.enabled
             && (band.gain_db.abs() > 0.05
                 || matches!(band.filter_type, FilterType::LowPass | FilterType::HighPass));
@@ -96,22 +102,15 @@ fn draw_individual_band_curves(
         }
 
         let color = band_color(i);
-        let coeffs = compute_coefficients(
-            band.filter_type,
-            band.frequency_hz,
-            band.gain_db,
-            band.q,
-            band.slope,
-            sample_rate,
-        );
-        let band_curve_points: Vec<[f64; 2]> = (0..width)
+        let coeffs = FilterSpecification::from_band(band, plot_ctx.sample_rate).compute();
+        let band_curve_points: Vec<[f64; 2]> = (0..plot_ctx.width)
             .map(|k| {
                 let t = k as f32 / denom;
                 let f = 10.0_f32.powf(log_min + t * (log_max - log_min));
                 let db = biquad_response_at_frequency(
                     &coeffs,
-                    f.min(sample_rate * 0.4999),
-                    sample_rate,
+                    f.min(plot_ctx.sample_rate * 0.4999),
+                    plot_ctx.sample_rate,
                 );
                 [
                     (f as f64).clamp(20.0, 20_000.0).log10(),
@@ -280,13 +279,12 @@ pub fn render_frequency_response_plot(
 /// Renders the interactive frequency response plot allowing direct mouse node dragging.
 pub fn render_interactive_frequency_response_plot(
     ui: &mut egui::Ui,
-    bands: &[BandParameters; MAX_BANDS],
-    sample_rate: f32,
-    width: usize,
+    plot_ctx: PlotContext<'_>,
     dragged_band: &mut Option<usize>,
     batch: &mut GuiCommandBatch,
 ) {
-    let response = compute_response(sample_rate, bands, width);
+    let bands = plot_ctx.bands;
+    let response = compute_response(plot_ctx.sample_rate, bands, plot_ctx.width);
 
     let points: Vec<[f64; 2]> = response
         .iter()
@@ -334,7 +332,7 @@ pub fn render_interactive_frequency_response_plot(
             ));
 
             draw_reference_lines(plot_ui);
-            draw_individual_band_curves(plot_ui, bands, sample_rate, width);
+            draw_individual_band_curves(plot_ui, plot_ctx);
             plot_ui.line(master_line);
 
             if let Some(coord) = plot_ui.pointer_coordinate() {

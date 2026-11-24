@@ -61,25 +61,100 @@ impl Default for BiquadCoefficients {
 }
 
 // ===========================================================================
+// FilterSpecification
+// ===========================================================================
+
+/// Complete, strongly-typed specification for computing biquad filter coefficients.
+///
+/// Bundles all filter design parameters into a single `Copy` value type to avoid
+/// long positional parameter lists and accidental argument transposition.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FilterSpecification {
+    /// Filter topology (Bell, LowShelf, HighShelf, HighPass, LowPass).
+    pub filter_type: equaform_common::FilterType,
+    /// Center or cutoff frequency in Hz (must be > 0).
+    pub frequency_hz: f32,
+    /// Gain in dB (Bell and shelf filters only; ignored for pass filters).
+    pub gain_db: f32,
+    /// Quality factor Q (must be > 0).
+    pub q: f32,
+    /// Slope steepness (shelf and pass filters).
+    pub slope: equaform_common::Slope,
+    /// Target sample rate in Hz (must be > 0).
+    pub sample_rate: f32,
+}
+
+impl FilterSpecification {
+    /// Construct a [`FilterSpecification`] directly from a [`equaform_common::BandParameters`]
+    /// and a target `sample_rate`.
+    #[inline]
+    pub fn from_band(band: &equaform_common::BandParameters, sample_rate: f32) -> Self {
+        Self {
+            filter_type: band.filter_type,
+            frequency_hz: band.frequency_hz,
+            gain_db: band.gain_db,
+            q: band.q,
+            slope: band.slope,
+            sample_rate,
+        }
+    }
+
+    /// Compute normalized [`BiquadCoefficients`] for this filter specification.
+    #[inline]
+    pub fn compute(self) -> BiquadCoefficients {
+        compute_coefficients_from_spec(self)
+    }
+}
+
+// ===========================================================================
 // Coefficient generation
 // ===========================================================================
+
+/// Compute biquad coefficients from a typed [`FilterSpecification`].
+///
+/// # Panics
+///
+/// Panics if `spec.sample_rate <= 0.0` or `spec.frequency_hz <= 0.0`.
+pub fn compute_coefficients_from_spec(spec: FilterSpecification) -> BiquadCoefficients {
+    assert!(spec.sample_rate > 0.0, "sample_rate must be positive");
+    assert!(spec.frequency_hz > 0.0, "frequency_hz must be positive");
+
+    // Clamp frequency to safe range: [1.0, Nyquist * 0.999]
+    let nyquist = spec.sample_rate * 0.5;
+    let frequency_hz = spec.frequency_hz.max(1.0).min(nyquist * 0.999);
+
+    // Clamp Q to a safe range: [0.001, 100.0]
+    let q = spec.q.clamp(0.001, 100.0);
+
+    // Scale Q based on slope steepness (higher slope = lower effective Q for stability)
+    let q = match spec.slope {
+        equaform_common::Slope::Db6 => q,
+        equaform_common::Slope::Db12 => q * 1.2,
+        equaform_common::Slope::Db18 => q * 1.5,
+        equaform_common::Slope::Db24 => q * 2.0,
+    };
+
+    match spec.filter_type {
+        equaform_common::FilterType::Bell => {
+            compute_bell(frequency_hz, spec.gain_db, q, spec.sample_rate)
+        }
+        equaform_common::FilterType::LowShelf => {
+            compute_low_shelf(frequency_hz, spec.gain_db, q, spec.sample_rate)
+        }
+        equaform_common::FilterType::HighShelf => {
+            compute_high_shelf(frequency_hz, spec.gain_db, q, spec.sample_rate)
+        }
+        equaform_common::FilterType::HighPass => {
+            compute_high_pass(frequency_hz, q, spec.sample_rate)
+        }
+        equaform_common::FilterType::LowPass => compute_low_pass(frequency_hz, q, spec.sample_rate),
+    }
+}
 
 /// Compute biquad coefficients for the given filter type, frequency, gain,
 /// Q factor, slope, and sample rate.
 ///
-/// # Arguments
-///
-/// * `filter_type` — the filter type (Bell, LowShelf, HighShelf, HighPass, LowPass)
-/// * `frequency_hz` — center/cutoff frequency in Hz (must be > 0)
-/// * `gain_db` — gain in dB (Bell and shelf only; ignored for pass filters)
-/// * `q` — Q factor (must be > 0)
-/// * `slope` — slope steepness (shelf and pass filters only; affects Q scaling)
-/// * `sample_rate` — sample rate in Hz (must be > 2 * frequency_hz for valid results)
-///
-/// # Returns
-///
-/// A `BiquadCoefficients` struct. For invalid parameter combinations the
-/// function returns a unity-gain (pass-through) filter.
+/// Convenience wrapper around [`compute_coefficients_from_spec`].
 ///
 /// # Panics
 ///
@@ -92,35 +167,14 @@ pub fn compute_coefficients(
     slope: equaform_common::Slope,
     sample_rate: f32,
 ) -> BiquadCoefficients {
-    assert!(sample_rate > 0.0, "sample_rate must be positive");
-    assert!(frequency_hz > 0.0, "frequency_hz must be positive");
-
-    // Clamp frequency to safe range: [1.0, Nyquist * 0.999]
-    let nyquist = sample_rate * 0.5;
-    let frequency_hz = frequency_hz.max(1.0).min(nyquist * 0.999);
-
-    // Clamp Q to a safe range: [0.001, 100.0]
-    let q = q.clamp(0.001, 100.0);
-
-    // Scale Q based on slope steepness (higher slope = lower effective Q for stability)
-    let q = match slope {
-        equaform_common::Slope::Db6 => q,
-        equaform_common::Slope::Db12 => q * 1.2,
-        equaform_common::Slope::Db18 => q * 1.5,
-        equaform_common::Slope::Db24 => q * 2.0,
-    };
-
-    match filter_type {
-        equaform_common::FilterType::Bell => compute_bell(frequency_hz, gain_db, q, sample_rate),
-        equaform_common::FilterType::LowShelf => {
-            compute_low_shelf(frequency_hz, gain_db, q, sample_rate)
-        }
-        equaform_common::FilterType::HighShelf => {
-            compute_high_shelf(frequency_hz, gain_db, q, sample_rate)
-        }
-        equaform_common::FilterType::HighPass => compute_high_pass(frequency_hz, q, sample_rate),
-        equaform_common::FilterType::LowPass => compute_low_pass(frequency_hz, q, sample_rate),
-    }
+    compute_coefficients_from_spec(FilterSpecification {
+        filter_type,
+        frequency_hz,
+        gain_db,
+        q,
+        slope,
+        sample_rate,
+    })
 }
 
 // ===========================================================================
@@ -268,6 +322,30 @@ mod tests {
         assert_eq!(c.a1, 0.0);
         assert_eq!(c.a2, 0.0);
         assert!(c.is_finite());
+    }
+
+    #[test]
+    fn test_filter_specification_matches_compute_coefficients() {
+        let band = equaform_common::BandParameters {
+            filter_type: equaform_common::FilterType::Bell,
+            frequency_hz: 1250.0,
+            gain_db: 4.5,
+            q: 1.414,
+            slope: equaform_common::Slope::Db12,
+            ..Default::default()
+        };
+
+        let from_spec = FilterSpecification::from_band(&band, 48000.0).compute();
+        let from_fn = compute_coefficients(
+            band.filter_type,
+            band.frequency_hz,
+            band.gain_db,
+            band.q,
+            band.slope,
+            48000.0,
+        );
+        assert_eq!(from_spec, from_fn);
+        assert!(from_spec.is_finite());
     }
 
     // ===========================================================================

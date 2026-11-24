@@ -6,6 +6,14 @@ use crate::{BandParams, GuiCommandBatch, ParamSnapshot};
 // Band widget rendering (egui integration)
 // ---------------------------------------------------------------------------
 
+/// Immutable per-band rendering context for [`render_band`].
+#[derive(Clone, Copy)]
+pub struct BandRenderContext<'a> {
+    pub band_index: usize,
+    pub params: &'a BandParams,
+    pub snapshot: &'a ParamSnapshot,
+}
+
 /// Render a single band's controls.
 ///
 /// Each control maps to exactly one stable ParamId and validates/clamps values
@@ -13,11 +21,12 @@ use crate::{BandParams, GuiCommandBatch, ParamSnapshot};
 /// value actually changes (tracked via egui response.changed()).
 pub fn render_band(
     ui: &mut egui::Ui,
-    band_index: usize,
-    params: &BandParams,
-    snapshot: &ParamSnapshot,
+    ctx: BandRenderContext<'_>,
     batch: &mut GuiCommandBatch,
 ) {
+    let band_index = ctx.band_index;
+    let params = ctx.params;
+    let snapshot = ctx.snapshot;
     let band_names = [
         "Sub",
         "Low",

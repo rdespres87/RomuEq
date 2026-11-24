@@ -1121,12 +1121,12 @@ fn test_split_block_with_filter() {
 #[test]
 fn test_coefficient_caching_and_dirty_flag() {
     let mut engine = EngineLifecycle::new();
-    assert!(engine.coeffs_dirty);
+    assert!(engine.coeff_cache.dirty);
 
     engine.prepare(48000.0, 256, 2);
-    assert!(!engine.coeffs_dirty);
+    assert!(!engine.coeff_cache.dirty);
 
-    let initial_coeffs = engine.cached_coeffs[0];
+    let initial_coeffs = engine.coeff_cache.coeffs[0];
     assert!(initial_coeffs.is_finite());
 
     // Process a block without parameter change - remains clean
@@ -1135,19 +1135,19 @@ fn test_coefficient_caching_and_dirty_flag() {
     let mut out_l = [0.0f32; 64];
     let mut out_r = [0.0f32; 64];
     assert!(engine.process(&[&input_l, &input_r], &mut [&mut out_l, &mut out_r]));
-    assert!(!engine.coeffs_dirty);
-    assert_eq!(engine.cached_coeffs[0], initial_coeffs);
+    assert!(!engine.coeff_cache.dirty);
+    assert_eq!(engine.coeff_cache.coeffs[0], initial_coeffs);
 
     // Change parameters - flags dirty
     let mut params = *engine.eq_parameters();
     params.bands[0].gain_db = 6.0;
     engine.set_parameters(params);
-    assert!(engine.coeffs_dirty);
+    assert!(engine.coeff_cache.dirty);
 
     // Next process - recomputes and clears dirty flag
     assert!(engine.process(&[&input_l, &input_r], &mut [&mut out_l, &mut out_r]));
-    assert!(!engine.coeffs_dirty);
-    assert_ne!(engine.cached_coeffs[0], initial_coeffs);
+    assert!(!engine.coeff_cache.dirty);
+    assert_ne!(engine.coeff_cache.coeffs[0], initial_coeffs);
 }
 
 #[test]

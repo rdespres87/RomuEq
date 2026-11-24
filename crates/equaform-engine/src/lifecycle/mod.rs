@@ -43,7 +43,7 @@ use equaform_common::automation::{AutomationEvent, InterpolationMode};
 use equaform_common::{
     EqParameters, MAX_BANDS, MAX_BLOCK_SIZE, MAX_CHANNELS,
 };
-use equaform_dsp::coefficients::{BiquadCoefficients, compute_coefficients};
+use equaform_dsp::coefficients::{BiquadCoefficients, FilterSpecification};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -92,7 +92,90 @@ impl Default for LifecycleState {
 }
 
 // ---------------------------------------------------------------------------
-// BypassTransition
+// Internal Sub-Structs (Zero-Overhead Inline Composition)
+// ---------------------------------------------------------------------------
+
+/// Configured audio stream topology (sample rate, max block size, channel count).
+#[derive(Clone, Copy, Debug)]
+pub(super) struct AudioTopology {
+    pub(super) sample_rate: f64,
+    pub(super) max_block_size: usize,
+    pub(super) channels: usize,
+}
+
+impl Default for AudioTopology {
+    fn default() -> Self {
+        Self {
+            sample_rate: 44100.0,
+            max_block_size: 512,
+            channels: 2,
+        }
+    }
+}
+
+/// Click-free bypass crossfade state and pre-allocated dry scratch buffer.
+pub(super) struct BypassTransitionState {
+    pub(super) prev_bypass: bool,
+    pub(super) curr_bypass: bool,
+    pub(super) crossfade_progress: usize,
+    pub(super) transitioning: bool,
+    pub(super) dry_buffer: [f32; FLAT_BUFFER_SIZE],
+}
+
+impl BypassTransitionState {
+    pub(super) fn new() -> Self {
+        Self {
+            prev_bypass: false,
+            curr_bypass: false,
+            crossfade_progress: 0,
+            transitioning: false,
+            dry_buffer: [0.0; FLAT_BUFFER_SIZE],
+        }
+    }
+
+    pub(super) fn reset(&mut self) {
+        self.prev_bypass = false;
+        self.curr_bypass = false;
+        self.crossfade_progress = 0;
+        self.transitioning = false;
+        self.dry_buffer.fill(0.0);
+    }
+
+    /// Update transition flags for the current block (immediate on first block,
+    /// smooth crossfade on subsequent toggles).
+    #[inline]
+    pub(super) fn update(&mut self, bypass: bool, is_first_block: bool) {
+        if is_first_block {
+            self.curr_bypass = bypass;
+            self.prev_bypass = bypass;
+            self.transitioning = false;
+            self.crossfade_progress = 0;
+        } else if self.curr_bypass != bypass {
+            self.prev_bypass = self.curr_bypass;
+            self.curr_bypass = bypass;
+            self.crossfade_progress = 0;
+            self.transitioning = true;
+        }
+    }
+}
+
+/// Pre-computed biquad coefficients and perceptual auto-gain cache.
+pub(super) struct CoefficientCache {
+    pub(super) coeffs: [BiquadCoefficients; MAX_BANDS],
+    pub(super) dirty: bool,
+    pub(super) auto_gain_db: f32,
+}
+
+impl CoefficientCache {
+    pub(super) fn new() -> Self {
+        Self {
+            coeffs: [BiquadCoefficients::default(); MAX_BANDS],
+            dirty: true,
+            auto_gain_db: 0.0,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // EngineLifecycle
 // ---------------------------------------------------------------------------
@@ -124,12 +207,8 @@ impl Default for LifecycleState {
 pub struct EngineLifecycle {
     /// Current lifecycle state.
     state: LifecycleState,
-    /// Target sample rate in Hz (e.g. 44100.0, 48000.0).
-    sample_rate: f64,
-    /// Maximum audio block size in samples.
-    max_block_size: usize,
-    /// Number of channels (1 = mono, 2 = stereo).
-    channels: usize,
+    /// Configured sample rate, max block size, and channel count.
+    topology: AudioTopology,
     /// Flat pre-allocated audio buffer: `channel * max_block_size + sample`.
     /// Initialized to zeros; never reallocated.
     buffer: [f32; FLAT_BUFFER_SIZE],
@@ -143,41 +222,17 @@ pub struct EngineLifecycle {
     blocks_processed: u64,
     /// Current stream sample offset (monotonically increasing).
     sample_offset: u64,
-    /// Automation event ingestor (initialized in process)
+    /// Automation event ingestor (initialized in prepare).
     automation_ingestor: Option<AutomationIngestor>,
-    /// Last pushed automation event (for API)
+    /// Last pushed automation event (for API).
     last_automation_event: Option<AutomationEvent>,
-
-    // -----------------------------------------------------------------------
-    // Bypass transition state (click-free crossfade)
-    // -----------------------------------------------------------------------
-    /// Previous bypass state (before the current transition)
-    prev_bypass: bool,
-    /// Current bypass state
-    curr_bypass: bool,
-    /// Crossfade progress in samples (0 = start, CROSSFADE_SAMPLES = done)
-    crossfade_progress: usize,
-    /// Whether a transition is currently in progress
-    transitioning: bool,
-    /// Buffer to store original input for crossfade bypass
-    bypass_buffer: [f32; FLAT_BUFFER_SIZE],
-
-    // -----------------------------------------------------------------------
-    // Analysis handoff (M5-T001)
-    // -----------------------------------------------------------------------
+    /// Click-free bypass crossfade state and dry scratch buffer.
+    bypass: BypassTransitionState,
     /// Bounded ring buffer for analysis frame handoff to the GUI thread.
     /// Audio thread pushes frames; GUI thread consumes them.
     analysis_buffer: AnalysisBuffer,
-
-    // -----------------------------------------------------------------------
-    // Coefficient caching (zero per-block recalculation)
-    // -----------------------------------------------------------------------
-    /// Cached biquad filter coefficients for each band.
-    cached_coeffs: [BiquadCoefficients; MAX_BANDS],
-    /// Dirty flag indicating whether coefficients need recalculation.
-    coeffs_dirty: bool,
-    /// Cached perceptual loudness auto-gain compensation in dB.
-    cached_auto_gain_db: f32,
+    /// Cached biquad coefficients and perceptual auto-gain compensation.
+    coeff_cache: CoefficientCache,
 }
 
 mod auto_gain;
@@ -195,9 +250,7 @@ impl EngineLifecycle {
     pub fn new() -> Self {
         EngineLifecycle {
             state: LifecycleState::Created,
-            sample_rate: 44100.0,
-            max_block_size: 512,
-            channels: 2,
+            topology: AudioTopology::default(),
             buffer: [0.0; FLAT_BUFFER_SIZE],
             delay_line: [0.0; DELAY_BUFFER_SIZE],
             eq_params: EqParameters::default(),
@@ -205,18 +258,9 @@ impl EngineLifecycle {
             sample_offset: 0,
             automation_ingestor: None,
             last_automation_event: None,
-            // Bypass transition state (click-free crossfade)
-            prev_bypass: false,
-            curr_bypass: false,
-            crossfade_progress: 0,
-            transitioning: false,
-            bypass_buffer: [0.0; FLAT_BUFFER_SIZE],
-            // Analysis handoff (M5-T001) — pre-allocated ring buffer
+            bypass: BypassTransitionState::new(),
             analysis_buffer: AnalysisBuffer::new(),
-            // Cached filter coefficients
-            cached_coeffs: [BiquadCoefficients::default(); MAX_BANDS],
-            coeffs_dirty: true,
-            cached_auto_gain_db: 0.0,
+            coeff_cache: CoefficientCache::new(),
         }
     }
 
@@ -253,20 +297,16 @@ impl EngineLifecycle {
             "max_block_size must be <= {LIFECYCLE_MAX_BLOCK_SIZE}"
         );
 
-        self.sample_rate = sample_rate;
-        self.max_block_size = max_block_size;
-        self.channels = channels;
+        self.topology = AudioTopology {
+            sample_rate,
+            max_block_size,
+            channels,
+        };
 
         // Zero the entire flat buffer on prepare (reprepare clears stale data).
-        self.buffer.iter_mut().for_each(|s| *s = 0.0);
-        self.bypass_buffer.iter_mut().for_each(|s| *s = 0.0);
-        self.delay_line.iter_mut().for_each(|s| *s = 0.0);
-
-        // Reset bypass transition state on prepare.
-        self.prev_bypass = false;
-        self.curr_bypass = false;
-        self.crossfade_progress = 0;
-        self.transitioning = false;
+        self.buffer.fill(0.0);
+        self.delay_line.fill(0.0);
+        self.bypass.reset();
 
         // Initialize the automation ingestor on prepare (not process) so it is
         // allocation-free in the hot path.
@@ -280,33 +320,32 @@ impl EngineLifecycle {
 
     /// Recompute cached biquad filter coefficients for all bands.
     fn recompute_all_coefficients(&mut self) {
-        let sample_rate = self.sample_rate as f32;
-        for band_idx in 0..MAX_BANDS {
-            let band_params = &self.eq_params.bands[band_idx];
-            self.cached_coeffs[band_idx] = compute_coefficients(
-                band_params.filter_type,
-                band_params.frequency_hz,
-                band_params.gain_db,
-                band_params.q,
-                band_params.slope,
-                sample_rate,
-            );
+        let sample_rate = self.topology.sample_rate as f32;
+        for (coeff_slot, band_params) in self
+            .coeff_cache
+            .coeffs
+            .iter_mut()
+            .zip(self.eq_params.bands.iter())
+        {
+            *coeff_slot = FilterSpecification::from_band(band_params, sample_rate).compute();
         }
-        self.coeffs_dirty = false;
+        self.coeff_cache.dirty = false;
 
         self.update_auto_gain_db();
     }
 
     /// Recompute perceptual RMS power loudness-weighted auto-gain compensation in dB.
     fn update_auto_gain_db(&mut self) {
-        self.cached_auto_gain_db =
-            calculate_auto_gain_compensation_db(&self.eq_params.bands, self.sample_rate as f32);
+        self.coeff_cache.auto_gain_db = calculate_auto_gain_compensation_db(
+            &self.eq_params.bands,
+            self.topology.sample_rate as f32,
+        );
     }
 
     /// Return the active auto-gain compensation in dB.
     pub fn auto_gain_compensation_db(&self) -> f32 {
         if self.eq_params.global.auto_gain {
-            self.cached_auto_gain_db
+            self.coeff_cache.auto_gain_db
         } else {
             0.0
         }
@@ -322,7 +361,7 @@ impl EngineLifecycle {
     pub fn set_parameters(&mut self, params: EqParameters) {
         if self.eq_params != params {
             self.eq_params = params;
-            self.coeffs_dirty = true;
+            self.coeff_cache.dirty = true;
             self.update_auto_gain_db();
         }
     }
@@ -358,19 +397,14 @@ impl EngineLifecycle {
     /// **No allocation.** Only zeroes the flat buffers and resets the counter.
     pub fn reset(&mut self) {
         if self.state == LifecycleState::Ready {
-            self.buffer.iter_mut().for_each(|s| *s = 0.0);
-            self.bypass_buffer.iter_mut().for_each(|s| *s = 0.0);
-            self.delay_line.iter_mut().for_each(|s| *s = 0.0);
+            self.buffer.fill(0.0);
+            self.delay_line.fill(0.0);
             self.blocks_processed = 0;
             self.sample_offset = 0;
             if let Some(ref mut ingestor) = self.automation_ingestor {
                 ingestor.reset();
             }
-            // Reset bypass transition state.
-            self.prev_bypass = false;
-            self.curr_bypass = false;
-            self.crossfade_progress = 0;
-            self.transitioning = false;
+            self.bypass.reset();
         }
     }
 
@@ -384,8 +418,8 @@ impl EngineLifecycle {
     /// **No allocation.** Simply resets state.
     pub fn destroy(&mut self) {
         self.state = LifecycleState::Created;
-        self.buffer.iter_mut().for_each(|s| *s = 0.0);
-        self.delay_line.iter_mut().for_each(|s| *s = 0.0);
+        self.buffer.fill(0.0);
+        self.delay_line.fill(0.0);
         self.blocks_processed = 0;
         self.sample_offset = 0;
         self.automation_ingestor = None;
@@ -398,17 +432,17 @@ impl EngineLifecycle {
 
     /// Return the current sample rate.
     pub fn sample_rate(&self) -> f64 {
-        self.sample_rate
+        self.topology.sample_rate
     }
 
     /// Return the current max block size.
     pub fn max_block_size(&self) -> usize {
-        self.max_block_size
+        self.topology.max_block_size
     }
 
     /// Return the current channel count.
     pub fn channels(&self) -> usize {
-        self.channels
+        self.topology.channels
     }
 
     /// Return the number of blocks processed since last reset.
@@ -448,7 +482,7 @@ impl EngineLifecycle {
     pub fn load_state(&mut self, data: &[u8]) -> bool {
         if let Ok(params) = bincode::deserialize::<EqParameters>(data) {
             self.eq_params = params;
-            self.coeffs_dirty = true;
+            self.coeff_cache.dirty = true;
             true
         } else {
             false

@@ -6,8 +6,10 @@ pub mod master_section;
 pub mod spectrum_view;
 pub mod vu_meter;
 
-pub use band_strip::render_band;
-pub use eq_plot::{render_frequency_response_plot, render_interactive_frequency_response_plot};
+pub use band_strip::{BandRenderContext, render_band};
+pub use eq_plot::{
+    PlotContext, render_frequency_response_plot, render_interactive_frequency_response_plot,
+};
 pub use master_section::render_master_section;
 pub use spectrum_view::render_spectrum_analyzer;
 pub use vu_meter::{render_stereo_vu_meter, render_vertical_stereo_vu_meter};

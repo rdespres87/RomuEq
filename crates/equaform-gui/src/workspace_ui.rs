@@ -9,9 +9,9 @@ use equaform_common::{BandParameters, MAX_BANDS, ParamId};
 use crate::preset_manager::PresetManager;
 use crate::presets_io::is_factory_preset;
 use crate::{
-    AnalysisSnapshot, BandControls, GuiCommandBatch, ParamSnapshot, render_band,
-    render_interactive_frequency_response_plot, render_master_section, render_spectrum_analyzer,
-    render_vertical_stereo_vu_meter,
+    AnalysisSnapshot, BandControls, BandRenderContext, GuiCommandBatch, ParamSnapshot, PlotContext,
+    render_band, render_interactive_frequency_response_plot, render_master_section,
+    render_spectrum_analyzer, render_vertical_stereo_vu_meter,
 };
 
 /// Host environment under which the workspace UI is currently rendered.
@@ -228,9 +228,11 @@ pub fn render_workspace(
                     });
                     render_interactive_frequency_response_plot(
                         &mut cols[0],
-                        band_params,
-                        sample_rate,
-                        512,
+                        PlotContext {
+                            bands: band_params,
+                            sample_rate,
+                            width: 512,
+                        },
                         &mut state.dragged_band,
                         &mut batch,
                     );
@@ -318,7 +320,15 @@ pub fn render_workspace(
         let band_controls = BandControls::new();
         for (i, col) in cols.iter_mut().enumerate() {
             let bp = band_controls.params(i);
-            render_band(col, i, &bp, snapshot, &mut batch);
+            render_band(
+                col,
+                BandRenderContext {
+                    band_index: i,
+                    params: &bp,
+                    snapshot,
+                },
+                &mut batch,
+            );
         }
     });
 

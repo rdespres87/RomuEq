@@ -4,7 +4,7 @@ use super::{CROSSFADE_MS, DELAY_SAMPLES_PER_STAGE, EngineLifecycle, LifecycleSta
 use equaform_analysis::AnalysisFrame;
 use equaform_common::automation::AutomationValueProvider;
 use equaform_common::{BandParameters, MAX_BANDS, ParamId};
-use equaform_dsp::coefficients::{BiquadCoefficients, compute_coefficients};
+use equaform_dsp::coefficients::{BiquadCoefficients, FilterSpecification};
 
 impl EngineLifecycle {
     /// Create an automation value provider for the current block.
@@ -45,7 +45,7 @@ impl EngineLifecycle {
 
         let block_size = inputs.first().map(|s| s.len()).unwrap_or(0);
 
-        if block_size == 0 || block_size > self.max_block_size {
+        if block_size == 0 || block_size > self.topology.max_block_size {
             return false;
         }
 
@@ -55,30 +55,30 @@ impl EngineLifecycle {
             return false;
         }
 
-        if inputs.len() != self.channels {
+        if inputs.len() != self.topology.channels {
             return false;
         }
 
         let automation_provider = self.create_automation_provider(block_size);
 
-        for (ch, input_ch) in inputs.iter().enumerate().take(self.channels) {
-            let offset = ch * self.max_block_size;
+        for (ch, input_ch) in inputs.iter().enumerate().take(self.topology.channels) {
+            let offset = ch * self.topology.max_block_size;
             self.buffer[offset..offset + block_size].copy_from_slice(input_ch);
         }
 
         self.process_dsp(block_size, &automation_provider);
 
         let frame = AnalysisFrame::compute(
-            &self.buffer[..block_size * self.channels],
-            self.channels,
-            self.sample_rate,
+            &self.buffer[..block_size * self.topology.channels],
+            self.topology.channels,
+            self.topology.sample_rate,
             block_size,
             self.blocks_processed,
         );
         self.analysis_buffer.push(frame);
 
-        for (ch, output_ch) in outputs.iter_mut().enumerate().take(self.channels) {
-            let offset = ch * self.max_block_size;
+        for (ch, output_ch) in outputs.iter_mut().enumerate().take(self.topology.channels) {
+            let offset = ch * self.topology.max_block_size;
             output_ch.copy_from_slice(&self.buffer[offset..offset + block_size]);
         }
 
@@ -90,18 +90,8 @@ impl EngineLifecycle {
     /// Update bypass transition state (immediate on first block, click-free crossfade afterwards).
     #[inline]
     fn update_bypass_state(&mut self) {
-        let bypass = self.eq_params.global.bypass;
-        if self.blocks_processed == 0 {
-            self.curr_bypass = bypass;
-            self.prev_bypass = bypass;
-            self.transitioning = false;
-            self.crossfade_progress = 0;
-        } else if self.curr_bypass != bypass {
-            self.prev_bypass = self.curr_bypass;
-            self.curr_bypass = bypass;
-            self.crossfade_progress = 0;
-            self.transitioning = true;
-        }
+        self.bypass
+            .update(self.eq_params.global.bypass, self.blocks_processed == 0);
     }
 
     /// Apply per-block automation overrides to band coefficients and sync persistent caches.
@@ -156,16 +146,9 @@ impl EngineLifecycle {
             }
 
             if automated {
-                *coeff_slot = compute_coefficients(
-                    band_params.filter_type,
-                    band_params.frequency_hz,
-                    band_params.gain_db,
-                    band_params.q,
-                    band_params.slope,
-                    sample_rate,
-                );
+                *coeff_slot = FilterSpecification::from_band(&band_params, sample_rate).compute();
                 self.eq_params.bands[band_idx] = band_params;
-                self.cached_coeffs[band_idx] = *coeff_slot;
+                self.coeff_cache.coeffs[band_idx] = *coeff_slot;
                 if self.eq_params.global.auto_gain {
                     self.update_auto_gain_db();
                 }
@@ -183,35 +166,35 @@ impl EngineLifecycle {
         block_size: usize,
         automation_provider: &Option<AutomationValueProvider>,
     ) {
-        let sample_rate = self.sample_rate as f32;
+        let sample_rate = self.topology.sample_rate as f32;
         self.update_bypass_state();
 
         let crossfade_samples = (CROSSFADE_MS as f32 / 1000.0 * sample_rate) as usize;
 
-        if self.coeffs_dirty {
+        if self.coeff_cache.dirty {
             self.recompute_all_coefficients();
         }
 
-        let mut block_coeffs = self.cached_coeffs;
+        let mut block_coeffs = self.coeff_cache.coeffs;
         if let Some(provider) = automation_provider {
             self.apply_block_automation(block_size, sample_rate, provider, &mut block_coeffs);
         }
 
         let auto_comp_db = if self.eq_params.global.auto_gain {
-            self.cached_auto_gain_db
+            self.coeff_cache.auto_gain_db
         } else {
             0.0
         };
         let output_gain_db = self.eq_params.global.output_gain_db + auto_comp_db;
         let output_gain_linear = 10.0_f32.powf(output_gain_db / 20.0);
 
-        let is_entering_bypass = self.curr_bypass;
-        let start_crossfade_progress = self.crossfade_progress;
+        let is_entering_bypass = self.bypass.curr_bypass;
+        let start_crossfade_progress = self.bypass.crossfade_progress;
 
-        for ch_idx in 0..self.channels {
-            let buffer_offset = ch_idx * self.max_block_size;
+        for ch_idx in 0..self.topology.channels {
+            let buffer_offset = ch_idx * self.topology.max_block_size;
             let samples = &mut self.buffer[buffer_offset..buffer_offset + block_size];
-            let dry_samples = &mut self.bypass_buffer[buffer_offset..buffer_offset + block_size];
+            let dry_samples = &mut self.bypass.dry_buffer[buffer_offset..buffer_offset + block_size];
 
             dry_samples.copy_from_slice(samples);
 
@@ -219,7 +202,7 @@ impl EngineLifecycle {
                 if !self.eq_params.bands[band_idx].enabled {
                     continue;
                 }
-                let delay_offset = band_idx * self.channels * DELAY_SAMPLES_PER_STAGE
+                let delay_offset = band_idx * self.topology.channels * DELAY_SAMPLES_PER_STAGE
                     + ch_idx * DELAY_SAMPLES_PER_STAGE;
                 let delay =
                     &mut self.delay_line[delay_offset..delay_offset + DELAY_SAMPLES_PER_STAGE];
@@ -230,7 +213,7 @@ impl EngineLifecycle {
                 samples.iter_mut().for_each(|s| *s *= output_gain_linear);
             }
 
-            if self.transitioning && start_crossfade_progress < crossfade_samples {
+            if self.bypass.transitioning && start_crossfade_progress < crossfade_samples {
                 apply_bypass_crossfade(
                     samples,
                     dry_samples,
@@ -238,15 +221,15 @@ impl EngineLifecycle {
                     crossfade_samples,
                     is_entering_bypass,
                 );
-            } else if self.curr_bypass {
+            } else if self.bypass.curr_bypass {
                 samples.copy_from_slice(dry_samples);
             }
         }
 
-        if self.transitioning {
-            self.crossfade_progress += block_size;
-            if self.crossfade_progress >= crossfade_samples {
-                self.transitioning = false;
+        if self.bypass.transitioning {
+            self.bypass.crossfade_progress += block_size;
+            if self.bypass.crossfade_progress >= crossfade_samples {
+                self.bypass.transitioning = false;
             }
         }
     }

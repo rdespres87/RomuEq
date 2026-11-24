@@ -38,6 +38,51 @@ impl From<u8> for AudioSourceMode {
     }
 }
 
+/// Fractional-phase stereo linear interpolation state for [`ContinuousPiDriftController`].
+#[derive(Clone, Copy, Debug, Default)]
+struct ResamplerState {
+    phase: f64,
+    prev_l: f32,
+    prev_r: f32,
+    curr_l: f32,
+    curr_r: f32,
+    has_samples: bool,
+}
+
+impl ResamplerState {
+    fn reset(&mut self) {
+        self.phase = 0.0;
+        self.prev_l = 0.0;
+        self.prev_r = 0.0;
+        self.curr_l = 0.0;
+        self.curr_r = 0.0;
+        self.has_samples = false;
+    }
+}
+
+/// Inline buffer holding unconsumed stereo frames across block boundaries.
+struct LeftoverFrames {
+    left: [f32; 16],
+    right: [f32; 16],
+    len: usize,
+}
+
+impl Default for LeftoverFrames {
+    fn default() -> Self {
+        Self {
+            left: [0.0f32; 16],
+            right: [0.0f32; 16],
+            len: 0,
+        }
+    }
+}
+
+impl LeftoverFrames {
+    fn clear(&mut self) {
+        self.len = 0;
+    }
+}
+
 /// Transparent lock-free clock drift controller.
 ///
 /// Dynamically compensates for crystal clock frequency differences between independent
@@ -46,15 +91,8 @@ impl From<u8> for AudioSourceMode {
 pub struct ContinuousPiDriftController {
     scratch_l: Vec<f32>,
     scratch_r: Vec<f32>,
-    leftover_l: [f32; 16],
-    leftover_r: [f32; 16],
-    leftover_len: usize,
-    phase: f64,
-    prev_l: f32,
-    prev_r: f32,
-    curr_l: f32,
-    curr_r: f32,
-    has_samples: bool,
+    leftover: LeftoverFrames,
+    resampler: ResamplerState,
     smoothed_available: f64,
     is_primed: bool,
     rate_ratio: f64,
@@ -76,15 +114,8 @@ impl ContinuousPiDriftController {
         Self {
             scratch_l: vec![0.0f32; MAX_SCRATCH_FRAMES],
             scratch_r: vec![0.0f32; MAX_SCRATCH_FRAMES],
-            leftover_l: [0.0f32; 16],
-            leftover_r: [0.0f32; 16],
-            leftover_len: 0,
-            phase: 0.0,
-            prev_l: 0.0,
-            prev_r: 0.0,
-            curr_l: 0.0,
-            curr_r: 0.0,
-            has_samples: false,
+            leftover: LeftoverFrames::default(),
+            resampler: ResamplerState::default(),
             smoothed_available: Self::TARGET_FRAMES as f64,
             is_primed: false,
             rate_ratio: if rate_ratio > 0.0 { rate_ratio } else { 1.0 },
@@ -101,13 +132,8 @@ impl ContinuousPiDriftController {
 
     pub fn reset(&mut self) {
         self.is_primed = false;
-        self.has_samples = false;
-        self.phase = 0.0;
-        self.prev_l = 0.0;
-        self.prev_r = 0.0;
-        self.curr_l = 0.0;
-        self.curr_r = 0.0;
-        self.leftover_len = 0;
+        self.resampler.reset();
+        self.leftover.clear();
         self.smoothed_available = Self::TARGET_FRAMES as f64;
     }
 
@@ -150,17 +176,17 @@ impl ContinuousPiDriftController {
         // without consuming partial blocks, avoiding audible chopping and exponential decay stutter.
         if available == 0 {
             self.underrun_count += 1;
-            self.has_samples = false;
-            self.phase = 0.0;
-            self.leftover_len = 0;
+            self.resampler.has_samples = false;
+            self.resampler.phase = 0.0;
+            self.leftover.clear();
             left[..count].fill(0.0);
             right[..count].fill(0.0);
             return;
         }
-        if available < count && self.leftover_len == 0 {
+        if available < count && self.leftover.len == 0 {
             self.underrun_count += 1;
-            self.has_samples = false;
-            self.phase = 0.0;
+            self.resampler.has_samples = false;
+            self.resampler.phase = 0.0;
             left[..count].fill(0.0);
             right[..count].fill(0.0);
             return;
@@ -175,15 +201,15 @@ impl ContinuousPiDriftController {
         let is_1to1 = (self.rate_ratio - 1.0).abs() < 1e-6;
 
         // Bit-exact fast-path: direct slice transfer without fractional resampling interpolation
-        if is_1to1 && in_deadband && self.leftover_len == 0 && available >= count {
+        if is_1to1 && in_deadband && self.leftover.len == 0 && available >= count {
             let popped = consumer.pop_slice(&mut left[..count], &mut right[..count]);
             if popped == count {
-                self.prev_l = left[count - 1];
-                self.prev_r = right[count - 1];
-                self.curr_l = self.prev_l;
-                self.curr_r = self.prev_r;
-                self.has_samples = true;
-                self.phase = 0.0;
+                self.resampler.prev_l = left[count - 1];
+                self.resampler.prev_r = right[count - 1];
+                self.resampler.curr_l = self.resampler.prev_l;
+                self.resampler.curr_r = self.resampler.prev_r;
+                self.resampler.has_samples = true;
+                self.resampler.phase = 0.0;
                 return;
             }
         }
@@ -196,46 +222,47 @@ impl ContinuousPiDriftController {
         };
 
         // 5. Determine input frames needed (with +1 safety margin when fractional to guard against IEEE-754 repeated addition rounding)
-        let initial_need = if self.has_samples { 0 } else { 2 };
-        let extra_margin = usize::from((step - 1.0).abs() > 1e-12 || self.phase > 0.0);
-        let step_advances = (self.phase + (count as f64) * step).floor() as usize + extra_margin;
+        let initial_need = if self.resampler.has_samples { 0 } else { 2 };
+        let extra_margin = usize::from((step - 1.0).abs() > 1e-12 || self.resampler.phase > 0.0);
+        let step_advances =
+            (self.resampler.phase + (count as f64) * step).floor() as usize + extra_margin;
         let total_needed = (initial_need + step_advances).min(MAX_SCRATCH_FRAMES);
 
         // Copy any unconsumed leftover frames from previous block to beginning of scratch
-        for k in 0..self.leftover_len {
-            self.scratch_l[k] = self.leftover_l[k];
-            self.scratch_r[k] = self.leftover_r[k];
+        for k in 0..self.leftover.len {
+            self.scratch_l[k] = self.leftover.left[k];
+            self.scratch_r[k] = self.leftover.right[k];
         }
 
-        let from_consumer = total_needed.saturating_sub(self.leftover_len);
+        let from_consumer = total_needed.saturating_sub(self.leftover.len);
         let newly_popped = if from_consumer > 0 {
             consumer.pop_slice(
-                &mut self.scratch_l[self.leftover_len..self.leftover_len + from_consumer],
-                &mut self.scratch_r[self.leftover_len..self.leftover_len + from_consumer],
+                &mut self.scratch_l[self.leftover.len..self.leftover.len + from_consumer],
+                &mut self.scratch_r[self.leftover.len..self.leftover.len + from_consumer],
             )
         } else {
             0
         };
 
-        let popped = self.leftover_len + newly_popped;
-        self.leftover_len = 0;
+        let popped = self.leftover.len + newly_popped;
+        self.leftover.clear();
 
         let mut scratch_idx = 0;
-        if !self.has_samples {
+        if !self.resampler.has_samples {
             if popped >= 2 {
-                self.prev_l = self.scratch_l[0];
-                self.prev_r = self.scratch_r[0];
-                self.curr_l = self.scratch_l[1];
-                self.curr_r = self.scratch_r[1];
+                self.resampler.prev_l = self.scratch_l[0];
+                self.resampler.prev_r = self.scratch_r[0];
+                self.resampler.curr_l = self.scratch_l[1];
+                self.resampler.curr_r = self.scratch_r[1];
                 scratch_idx = 2;
-                self.has_samples = true;
+                self.resampler.has_samples = true;
             } else if popped == 1 {
-                self.prev_l = self.scratch_l[0];
-                self.prev_r = self.scratch_r[0];
-                self.curr_l = self.prev_l;
-                self.curr_r = self.prev_r;
+                self.resampler.prev_l = self.scratch_l[0];
+                self.resampler.prev_r = self.scratch_r[0];
+                self.resampler.curr_l = self.resampler.prev_l;
+                self.resampler.curr_r = self.resampler.prev_r;
                 scratch_idx = 1;
-                self.has_samples = true;
+                self.resampler.has_samples = true;
             } else {
                 left[..count].fill(0.0);
                 right[..count].fill(0.0);
@@ -245,23 +272,24 @@ impl ContinuousPiDriftController {
 
         // 6. Phase-continuous sample-by-sample linear interpolation
         for i in 0..count {
-            let frac = self.phase as f32;
-            left[i] = self.prev_l + frac * (self.curr_l - self.prev_l);
-            right[i] = self.prev_r + frac * (self.curr_r - self.prev_r);
-            self.phase += step;
-            while self.phase >= 1.0 {
-                self.phase -= 1.0;
-                self.prev_l = self.curr_l;
-                self.prev_r = self.curr_r;
+            let frac = self.resampler.phase as f32;
+            left[i] = self.resampler.prev_l + frac * (self.resampler.curr_l - self.resampler.prev_l);
+            right[i] =
+                self.resampler.prev_r + frac * (self.resampler.curr_r - self.resampler.prev_r);
+            self.resampler.phase += step;
+            while self.resampler.phase >= 1.0 {
+                self.resampler.phase -= 1.0;
+                self.resampler.prev_l = self.resampler.curr_l;
+                self.resampler.prev_r = self.resampler.curr_r;
                 if scratch_idx < popped {
-                    self.curr_l = self.scratch_l[scratch_idx];
-                    self.curr_r = self.scratch_r[scratch_idx];
+                    self.resampler.curr_l = self.scratch_l[scratch_idx];
+                    self.resampler.curr_r = self.scratch_r[scratch_idx];
                     scratch_idx += 1;
                 } else {
                     // Starvation underrun: soft exponential decay to silence without clicking
                     self.underrun_count += 1;
-                    self.curr_l *= 0.98;
-                    self.curr_r *= 0.98;
+                    self.resampler.curr_l *= 0.98;
+                    self.resampler.curr_r *= 0.98;
                 }
             }
         }
@@ -270,10 +298,10 @@ impl ContinuousPiDriftController {
         if scratch_idx < popped {
             let rem = (popped - scratch_idx).min(16);
             for k in 0..rem {
-                self.leftover_l[k] = self.scratch_l[scratch_idx + k];
-                self.leftover_r[k] = self.scratch_r[scratch_idx + k];
+                self.leftover.left[k] = self.scratch_l[scratch_idx + k];
+                self.leftover.right[k] = self.scratch_r[scratch_idx + k];
             }
-            self.leftover_len = rem;
+            self.leftover.len = rem;
         }
     }
 }
@@ -612,23 +640,29 @@ impl AudioStream {
                     &stream_config,
                     move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
                         let mut ctx = AudioRenderContext {
-                            channels,
-                            sample_rate,
-                            block_size,
+                            format: StreamFormatSpec {
+                                channels,
+                                sample_rate,
+                                block_size,
+                            },
                             engine: &mut engine,
                             param_consumer: &mut param_consumer,
                             audio_consumer: &audio_consumer,
                             drift: &mut drift,
-                            is_running: &is_running,
-                            source_mode: &source_mode,
-                            peak_l: &peak_l,
-                            peak_r: &peak_r,
-                            spectrum_samples: &spectrum_samples,
+                            telemetry: AudioTelemetry {
+                                is_running: &is_running,
+                                source_mode: &source_mode,
+                                peak_l: &peak_l,
+                                peak_r: &peak_r,
+                                spectrum_samples: &spectrum_samples,
+                            },
                             phase: &mut phase,
-                            left_in: &mut left_in,
-                            right_in: &mut right_in,
-                            left_out: &mut left_out,
-                            right_out: &mut right_out,
+                            scratch: AudioScratchBuffers {
+                                left_in: &mut left_in,
+                                right_in: &mut right_in,
+                                left_out: &mut left_out,
+                                right_out: &mut right_out,
+                            },
                         };
                         process_output_block(data, &mut ctx);
                     },
@@ -646,23 +680,29 @@ impl AudioStream {
                             let active_len = frames * channels;
                             let scratch_slice = &mut float_scratch[..active_len];
                             let mut ctx = AudioRenderContext {
-                                channels,
-                                sample_rate,
-                                block_size,
+                                format: StreamFormatSpec {
+                                    channels,
+                                    sample_rate,
+                                    block_size,
+                                },
                                 engine: &mut engine,
                                 param_consumer: &mut param_consumer,
                                 audio_consumer: &audio_consumer,
                                 drift: &mut drift,
-                                is_running: &is_running,
-                                source_mode: &source_mode,
-                                peak_l: &peak_l,
-                                peak_r: &peak_r,
-                                spectrum_samples: &spectrum_samples,
+                                telemetry: AudioTelemetry {
+                                    is_running: &is_running,
+                                    source_mode: &source_mode,
+                                    peak_l: &peak_l,
+                                    peak_r: &peak_r,
+                                    spectrum_samples: &spectrum_samples,
+                                },
                                 phase: &mut phase,
-                                left_in: &mut left_in,
-                                right_in: &mut right_in,
-                                left_out: &mut left_out,
-                                right_out: &mut right_out,
+                                scratch: AudioScratchBuffers {
+                                    left_in: &mut left_in,
+                                    right_in: &mut right_in,
+                                    left_out: &mut left_out,
+                                    right_out: &mut right_out,
+                                },
                             };
                             process_output_block(scratch_slice, &mut ctx);
                             for (out, &sample) in
@@ -840,46 +880,62 @@ pub fn soft_limit(x: f32) -> f32 {
     }
 }
 
-/// Execution context bundling pre-allocated buffers, drift control, atomic states, and DSP engine.
-pub struct AudioRenderContext<'a> {
+/// Immutable audio stream format parameters for a render callback.
+#[derive(Clone, Copy, Debug)]
+pub struct StreamFormatSpec {
     pub channels: usize,
     pub sample_rate: f32,
     pub block_size: usize,
-    pub engine: &'a mut EngineLifecycle,
-    pub param_consumer: &'a mut TripleBufferConsumer<EqParameters>,
-    pub audio_consumer: &'a AudioRingConsumer,
-    pub drift: &'a mut ContinuousPiDriftController,
+}
+
+/// Lock-free atomic state and metering sinks shared between audio and UI threads.
+pub struct AudioTelemetry<'a> {
     pub is_running: &'a AtomicBool,
     pub source_mode: &'a AtomicU8,
     pub peak_l: &'a AtomicU32,
     pub peak_r: &'a AtomicU32,
     pub spectrum_samples: &'a [AtomicU32],
-    pub phase: &'a mut f64,
+}
+
+/// Pre-allocated planar stereo scratch slices for real-time audio processing.
+pub struct AudioScratchBuffers<'a> {
     pub left_in: &'a mut [f32],
     pub right_in: &'a mut [f32],
     pub left_out: &'a mut [f32],
     pub right_out: &'a mut [f32],
 }
 
+/// Execution context bundling pre-allocated buffers, drift control, atomic states, and DSP engine.
+pub struct AudioRenderContext<'a> {
+    pub format: StreamFormatSpec,
+    pub engine: &'a mut EngineLifecycle,
+    pub param_consumer: &'a mut TripleBufferConsumer<EqParameters>,
+    pub audio_consumer: &'a AudioRingConsumer,
+    pub drift: &'a mut ContinuousPiDriftController,
+    pub telemetry: AudioTelemetry<'a>,
+    pub phase: &'a mut f64,
+    pub scratch: AudioScratchBuffers<'a>,
+}
+
 /// Real-time audio block processor: wait-free, zero allocation, zero mutex locks.
 fn process_output_block(data: &mut [f32], ctx: &mut AudioRenderContext<'_>) {
-    let channels = ctx.channels;
-    let sample_rate = ctx.sample_rate;
-    let block_size = ctx.block_size;
+    let channels = ctx.format.channels;
+    let sample_rate = ctx.format.sample_rate;
+    let block_size = ctx.format.block_size;
     let engine = &mut *ctx.engine;
     let param_consumer = &mut *ctx.param_consumer;
     let audio_consumer = ctx.audio_consumer;
     let drift = &mut *ctx.drift;
-    let is_running = ctx.is_running;
-    let source_mode = ctx.source_mode;
-    let peak_l = ctx.peak_l;
-    let peak_r = ctx.peak_r;
-    let spectrum_samples = ctx.spectrum_samples;
+    let is_running = ctx.telemetry.is_running;
+    let source_mode = ctx.telemetry.source_mode;
+    let peak_l = ctx.telemetry.peak_l;
+    let peak_r = ctx.telemetry.peak_r;
+    let spectrum_samples = ctx.telemetry.spectrum_samples;
     let phase = &mut *ctx.phase;
-    let left_in = &mut *ctx.left_in;
-    let right_in = &mut *ctx.right_in;
-    let left_out = &mut *ctx.left_out;
-    let right_out = &mut *ctx.right_out;
+    let left_in = &mut *ctx.scratch.left_in;
+    let right_in = &mut *ctx.scratch.right_in;
+    let left_out = &mut *ctx.scratch.left_out;
+    let right_out = &mut *ctx.scratch.right_out;
     let frames = (data.len() / channels).min(MAX_SCRATCH_FRAMES);
     if frames == 0 {
         return;

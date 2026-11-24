@@ -464,9 +464,9 @@ pub use workspace_ui::*;
 
 pub mod widgets;
 pub use widgets::{
-    render_band, render_frequency_response_plot, render_interactive_frequency_response_plot,
-    render_master_section, render_spectrum_analyzer, render_stereo_vu_meter,
-    render_vertical_stereo_vu_meter,
+    BandRenderContext, PlotContext, render_band, render_frequency_response_plot,
+    render_interactive_frequency_response_plot, render_master_section, render_spectrum_analyzer,
+    render_stereo_vu_meter, render_vertical_stereo_vu_meter,
 };
 
 #[cfg(feature = "standalone")]
@@ -716,8 +716,7 @@ mod tests {
 
     #[test]
     fn test_render_band_signature() {
-        let _fn: fn(&mut egui::Ui, usize, &BandParams, &ParamSnapshot, &mut GuiCommandBatch) =
-            render_band;
+        let _fn: fn(&mut egui::Ui, BandRenderContext<'_>, &mut GuiCommandBatch) = render_band;
     }
 
     #[test]
