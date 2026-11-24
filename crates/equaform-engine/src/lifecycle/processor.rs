@@ -40,7 +40,7 @@ impl EngineLifecycle {
         }
 
         if inputs.len() != outputs.len() {
-            panic!("inputs.len() != outputs.len()");
+            return false;
         }
 
         let block_size = inputs.first().map(|s| s.len()).unwrap_or(0);

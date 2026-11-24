@@ -27,7 +27,7 @@
 //!
 //! - `process()` performs **no allocations**, no syscalls, no blocking.
 //! - Invalid-host behaviour is deterministic: returns `false` without
-//!   modifying state (except the documented panic on `inputs.len() != outputs.len()`).
+//!   modifying state or panicking, including on channel count mismatch.
 //! - All buffers are stack-allocated or use a flat pre-allocated array.
 //!
 //! # DSP processing

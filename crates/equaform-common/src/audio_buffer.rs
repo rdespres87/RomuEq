@@ -291,13 +291,8 @@ impl EngineLifecycle {
     ///
     /// # Invalid-host behavior
     ///
-    /// If preconditions are violated, the method returns `false` and does
-    /// **not** modify internal state. This is deterministic and safe — no
-    /// panic, no allocation, no undefined behavior.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `inputs.len() != outputs.len()`.
+    /// If preconditions are violated, the method returns `false` without
+    /// modifying internal state (no panics, no allocations, no undefined behavior).
     pub fn process(&mut self, inputs: &[&[f32]], outputs: &mut [&mut [f32]]) -> bool {
         // Check preconditions.
         if self.state != LifecycleState::Ready {
@@ -305,7 +300,7 @@ impl EngineLifecycle {
         }
 
         if inputs.len() != outputs.len() {
-            panic!("inputs.len() != outputs.len()");
+            return false;
         }
 
         let block_size = inputs.first().map(|s| s.len()).unwrap_or(0);
@@ -655,8 +650,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "inputs.len() != outputs.len()")]
-    fn test_lifecycle_process_unequal_input_output_panics() {
+    fn test_lifecycle_process_unequal_input_output_returns_false() {
         let mut engine = EngineLifecycle::new();
         engine.prepare(44100.0, 256, 2);
 
@@ -666,7 +660,9 @@ mod tests {
         let mut output_refs: Vec<&mut [f32]> =
             outputs.iter_mut().map(|v| v.as_mut_slice()).collect();
 
-        engine.process(&input_refs, &mut output_refs);
+        // Real-time hot path must never panic on host channel mismatch.
+        assert!(!engine.process(&input_refs, &mut output_refs));
+        assert!(outputs.iter().flatten().all(|&s| s == 0.0));
     }
 
     #[test]
