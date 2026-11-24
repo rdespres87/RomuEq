@@ -242,7 +242,10 @@ mod windows {
                 spectrum_proc,
                 fft_ring: VecDeque::with_capacity(FFT_SIZE * 4),
                 spectrum_frame_num: 0,
-                ui_state: WorkspaceUiState::default(),
+                ui_state: WorkspaceUiState {
+                    language: equaform_gui::Language::load_saved(),
+                    ..Default::default()
+                },
                 preset_manager,
                 current_preset: String::new(),
                 status_message: None,
@@ -532,6 +535,9 @@ mod windows {
                             self.current_preset.clear();
                         }
                         self.status_message = Some(format!("Preset '{name}' deleted"));
+                    }
+                    WorkspaceAction::SetLanguage(lang) => {
+                        lang.save();
                     }
                     _ => {}
                 }

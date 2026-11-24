@@ -567,7 +567,10 @@ mod macos {
                 surface_config,
                 renderer,
                 pixels_per_point,
-                ui_state: WorkspaceUiState::default(),
+                ui_state: WorkspaceUiState {
+                    language: equaform_gui::Language::load_saved(),
+                    ..Default::default()
+                },
                 preset_manager,
                 current_preset: String::new(),
                 status_message: None,
@@ -809,6 +812,9 @@ mod macos {
                             self.current_preset.clear();
                         }
                         self.status_message = Some(format!("Preset '{name}' deleted"));
+                    }
+                    WorkspaceAction::SetLanguage(lang) => {
+                        lang.save();
                     }
                     _ => {}
                 }

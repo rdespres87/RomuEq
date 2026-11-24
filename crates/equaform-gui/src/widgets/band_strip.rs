@@ -1,5 +1,6 @@
 //! Single-band EQ parameter strip widget.
 
+use crate::i18n::Translations;
 use crate::{BandParams, GuiCommandBatch, ParamSnapshot};
 
 // ---------------------------------------------------------------------------
@@ -12,6 +13,7 @@ pub struct BandRenderContext<'a> {
     pub band_index: usize,
     pub params: &'a BandParams,
     pub snapshot: &'a ParamSnapshot,
+    pub translations: &'static Translations,
 }
 
 /// Render a single band's controls.
@@ -27,17 +29,12 @@ pub fn render_band(
     let band_index = ctx.band_index;
     let params = ctx.params;
     let snapshot = ctx.snapshot;
-    let band_names = [
-        "Sub",
-        "Low",
-        "Low-Mid",
-        "Mid",
-        "High-Mid",
-        "Presence",
-        "Brilliance",
-        "Air",
-    ];
-    let band_name = band_names.get(band_index).copied().unwrap_or("Band");
+    let t = ctx.translations;
+    let band_name = t
+        .band_names
+        .get(band_index)
+        .copied()
+        .unwrap_or(t.band_fallback);
 
     let color = match band_index % 8 {
         0 => egui::Color32::from_rgb(255, 80, 80),   // Red
@@ -83,7 +80,7 @@ pub fn render_band(
 
             // 2. Compact Filter type dropdown (enum, 0–4 matching FilterType::to_raw)
             let ft_val = snapshot.get(params.filter_type()).unwrap_or(0.0);
-            let filter_types = ["Bell", "LowShelf", "HiShelf", "HiPass", "LowPass"];
+            let filter_types = t.filter_types;
             let ft_idx = (ft_val.round().max(0.0) as usize).min(filter_types.len() - 1);
             let mut ft_idx = ft_idx;
 
@@ -124,7 +121,7 @@ pub fn render_band(
                             .vertical()
                             .show_value(false),
                     )
-                    .on_hover_text("Double-click to reset to 0 dB")
+                    .on_hover_text(t.tooltip_reset_gain)
                     .changed()
                 {
                     batch.push(params.gain_db(), gain_val);
@@ -159,7 +156,7 @@ pub fn render_band(
                             }
                         }),
                 )
-                .on_hover_text("Center frequency (drag or click to edit)")
+                .on_hover_text(t.tooltip_center_freq)
                 .changed()
             {
                 batch.push(params.frequency_hz(), freq_val);
@@ -175,7 +172,7 @@ pub fn render_band(
                         .fixed_decimals(2)
                         .prefix("Q "),
                 )
-                .on_hover_text("Bandwidth (Q factor)")
+                .on_hover_text(t.tooltip_q_factor)
                 .changed()
             {
                 batch.push(params.q(), q_val);

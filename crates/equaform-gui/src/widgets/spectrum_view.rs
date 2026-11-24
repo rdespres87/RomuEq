@@ -1,6 +1,7 @@
 //! Real-time FFT spectrum analyzer widget.
 
 use crate::AnalysisSnapshot;
+use crate::i18n::{Language, Translations};
 use crate::widgets::{log_freq_axis_formatter, log_freq_grid_spacer};
 use egui_plot::{Line, Plot};
 
@@ -8,7 +9,7 @@ use egui_plot::{Line, Plot};
 // Spectrum analyzer widget
 // ---------------------------------------------------------------------------
 
-/// Renders a real-time spectrum analyzer from analysis data.
+/// Renders a real-time spectrum analyzer from analysis data (English default).
 ///
 /// Displays the latest FFT magnitude data as a log-scaled bar chart.
 /// Uses `analysis.spectrum_data` (a Vec of [freq_hz, magnitude_db] pairs)
@@ -18,6 +19,23 @@ pub fn render_spectrum_analyzer(
     analysis: &AnalysisSnapshot,
     sample_rate: f32,
     num_bars: usize,
+) {
+    render_spectrum_analyzer_localized(
+        ui,
+        analysis,
+        sample_rate,
+        num_bars,
+        Translations::for_language(Language::English),
+    );
+}
+
+/// Renders a real-time spectrum analyzer using the provided translation catalog.
+pub fn render_spectrum_analyzer_localized(
+    ui: &mut egui::Ui,
+    analysis: &AnalysisSnapshot,
+    sample_rate: f32,
+    num_bars: usize,
+    t: &'static Translations,
 ) {
     let nyquist = sample_rate * 0.5;
 
@@ -98,8 +116,10 @@ pub fn render_spectrum_analyzer(
         .color(egui::Color32::from_rgb(0, 230, 180)) // Studio cyan/emerald
         .stroke(egui::Stroke::new(1.8, egui::Color32::from_rgb(0, 230, 180)))
         .fill(-90.0)
-        .name("Spectrum");
+        .name(t.spectrum_series);
 
+    let freq_short = t.tooltip_freq_short;
+    let level_short = t.tooltip_level_short;
     let plot = Plot::new("spectrum")
         .include_x(log_min)
         .include_x(log_max)
@@ -113,9 +133,9 @@ pub fn render_spectrum_analyzer(
         .allow_double_click_reset(false)
         .x_axis_formatter(log_freq_axis_formatter)
         .x_grid_spacer(log_freq_grid_spacer)
-        .label_formatter(|_name, val| {
+        .label_formatter(move |_name, val| {
             let freq = 10.0_f64.powf(val.x);
-            format!("Freq: {freq:.0} Hz\nLevel: {:+.1} dBFS", val.y)
+            format!("{freq_short}: {freq:.0} Hz\n{level_short}: {:+.1} dBFS", val.y)
         })
         .show(ui, |plot_ui| {
             plot_ui.set_auto_bounds(egui::Vec2b::FALSE);

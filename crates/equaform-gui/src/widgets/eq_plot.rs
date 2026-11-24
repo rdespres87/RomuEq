@@ -1,5 +1,6 @@
 //! Frequency response plot widgets (static and interactive node-dragging).
 
+use crate::i18n::{Language, Translations};
 use crate::widgets::{log_freq_axis_formatter, log_freq_grid_spacer};
 use crate::{BandParams, GuiCommandBatch};
 use egui_plot::{HLine, Line, Plot, Points, Text, VLine};
@@ -13,6 +14,7 @@ pub struct PlotContext<'a> {
     pub bands: &'a [BandParameters; MAX_BANDS],
     pub sample_rate: f32,
     pub width: usize,
+    pub translations: &'static Translations,
 }
 
 const LOG_MIN_X: f64 = 1.204_119_982_655_924_8; // 16.0_f64.log10()
@@ -132,6 +134,7 @@ fn draw_band_nodes(
     plot_ui: &mut egui_plot::PlotUi,
     bands: &[BandParameters; MAX_BANDS],
     active_dragged: Option<usize>,
+    t: &Translations,
 ) {
     for (i, band) in bands.iter().enumerate() {
         if !band.enabled {
@@ -168,7 +171,7 @@ fn draw_band_nodes(
             Points::new(vec![[node_x, node_y]])
                 .color(color)
                 .radius(dot_radius)
-                .name(format!("Bande {}", i + 1)),
+                .name(format!("{} {}", t.band_prefix, i + 1)),
         );
 
         if is_active_node {
@@ -193,7 +196,7 @@ fn draw_band_nodes(
     }
 }
 
-/// Renders the frequency response plot for the EQ bands.
+/// Renders the frequency response plot for the EQ bands (English default).
 ///
 /// Computes the combined magnitude response across log-spaced frequencies
 /// from 20 Hz to 20 kHz and draws it as a smooth curve in an `egui_plot::Plot`.
@@ -203,7 +206,22 @@ pub fn render_frequency_response_plot(
     sample_rate: f32,
     width: usize,
 ) {
-    let response = compute_response(sample_rate, bands, width);
+    render_frequency_response_plot_localized(
+        ui,
+        PlotContext {
+            bands,
+            sample_rate,
+            width,
+            translations: Translations::for_language(Language::English),
+        },
+    );
+}
+
+/// Renders the frequency response plot using the provided translation catalog.
+pub fn render_frequency_response_plot_localized(ui: &mut egui::Ui, plot_ctx: PlotContext<'_>) {
+    let bands = plot_ctx.bands;
+    let t = plot_ctx.translations;
+    let response = compute_response(plot_ctx.sample_rate, bands, plot_ctx.width);
 
     let points: Vec<[f64; 2]> = response
         .iter()
@@ -218,8 +236,10 @@ pub fn render_frequency_response_plot(
     let line = Line::new(points)
         .color(egui::Color32::from_rgb(0, 180, 255))
         .stroke(egui::Stroke::new(2.0, egui::Color32::from_rgb(0, 180, 255)))
-        .name("EQ Response");
+        .name(t.eq_response_series);
 
+    let freq_short = t.tooltip_freq_short;
+    let gain_short = t.tooltip_gain_short;
     let plot = Plot::new("eq_response")
         .include_x(LOG_MIN_X)
         .include_x(LOG_MAX_X)
@@ -231,9 +251,9 @@ pub fn render_frequency_response_plot(
         .allow_scroll(false)
         .x_axis_formatter(log_freq_axis_formatter)
         .x_grid_spacer(log_freq_grid_spacer)
-        .label_formatter(|_name, val| {
+        .label_formatter(move |_name, val| {
             let freq = 10.0_f64.powf(val.x);
-            format!("Freq: {freq:.0} Hz\nGain: {:+.1} dB", val.y)
+            format!("{freq_short}: {freq:.0} Hz\n{gain_short}: {:+.1} dB", val.y)
         })
         .show(ui, |plot_ui| {
             plot_ui.set_auto_bounds(egui::Vec2b::FALSE);
@@ -254,7 +274,7 @@ pub fn render_frequency_response_plot(
                     Points::new(vec![[node_x, node_y]])
                         .color(color)
                         .radius(5.0)
-                        .name(format!("Bande {}", i + 1)),
+                        .name(format!("{} {}", t.band_prefix, i + 1)),
                 );
                 plot_ui.text(
                     Text::new(
@@ -267,9 +287,9 @@ pub fn render_frequency_response_plot(
         });
 
     ui.horizontal(|ui| {
-        ui.label("Fréquence (Hz)");
+        ui.label(t.axis_freq);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label("Gain (dB)");
+            ui.label(t.axis_gain);
         });
     });
 
@@ -284,6 +304,7 @@ pub fn render_interactive_frequency_response_plot(
     batch: &mut GuiCommandBatch,
 ) {
     let bands = plot_ctx.bands;
+    let t = plot_ctx.translations;
     let response = compute_response(plot_ctx.sample_rate, bands, plot_ctx.width);
 
     let points: Vec<[f64; 2]> = response
@@ -300,13 +321,15 @@ pub fn render_interactive_frequency_response_plot(
         .color(egui::Color32::from_rgb(0, 185, 255))
         .stroke(egui::Stroke::new(2.2, egui::Color32::from_rgb(0, 185, 255)))
         .fill(0.0)
-        .name("EQ Curve");
+        .name(t.eq_curve_series);
 
     let is_primary_down = ui.ctx().input(|i| i.pointer.primary_down());
     let is_primary_pressed = ui.ctx().input(|i| i.pointer.primary_pressed());
     let mut local_dragged = *dragged_band;
     let mut coord_under_pointer = None;
 
+    let freq_short = t.tooltip_freq_short;
+    let gain_short = t.tooltip_gain_short;
     let plot = Plot::new("eq_response_interactive")
         .include_x(LOG_MIN_X)
         .include_x(LOG_MAX_X)
@@ -320,9 +343,9 @@ pub fn render_interactive_frequency_response_plot(
         .allow_double_click_reset(false)
         .x_axis_formatter(log_freq_axis_formatter)
         .x_grid_spacer(log_freq_grid_spacer)
-        .label_formatter(|_name, val| {
+        .label_formatter(move |_name, val| {
             let freq = 10.0_f64.powf(val.x);
-            format!("Freq: {freq:.0} Hz\nGain: {:+.1} dB", val.y)
+            format!("{freq_short}: {freq:.0} Hz\n{gain_short}: {:+.1} dB", val.y)
         })
         .show(ui, |plot_ui| {
             plot_ui.set_auto_bounds(egui::Vec2b::FALSE);
@@ -339,7 +362,7 @@ pub fn render_interactive_frequency_response_plot(
                 coord_under_pointer = Some((coord.x, coord.y));
             }
 
-            draw_band_nodes(plot_ui, bands, local_dragged);
+            draw_band_nodes(plot_ui, bands, local_dragged, t);
         });
 
     let plot_hovered = plot.response.hovered();

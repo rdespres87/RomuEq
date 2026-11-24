@@ -104,13 +104,15 @@ impl<A: GuiApp> StandaloneRunner<A> {
             let _ = audio_stream.set_parameters(*eng.eq_parameters());
         }
 
+        let saved_lang = Language::load_saved();
+        let t = Translations::for_language(saved_lang);
         let (audio_active, status_message) = match audio_stream.start() {
             Ok(()) => {
                 client.sample_rate = audio_stream.sample_rate();
-                let out_name = detected_out.as_deref().unwrap_or("Output");
-                (true, Some(format!("EQ active → {out_name}")))
+                let out_name = detected_out.as_deref().unwrap_or(t.output_slider);
+                (true, Some(format!("{} → {out_name}", t.status_eq_active)))
             }
-            Err(e) => (false, Some(format!("Stream startup error: {e}"))),
+            Err(e) => (false, Some(format!("{}: {e}", t.status_stream_error))),
         };
 
         let spectrum_config = equaform_analysis::SpectrumConfig::new(1024, 48000.0);
@@ -128,7 +130,10 @@ impl<A: GuiApp> StandaloneRunner<A> {
             audio_active,
             available_outputs: out_devices,
             available_inputs: in_devices,
-            ui_state: WorkspaceUiState::default(),
+            ui_state: WorkspaceUiState {
+                language: saved_lang,
+                ..Default::default()
+            },
             spectrum_processor,
             spectrum_frame_num: 0,
             status_message,
@@ -232,13 +237,14 @@ impl<A: GuiApp> App for StandaloneRunner<A> {
 
         // Render the UI.
         // Render the unified workspace UI across Standalone and Plugin modes.
+        let t = Translations::for_language(self.ui_state.language);
         let env = HostEnvironment::Standalone {
             audio_active: self.audio_active,
             current_output: self
                 .audio_stream
                 .as_ref()
                 .and_then(|a| a.selected_output_device())
-                .unwrap_or("Défaut Système")
+                .unwrap_or(t.system_default_output)
                 .to_string(),
             available_outputs: self.available_outputs.clone(),
             peak_levels_db: self
@@ -268,6 +274,7 @@ impl<A: GuiApp> App for StandaloneRunner<A> {
         });
 
         // Handle actions from workspace UI
+        let t = Translations::for_language(self.ui_state.language);
         for action in actions {
             match action {
                 WorkspaceAction::TogglePlayStop => {
@@ -275,7 +282,7 @@ impl<A: GuiApp> App for StandaloneRunner<A> {
                         if self.audio_active {
                             let _ = audio.stop();
                             self.audio_active = false;
-                            self.status_message = Some("Audio muted".to_string());
+                            self.status_message = Some(t.status_audio_muted.to_string());
                         } else {
                             if let Some(ref engine) = self.client.engine {
                                 let _ = audio.set_parameters(*engine.eq_parameters());
@@ -284,13 +291,15 @@ impl<A: GuiApp> App for StandaloneRunner<A> {
                                 Ok(()) => {
                                     self.audio_active = true;
                                     self.client.sample_rate = audio.sample_rate();
-                                    let out_name =
-                                        audio.selected_output_device().unwrap_or("Output");
+                                    let out_name = audio
+                                        .selected_output_device()
+                                        .unwrap_or(t.output_slider);
                                     self.status_message =
-                                        Some(format!("EQ active → {out_name}"));
+                                        Some(format!("{} → {out_name}", t.status_eq_active));
                                 }
                                 Err(err) => {
-                                    self.status_message = Some(format!("Audio error: {err}"));
+                                    self.status_message =
+                                        Some(format!("{}: {err}", t.status_audio_error));
                                 }
                             }
                         }
@@ -309,23 +318,25 @@ impl<A: GuiApp> App for StandaloneRunner<A> {
                                 Ok(()) => {
                                     self.audio_active = true;
                                     self.client.sample_rate = audio.sample_rate();
-                                    self.status_message = Some(format!("EQ active → {dev}"));
+                                    self.status_message =
+                                        Some(format!("{} → {dev}", t.status_eq_active));
                                 }
                                 Err(e) => {
                                     self.audio_active = false;
                                     self.status_message =
-                                        Some(format!("Output error '{dev}': {e}"));
+                                        Some(format!("{} '{dev}': {e}", t.status_output_error));
                                 }
                             }
                         } else {
-                            self.status_message = Some(format!("Selected output: {dev}"));
+                            self.status_message =
+                                Some(format!("{}: {dev}", t.status_selected_output));
                         }
                     }
                 }
                 WorkspaceAction::RefreshDevices => {
                     self.available_outputs = audio::AudioStream::available_output_devices();
                     self.available_inputs = audio::AudioStream::available_input_devices();
-                    self.status_message = Some("Audio devices refreshed".to_string());
+                    self.status_message = Some(t.status_devices_refreshed.to_string());
                 }
                 WorkspaceAction::ApplyPreset(name) => {
                     let _ = self.client.apply_preset(&name);
@@ -340,17 +351,18 @@ impl<A: GuiApp> App for StandaloneRunner<A> {
                             let _ = audio.set_parameters(*engine.eq_parameters());
                         }
                     }
-                    self.status_message = Some(format!("Preset '{name}' applied"));
+                    self.status_message = Some(format!("{}: '{name}'", t.status_preset_applied));
                 }
                 WorkspaceAction::SavePreset(name) => {
                     if let Err(e) = self.client.create_preset(&name) {
-                        self.status_message = Some(format!("Preset error '{name}': {e}"));
+                        self.status_message =
+                            Some(format!("{} '{name}': {e}", t.status_preset_error));
                     } else {
                         self.client._current_preset = name.clone();
                         let _ = persist_preset_to_disk(&mut self.client.preset_manager, &name);
                         save_last_active_preset_name(&name);
                         save_complete_app_state(&self.client);
-                        self.status_message = Some(format!("Preset '{name}' saved to disk"));
+                        self.status_message = Some(format!("{}: '{name}'", t.status_preset_saved));
                     }
                 }
                 WorkspaceAction::DeletePreset(name) => {
@@ -358,7 +370,10 @@ impl<A: GuiApp> App for StandaloneRunner<A> {
                     remove_preset_from_disk(&name);
                     self.client._current_preset.clear();
                     save_complete_app_state(&self.client);
-                    self.status_message = Some(format!("Preset '{name}' deleted"));
+                    self.status_message = Some(format!("{}: '{name}'", t.status_preset_deleted));
+                }
+                WorkspaceAction::SetLanguage(lang) => {
+                    lang.save();
                 }
             }
         }

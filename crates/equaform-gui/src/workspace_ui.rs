@@ -6,12 +6,13 @@
 
 use equaform_common::{BandParameters, MAX_BANDS, ParamId};
 
+use crate::i18n::{Language, Translations};
 use crate::preset_manager::PresetManager;
 use crate::presets_io::is_factory_preset;
 use crate::{
     AnalysisSnapshot, BandControls, BandRenderContext, GuiCommandBatch, ParamSnapshot, PlotContext,
-    render_band, render_interactive_frequency_response_plot, render_master_section,
-    render_spectrum_analyzer, render_vertical_stereo_vu_meter,
+    render_band, render_interactive_frequency_response_plot, render_master_section_localized,
+    render_spectrum_analyzer_localized, render_vertical_stereo_vu_meter,
 };
 
 /// Host environment under which the workspace UI is currently rendered.
@@ -54,6 +55,8 @@ pub enum WorkspaceAction {
     SavePreset(String),
     /// Delete a named preset.
     DeletePreset(String),
+    /// Change the UI display language.
+    SetLanguage(Language),
 }
 
 /// State for interactive dragging and preset text input across UI frames.
@@ -63,6 +66,8 @@ pub struct WorkspaceUiState {
     pub dragged_band: Option<usize>,
     /// Name input text for saving user presets.
     pub preset_name_input: String,
+    /// Active UI language.
+    pub language: Language,
 }
 
 /// Context parameters required to render the Equaform workspace UI.
@@ -98,10 +103,11 @@ pub fn render_workspace(
 
     let mut batch = GuiCommandBatch::new();
     let mut actions = Vec::new();
+    let t = Translations::for_language(state.language);
 
     ui.spacing_mut().item_spacing.y = 4.0;
 
-    // 1. Top toolbar: Brand + Bypass + Output/Host info + Status
+    // 1. Top toolbar: Brand + Bypass + Output/Host info + Status + Language
     ui.horizontal(|ui| {
         ui.label(
             egui::RichText::new("Equaform-8")
@@ -115,9 +121,9 @@ pub fn render_workspace(
         // Sleek unified Bypass button (LED style)
         let is_bypassed = snapshot.get(ParamId(1)).map(|v| v >= 0.5).unwrap_or(false);
         let (bypass_text, bypass_color) = if is_bypassed {
-            ("⏻ BYPASS", egui::Color32::from_rgb(175, 180, 190))
+            (t.bypass_on, egui::Color32::from_rgb(175, 180, 190))
         } else {
-            ("⏻ ACTIVE", egui::Color32::from_rgb(70, 235, 130))
+            (t.bypass_off, egui::Color32::from_rgb(70, 235, 130))
         };
 
         if ui
@@ -127,9 +133,9 @@ pub fn render_workspace(
                     .color(bypass_color),
             ))
             .on_hover_text(if is_bypassed {
-                "Click to enable EQ processing"
+                t.tooltip_enable_eq
             } else {
-                "Click to bypass EQ (dry pass-through)"
+                t.tooltip_bypass_eq
             })
             .clicked()
         {
@@ -145,7 +151,7 @@ pub fn render_workspace(
                 available_outputs,
                 ..
             } => {
-                let mute_label = if *audio_active { "Mute" } else { "Unmute" };
+                let mute_label = if *audio_active { t.mute } else { t.unmute };
                 if ui.button(mute_label).clicked() {
                     actions.push(WorkspaceAction::TogglePlayStop);
                 }
@@ -153,7 +159,7 @@ pub fn render_workspace(
                 ui.separator();
 
                 let mut chosen_out = current_output.clone();
-                ui.label("🔊 Output:");
+                ui.label(t.output_label);
                 egui::ComboBox::from_id_salt("output_device_select")
                     .selected_text(current_output)
                     .show_ui(ui, |ui| {
@@ -168,7 +174,7 @@ pub fn render_workspace(
 
                 if ui
                     .button("🔄")
-                    .on_hover_text("Refresh audio devices")
+                    .on_hover_text(t.tooltip_refresh_devices)
                     .clicked()
                 {
                     actions.push(WorkspaceAction::RefreshDevices);
@@ -181,8 +187,9 @@ pub fn render_workspace(
             } => {
                 ui.label(
                     egui::RichText::new(format!(
-                        "🎛 {host_description} • {:.1} kHz • Stereo",
-                        host_sr / 1000.0
+                        "🎛 {host_description} • {:.1} kHz • {}",
+                        host_sr / 1000.0,
+                        t.stereo_label
                     ))
                     .small()
                     .color(egui::Color32::from_rgb(170, 180, 195)),
@@ -198,6 +205,25 @@ pub fn render_workspace(
                     .color(egui::Color32::from_rgb(165, 175, 190)),
             );
         }
+
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let mut chosen_lang = state.language;
+            egui::ComboBox::from_id_salt("language_select")
+                .width(52.0)
+                .selected_text(state.language.short_code())
+                .show_ui(ui, |ui| {
+                    for lang in Language::ALL {
+                        ui.selectable_value(&mut chosen_lang, lang, lang.native_name());
+                    }
+                })
+                .response
+                .on_hover_text(t.tooltip_language);
+
+            if chosen_lang != state.language {
+                state.language = chosen_lang;
+                actions.push(WorkspaceAction::SetLanguage(chosen_lang));
+            }
+        });
     });
 
     ui.separator();
@@ -219,9 +245,9 @@ pub fn render_workspace(
                 ui.spacing_mut().item_spacing.x = 12.0;
                 ui.columns(2, |cols| {
                     cols[0].horizontal(|ui| {
-                        ui.label(egui::RichText::new("📈 EQ Response (dB)").strong());
+                        ui.label(egui::RichText::new(t.eq_response_title).strong());
                         ui.label(
-                            egui::RichText::new("— Drag: Freq/Gain • Scroll: Q")
+                            egui::RichText::new(t.eq_response_hint)
                                 .small()
                                 .color(egui::Color32::from_rgb(155, 160, 170)),
                         );
@@ -232,15 +258,16 @@ pub fn render_workspace(
                             bands: band_params,
                             sample_rate,
                             width: 512,
+                            translations: t,
                         },
                         &mut state.dragged_band,
                         &mut batch,
                     );
 
                     cols[1].horizontal(|ui| {
-                        ui.label(egui::RichText::new("📊 Real-Time Spectrum (dBFS)").strong());
+                        ui.label(egui::RichText::new(t.spectrum_title).strong());
                     });
-                    render_spectrum_analyzer(&mut cols[1], analysis, sample_rate, 128);
+                    render_spectrum_analyzer_localized(&mut cols[1], analysis, sample_rate, 128, t);
                 });
             },
         );
@@ -254,14 +281,14 @@ pub fn render_workspace(
 
     // 3. Unified Master & Preset bar on a single compact row
     ui.horizontal(|ui| {
-        render_master_section(ui, snapshot, &mut batch);
+        render_master_section_localized(ui, snapshot, t, &mut batch);
 
         ui.separator();
 
-        ui.label(egui::RichText::new("Preset:").strong());
+        ui.label(egui::RichText::new(t.preset_label).strong());
         let presets: Vec<String> = preset_manager.iter().map(|p| p.name.clone()).collect();
         let selected_text = if current_preset.is_empty() {
-            "Select Preset...".to_string()
+            t.select_preset.to_string()
         } else {
             current_preset.to_string()
         };
@@ -283,10 +310,10 @@ pub fn render_workspace(
         ui.add(
             egui::TextEdit::singleline(&mut state.preset_name_input)
                 .desired_width(130.0)
-                .hint_text("Preset name..."),
+                .hint_text(t.preset_name_hint),
         );
 
-        if ui.button("💾 Save").clicked() {
+        if ui.button(t.save_button).clicked() {
             let name = if !state.preset_name_input.trim().is_empty() {
                 state.preset_name_input.trim().to_string()
             } else if !current_preset.trim().is_empty() {
@@ -301,11 +328,11 @@ pub fn render_workspace(
         let is_factory = is_factory_preset(current_preset);
         let can_delete = !current_preset.is_empty() && !is_factory;
         if ui
-            .add_enabled(can_delete, egui::Button::new("🗑 Delete"))
+            .add_enabled(can_delete, egui::Button::new(t.delete_button))
             .on_hover_text(if is_factory {
-                "Factory presets cannot be deleted"
+                t.tooltip_factory_preset_locked
             } else {
-                "Delete selected preset"
+                t.tooltip_delete_preset
             })
             .clicked()
         {
@@ -326,6 +353,7 @@ pub fn render_workspace(
                     band_index: i,
                     params: &bp,
                     snapshot,
+                    translations: t,
                 },
                 &mut batch,
             );
