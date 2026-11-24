@@ -114,47 +114,38 @@ impl Default for AudioTopology {
 }
 
 /// Click-free bypass crossfade state and pre-allocated dry scratch buffer.
+///
+/// Tracks a continuous `mix` scalar in `[0.0, 1.0]` (`0.0` = 100% wet/active,
+/// `1.0` = 100% dry/bypassed) so rapid mid-crossfade toggles reverse direction
+/// smoothly without step discontinuities.
 pub(super) struct BypassTransitionState {
-    pub(super) prev_bypass: bool,
-    pub(super) curr_bypass: bool,
-    pub(super) crossfade_progress: usize,
-    pub(super) transitioning: bool,
+    pub(super) target_bypass: bool,
+    pub(super) mix: f32,
     pub(super) dry_buffer: [f32; FLAT_BUFFER_SIZE],
 }
 
 impl BypassTransitionState {
     pub(super) fn new() -> Self {
         Self {
-            prev_bypass: false,
-            curr_bypass: false,
-            crossfade_progress: 0,
-            transitioning: false,
+            target_bypass: false,
+            mix: 0.0,
             dry_buffer: [0.0; FLAT_BUFFER_SIZE],
         }
     }
 
     pub(super) fn reset(&mut self) {
-        self.prev_bypass = false;
-        self.curr_bypass = false;
-        self.crossfade_progress = 0;
-        self.transitioning = false;
+        self.target_bypass = false;
+        self.mix = 0.0;
         self.dry_buffer.fill(0.0);
     }
 
-    /// Update transition flags for the current block (immediate on first block,
-    /// smooth crossfade on subsequent toggles).
+    /// Update transition target for the current block (snaps immediately on
+    /// the first block; ramps continuously from current `mix` afterwards).
     #[inline]
     pub(super) fn update(&mut self, bypass: bool, is_first_block: bool) {
+        self.target_bypass = bypass;
         if is_first_block {
-            self.curr_bypass = bypass;
-            self.prev_bypass = bypass;
-            self.transitioning = false;
-            self.crossfade_progress = 0;
-        } else if self.curr_bypass != bypass {
-            self.prev_bypass = self.curr_bypass;
-            self.curr_bypass = bypass;
-            self.crossfade_progress = 0;
-            self.transitioning = true;
+            self.mix = if bypass { 1.0 } else { 0.0 };
         }
     }
 }

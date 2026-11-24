@@ -977,32 +977,27 @@ fn process_output_block(data: &mut [f32], ctx: &mut AudioRenderContext<'_>) {
         }
     }
 
-    // 3. Process audio through the engine in blocks (or direct bit-exact bypass)
-    let is_bypassed = engine.eq_parameters().global.bypass;
-    if is_bypassed {
-        left_out[..frames].copy_from_slice(&left_in[..frames]);
-        right_out[..frames].copy_from_slice(&right_in[..frames]);
-    } else {
-        let mut offset = 0;
-        while offset < frames {
-            let chunk = (frames - offset).min(block_size);
-            let in_slices: [&[f32]; 2] = [
-                &left_in[offset..offset + chunk],
-                &right_in[offset..offset + chunk],
-            ];
-            let mut out_slices: [&mut [f32]; 2] = [
-                &mut left_out[offset..offset + chunk],
-                &mut right_out[offset..offset + chunk],
-            ];
+    // 3. Always process audio through the engine in blocks so bypass crossfade
+    //    ramps smoothly and biquad delay lines remain warm across rapid toggles.
+    let mut offset = 0;
+    while offset < frames {
+        let chunk = (frames - offset).min(block_size);
+        let in_slices: [&[f32]; 2] = [
+            &left_in[offset..offset + chunk],
+            &right_in[offset..offset + chunk],
+        ];
+        let mut out_slices: [&mut [f32]; 2] = [
+            &mut left_out[offset..offset + chunk],
+            &mut right_out[offset..offset + chunk],
+        ];
 
-            let success = engine.process(&in_slices, &mut out_slices);
-            if !success {
-                // Strict deterministic fallback on processing error
-                out_slices[0].copy_from_slice(in_slices[0]);
-                out_slices[1].copy_from_slice(in_slices[1]);
-            }
-            offset += chunk;
+        let success = engine.process(&in_slices, &mut out_slices);
+        if !success {
+            // Strict deterministic fallback on processing error
+            out_slices[0].copy_from_slice(in_slices[0]);
+            out_slices[1].copy_from_slice(in_slices[1]);
         }
+        offset += chunk;
     }
 
     // 4. Multi-channel hardware interleaving, soft saturation, and zeroing unused channels
@@ -1010,16 +1005,8 @@ fn process_output_block(data: &mut [f32], ctx: &mut AudioRenderContext<'_>) {
     let mut max_r = 0.0f32;
 
     for i in 0..frames {
-        let l = if is_bypassed {
-            left_out[i]
-        } else {
-            soft_limit(left_out[i])
-        };
-        let r = if is_bypassed {
-            right_out[i]
-        } else {
-            soft_limit(right_out[i])
-        };
+        let l = soft_limit(left_out[i]);
+        let r = soft_limit(right_out[i]);
         max_l = max_l.max(l.abs());
         max_r = max_r.max(r.abs());
 

@@ -1308,3 +1308,46 @@ fn test_automation_persistence_across_blocks() {
         "Block 2 audio must retain biquad +24 dB gain boost across blocks, got peak {peak_block2}"
     );
 }
+
+#[test]
+fn test_rapid_bypass_toggles_mid_crossfade_no_glitch() {
+    let mut engine = EngineLifecycle::new();
+    engine.prepare(48000.0, 64, 1);
+
+    // Apply a strong +12 dB output gain so wet and dry levels differ significantly.
+    let mut params = EqParameters::default();
+    params.global.output_gain_db = 12.0;
+    params.global.bypass = false;
+    engine.set_parameters(params);
+
+    // Constant DC input makes any amplitude step discontinuity immediately visible.
+    let input = [0.25_f32; 64];
+    let mut out = [0.0_f32; 64];
+
+    // Warm up first block (active).
+    assert!(engine.process(&[&input], &mut [&mut out]));
+    let mut prev_sample = out[63];
+
+    // Rapidly toggle bypass every 64 samples (~1.33 ms, well inside the 5 ms crossfade).
+    let mut max_delta = 0.0_f32;
+    for toggle_idx in 0..10 {
+        params.global.bypass = toggle_idx % 2 == 0;
+        engine.set_parameters(params);
+        assert!(engine.process(&[&input], &mut [&mut out]));
+
+        for &sample in &out {
+            let delta = (sample - prev_sample).abs();
+            if delta > max_delta {
+                max_delta = delta;
+            }
+            prev_sample = sample;
+        }
+    }
+
+    // With 5 ms crossfade at 48 kHz (240 samples) and wet-dry diff ~0.75, max
+    // continuous sample-to-sample step is well under 0.02 (a reset glitch jumps > 0.3).
+    assert!(
+        max_delta < 0.05,
+        "Rapid mid-crossfade bypass toggle caused a step discontinuity: max_delta={max_delta}"
+    );
+}

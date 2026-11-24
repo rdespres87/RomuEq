@@ -188,8 +188,14 @@ impl EngineLifecycle {
         let output_gain_db = self.eq_params.global.output_gain_db + auto_comp_db;
         let output_gain_linear = 10.0_f32.powf(output_gain_db / 20.0);
 
-        let is_entering_bypass = self.bypass.curr_bypass;
-        let start_crossfade_progress = self.bypass.crossfade_progress;
+        let target_mix = if self.bypass.target_bypass {
+            1.0_f32
+        } else {
+            0.0_f32
+        };
+        let start_mix = self.bypass.mix;
+        let step = 1.0_f32 / (crossfade_samples.max(1) as f32);
+        let is_ramping = (start_mix - target_mix).abs() > f32::EPSILON;
 
         for ch_idx in 0..self.topology.channels {
             let buffer_offset = ch_idx * self.topology.max_block_size;
@@ -213,24 +219,20 @@ impl EngineLifecycle {
                 samples.iter_mut().for_each(|s| *s *= output_gain_linear);
             }
 
-            if self.bypass.transitioning && start_crossfade_progress < crossfade_samples {
-                apply_bypass_crossfade(
-                    samples,
-                    dry_samples,
-                    start_crossfade_progress,
-                    crossfade_samples,
-                    is_entering_bypass,
-                );
-            } else if self.bypass.curr_bypass {
+            if is_ramping {
+                apply_bypass_crossfade(samples, dry_samples, start_mix, target_mix, step);
+            } else if self.bypass.target_bypass {
                 samples.copy_from_slice(dry_samples);
             }
         }
 
-        if self.bypass.transitioning {
-            self.bypass.crossfade_progress += block_size;
-            if self.bypass.crossfade_progress >= crossfade_samples {
-                self.bypass.transitioning = false;
-            }
+        if is_ramping {
+            let delta = step * block_size as f32;
+            self.bypass.mix = if start_mix < target_mix {
+                (start_mix + delta).min(target_mix)
+            } else {
+                (start_mix - delta).max(target_mix)
+            };
         }
     }
 }
@@ -265,27 +267,29 @@ fn apply_biquad_stage(samples: &mut [f32], coeffs: &BiquadCoefficients, delay: &
     delay[3] = y2;
 }
 
-/// Apply equal-power sin/cos crossfade between wet (`samples`) and `dry_samples` in-place.
+/// Apply continuous equal-power sin/cos crossfade between wet (`samples`) and `dry_samples`.
+///
+/// `start_mix` and `target_mix` are in `[0.0, 1.0]` where `0.0` is fully wet and `1.0` is
+/// fully dry (bypassed). Reversing direction mid-fade continues smoothly from `start_mix`.
 #[inline]
 fn apply_bypass_crossfade(
     samples: &mut [f32],
     dry_samples: &[f32],
-    start_progress: usize,
-    crossfade_samples: usize,
-    is_entering_bypass: bool,
+    start_mix: f32,
+    target_mix: f32,
+    step: f32,
 ) {
-    for (i, (sample, &dry)) in samples.iter_mut().zip(dry_samples.iter()).enumerate() {
-        let progress = (start_progress + i).min(crossfade_samples);
-        let t = progress as f32 / crossfade_samples as f32;
-        let sin_t = (t * std::f32::consts::FRAC_PI_2).sin();
-        let cos_t = (t * std::f32::consts::FRAC_PI_2).cos();
-
-        let (wet_gain, dry_gain) = if is_entering_bypass {
-            (cos_t, sin_t)
-        } else {
-            (sin_t, cos_t)
-        };
-
+    let mut mix = start_mix;
+    for (sample, &dry) in samples.iter_mut().zip(dry_samples.iter()) {
+        let angle = mix * std::f32::consts::FRAC_PI_2;
+        let wet_gain = angle.cos();
+        let dry_gain = angle.sin();
         *sample = *sample * wet_gain + dry * dry_gain;
+
+        if mix < target_mix {
+            mix = (mix + step).min(target_mix);
+        } else if mix > target_mix {
+            mix = (mix - step).max(target_mix);
+        }
     }
 }
