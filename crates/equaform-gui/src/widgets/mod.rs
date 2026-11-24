@@ -8,8 +8,8 @@ pub mod vu_meter;
 
 pub use band_strip::{BandRenderContext, render_band};
 pub use eq_plot::{
-    PlotContext, render_frequency_response_plot, render_frequency_response_plot_localized,
-    render_interactive_frequency_response_plot,
+    EqCurveCache, PlotContext, render_frequency_response_plot,
+    render_frequency_response_plot_localized, render_interactive_frequency_response_plot,
 };
 pub use master_section::{render_master_section, render_master_section_localized};
 pub use spectrum_view::{render_spectrum_analyzer, render_spectrum_analyzer_localized};

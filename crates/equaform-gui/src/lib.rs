@@ -467,7 +467,7 @@ pub use workspace_ui::*;
 
 pub mod widgets;
 pub use widgets::{
-    BandRenderContext, PlotContext, render_band, render_frequency_response_plot,
+    BandRenderContext, EqCurveCache, PlotContext, render_band, render_frequency_response_plot,
     render_frequency_response_plot_localized, render_interactive_frequency_response_plot,
     render_master_section, render_master_section_localized, render_spectrum_analyzer,
     render_spectrum_analyzer_localized, render_stereo_vu_meter, render_vertical_stereo_vu_meter,

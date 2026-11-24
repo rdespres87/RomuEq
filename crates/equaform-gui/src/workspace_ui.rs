@@ -10,9 +10,10 @@ use crate::i18n::{Language, Translations};
 use crate::preset_manager::PresetManager;
 use crate::presets_io::is_factory_preset;
 use crate::{
-    AnalysisSnapshot, BandControls, BandRenderContext, GuiCommandBatch, ParamSnapshot, PlotContext,
-    render_band, render_interactive_frequency_response_plot, render_master_section_localized,
-    render_spectrum_analyzer_localized, render_vertical_stereo_vu_meter,
+    AnalysisSnapshot, BandControls, BandRenderContext, EqCurveCache, GuiCommandBatch,
+    ParamSnapshot, PlotContext, render_band, render_interactive_frequency_response_plot,
+    render_master_section_localized, render_spectrum_analyzer_localized,
+    render_vertical_stereo_vu_meter,
 };
 
 /// Host environment under which the workspace UI is currently rendered.
@@ -59,7 +60,7 @@ pub enum WorkspaceAction {
     SetLanguage(Language),
 }
 
-/// State for interactive dragging and preset text input across UI frames.
+/// State for interactive dragging, curve caching, and preset text input across UI frames.
 #[derive(Default)]
 pub struct WorkspaceUiState {
     /// Band currently being dragged by mouse on the EQ plot.
@@ -68,6 +69,8 @@ pub struct WorkspaceUiState {
     pub preset_name_input: String,
     /// Active UI language.
     pub language: Language,
+    /// Dirty-flag cache for the interactive EQ frequency response curves.
+    pub curve_cache: EqCurveCache,
 }
 
 /// Context parameters required to render the Equaform workspace UI.
@@ -260,6 +263,7 @@ pub fn render_workspace(
                             width: 512,
                             translations: t,
                         },
+                        &mut state.curve_cache,
                         &mut state.dragged_band,
                         &mut batch,
                     );
