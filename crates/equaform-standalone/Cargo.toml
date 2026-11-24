@@ -6,6 +6,10 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[[bin]]
+name = "Equaform-8"
+path = "src/main.rs"
+
 [dependencies]
 equaform-engine.workspace = true
 equaform-gui = { workspace = true, features = ["standalone"] }

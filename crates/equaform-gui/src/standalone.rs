@@ -132,12 +132,17 @@ impl<A: GuiApp> StandaloneRunner<A> {
 
         let saved_lang = Language::load_saved();
         let t = Translations::for_language(saved_lang);
+        let initial_bypassed = client
+            .engine
+            .as_ref()
+            .map(|e| e.eq_parameters().global.bypass)
+            .unwrap_or(false);
         let (audio_active, status_message) = match audio_stream.start() {
             Ok(()) => {
                 app.on_audio_started();
                 client.sample_rate = audio_stream.sample_rate();
                 let out_name = detected_out.as_deref().unwrap_or(t.output_slider);
-                (true, Some(format!("{} → {out_name}", t.status_eq_active)))
+                (true, Some(format_audio_status(initial_bypassed, out_name, t)))
             }
             Err(e) => (false, Some(format!("{}: {e}", t.status_stream_error))),
         };
@@ -320,8 +325,14 @@ impl<A: GuiApp> App for StandaloneRunner<A> {
                                 let out_name = audio
                                     .selected_output_device()
                                     .unwrap_or(t.output_slider);
+                                let is_bypassed = self
+                                    .client
+                                    .snapshot()
+                                    .get(ParamId(1))
+                                    .map(|v| v >= 0.5)
+                                    .unwrap_or(false);
                                 self.status_message =
-                                    Some(format!("{} → {out_name}", t.status_eq_active));
+                                    Some(format_audio_status(is_bypassed, out_name, t));
                             }
                         } else {
                             audio.set_muted(false);
@@ -335,8 +346,14 @@ impl<A: GuiApp> App for StandaloneRunner<A> {
                                     let out_name = audio
                                         .selected_output_device()
                                         .unwrap_or(t.output_slider);
+                                    let is_bypassed = self
+                                        .client
+                                        .snapshot()
+                                        .get(ParamId(1))
+                                        .map(|v| v >= 0.5)
+                                        .unwrap_or(false);
                                     self.status_message =
-                                        Some(format!("{} → {out_name}", t.status_eq_active));
+                                        Some(format_audio_status(is_bypassed, out_name, t));
                                 }
                                 Err(err) => {
                                     self.status_message =
@@ -359,8 +376,14 @@ impl<A: GuiApp> App for StandaloneRunner<A> {
                                 Ok(()) => {
                                     self.audio_active = true;
                                     self.client.sample_rate = audio.sample_rate();
+                                    let is_bypassed = self
+                                        .client
+                                        .snapshot()
+                                        .get(ParamId(1))
+                                        .map(|v| v >= 0.5)
+                                        .unwrap_or(false);
                                     self.status_message =
-                                        Some(format!("{} → {dev}", t.status_eq_active));
+                                        Some(format_audio_status(is_bypassed, &dev, t));
                                 }
                                 Err(e) => {
                                     self.audio_active = false;
@@ -382,9 +405,6 @@ impl<A: GuiApp> App for StandaloneRunner<A> {
                 WorkspaceAction::ApplyPreset(name) => {
                     let _ = self.client.apply_preset(&name);
                     self.client._current_preset = name.clone();
-                    let mut engage = GuiCommandBatch::new();
-                    engage.push(ParamId(1), 0.0);
-                    self.client.apply_commands(engage);
                     save_last_active_preset_name(&name);
                     save_complete_app_state(&self.client);
                     if let Some(ref mut audio) = self.audio_stream {
@@ -419,31 +439,57 @@ impl<A: GuiApp> App for StandaloneRunner<A> {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Title(
                         updated_t.window_title.to_string(),
                     ));
+                    if self.audio_active {
+                        let out_name = self
+                            .audio_stream
+                            .as_ref()
+                            .and_then(|a| a.selected_output_device())
+                            .unwrap_or(updated_t.output_slider);
+                        let is_bypassed = self
+                            .client
+                            .snapshot()
+                            .get(ParamId(1))
+                            .map(|v| v >= 0.5)
+                            .unwrap_or(false);
+                        self.status_message =
+                            Some(format_audio_status(is_bypassed, out_name, updated_t));
+                    } else if self
+                        .audio_stream
+                        .as_ref()
+                        .map(|a| a.is_muted())
+                        .unwrap_or(false)
+                    {
+                        self.status_message = Some(updated_t.status_audio_muted.to_string());
+                    }
                 }
             }
         }
 
         // Process the batch through the engine client.
         if !batch.is_empty() {
-            let modifies_band = batch.commands().iter().any(|c| c.param_id.0 >= 100);
             let modifies_bypass = batch.commands().iter().any(|c| c.param_id.0 == 1);
-            if modifies_band && !modifies_bypass {
-                let cur_bypass = self
-                    .client
-                    .snapshot()
-                    .get(ParamId(1))
-                    .map(|v| v >= 0.5)
-                    .unwrap_or(false);
-                if cur_bypass {
-                    batch.push(ParamId(1), 0.0);
-                }
-            }
             self.client.apply_commands(batch);
             save_complete_app_state(&self.client);
             if let Some(ref mut audio) = self.audio_stream {
                 if let Some(ref engine) = self.client.engine {
                     let _ = audio.set_parameters(*engine.eq_parameters());
                 }
+            }
+            if modifies_bypass && self.audio_active {
+                let updated_t = Translations::for_language(self.ui_state.language);
+                let out_name = self
+                    .audio_stream
+                    .as_ref()
+                    .and_then(|a| a.selected_output_device())
+                    .unwrap_or(updated_t.output_slider);
+                let is_bypassed = self
+                    .client
+                    .snapshot()
+                    .get(ParamId(1))
+                    .map(|v| v >= 0.5)
+                    .unwrap_or(false);
+                self.status_message =
+                    Some(format_audio_status(is_bypassed, out_name, updated_t));
             }
         }
 
@@ -1066,5 +1112,63 @@ impl GuiClient for EngineClient {
         // provides spectrum_data for the UI plot.
         static EMPTY: &[[f64; 2]] = &[];
         EMPTY
+    }
+}
+
+/// Formats the standalone status line reflecting both bypass state and active output device.
+fn format_audio_status(is_bypassed: bool, out_name: &str, t: &Translations) -> String {
+    let label = if is_bypassed {
+        t.status_eq_bypassed
+    } else {
+        t.status_eq_active
+    };
+    format!("{label} • {out_name}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::i18n::Language;
+
+    #[test]
+    fn test_format_audio_status_reflects_bypass_state() {
+        let fr = Translations::for_language(Language::French);
+        assert_eq!(
+            format_audio_status(false, "Komplete Audio 6 MK2", fr),
+            "EQ actif • Komplete Audio 6 MK2"
+        );
+        assert_eq!(
+            format_audio_status(true, "Komplete Audio 6 MK2", fr),
+            "EQ contourné • Komplete Audio 6 MK2"
+        );
+
+        let en = Translations::for_language(Language::English);
+        assert_eq!(format_audio_status(true, "Built-in", en), "EQ bypassed • Built-in");
+    }
+
+    #[test]
+    fn test_apply_preset_preserves_bypass_state() {
+        let mut client = EngineClient::new();
+        let mut engine = EngineLifecycle::new();
+        let _ = engine.prepare(48_000.0, 512, 2);
+        client.engine = Some(Box::new(engine));
+        crate::presets_io::populate_factory_presets(&mut client.preset_manager);
+
+        let mut bypass_on = GuiCommandBatch::new();
+        bypass_on.push(ParamId(1), 1.0);
+        client.apply_commands(bypass_on);
+        assert_eq!(client.snapshot().get(ParamId(1)), Some(1.0));
+
+        let preset_name = client
+            .list_presets()
+            .into_iter()
+            .find(|n| n != "Flat")
+            .unwrap_or_else(|| "Flat".to_string());
+        assert!(client.apply_preset(&preset_name).is_ok());
+        assert_eq!(
+            client.snapshot().get(ParamId(1)),
+            Some(1.0),
+            "Applying a preset must preserve bypass state"
+        );
     }
 }

@@ -21,7 +21,7 @@ rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS"
 mkdir -p "$APP_DIR/Contents/Resources"
 
-cp "$ROOT_DIR/target/release/equaform-standalone" "$APP_DIR/Contents/MacOS/$APP_NAME"
+cp "$ROOT_DIR/target/release/Equaform-8" "$APP_DIR/Contents/MacOS/$APP_NAME"
 chmod +x "$APP_DIR/Contents/MacOS/$APP_NAME"
 
 if [ -f "$ROOT_DIR/crates/equaform-standalone/resources/Equaform.icns" ]; then
@@ -49,6 +49,8 @@ cat << EOF > "$APP_DIR/Contents/Info.plist"
     <string>${VERSION}</string>
     <key>CFBundleVersion</key>
     <string>${VERSION}</string>
+    <key>NSHumanReadableCopyright</key>
+    <string>Copyright © 2026 Equaform. MIT OR Apache-2.0.</string>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSMicrophoneUsageDescription</key>
