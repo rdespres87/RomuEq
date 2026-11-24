@@ -73,8 +73,7 @@ struct StandaloneRunner<A: GuiApp> {
 
 impl<A: GuiApp> StandaloneRunner<A> {
     fn new(mut app: A, ctx: egui::Context) -> Self {
-        let mut client = EngineClient::new();
-        client.set_egui_context(ctx);
+        let mut client = EngineClient::new(ctx);
         // Initialize the engine at startup so encode_snapshot() returns real data.
         client.prepare(48000.0, 512, 2);
 
@@ -614,7 +613,7 @@ struct EngineClient {
     snapshot: ParamSnapshot,
     pending_commands: GuiCommandBatch,
     preset_manager: PresetManager,
-    egui_context: Option<egui::Context>,
+    egui_context: egui::Context,
     /// Band parameters for the frequency response plot.
     band_params: [equaform_common::BandParameters; equaform_common::MAX_BANDS],
     /// Sample rate for the frequency response plot.
@@ -628,14 +627,14 @@ struct EngineClient {
 }
 
 impl EngineClient {
-    fn new() -> Self {
+    fn new(egui_context: egui::Context) -> Self {
         Self {
             engine: None,
             analysis_engine: AnalysisEngine::new(),
             snapshot: ParamSnapshot::new(Vec::new()),
             pending_commands: GuiCommandBatch::new(),
             preset_manager: PresetManager::new(),
-            egui_context: None,
+            egui_context,
             band_params: core::array::from_fn(|i| equaform_common::BandParameters {
                 frequency_hz: 20.0 * (i + 1) as f32,
                 ..Default::default()
@@ -647,10 +646,6 @@ impl EngineClient {
             ),
             _spectrum_frame_number: 0,
         }
-    }
-
-    fn set_egui_context(&mut self, ctx: egui::Context) {
-        self.egui_context = Some(ctx);
     }
 
     fn take_pending_commands(&mut self) -> GuiCommandBatch {
@@ -841,22 +836,25 @@ impl GuiClient for EngineClient {
         }
 
         // Create a new engine safely on the heap to avoid stack overflow.
-        let mut eng = std::thread::Builder::new()
+        let Some(mut eng) = std::thread::Builder::new()
             .name("engine-client-init".to_string())
             .stack_size(8 * 1024 * 1024)
             .spawn(|| Box::new(EngineLifecycle::new()))
-            .expect("spawn engine thread")
-            .join()
-            .expect("engine init panicked");
+            .ok()
+            .and_then(|handle| handle.join().ok())
+        else {
+            self.engine = None;
+            self.sample_rate = sample_rate;
+            return;
+        };
 
         if eng.prepare(sample_rate as f64, block_size, channels) {
-            self.engine = Some(eng);
-
             // Initialize band_params to default 8-band musical layout.
             self.band_params = default_8_bands();
-            let mut params = *self.engine.as_ref().unwrap().eq_parameters();
+            let mut params = *eng.eq_parameters();
             params.bands = self.band_params;
-            self.engine.as_mut().unwrap().set_parameters(params);
+            eng.set_parameters(params);
+            self.engine = Some(eng);
 
             // Update snapshot from engine params.
             self.snapshot = ParamSnapshot::new(self.encode_snapshot());
@@ -1089,7 +1087,7 @@ impl GuiClient for EngineClient {
     }
 
     fn egui_context(&self) -> &egui::Context {
-        self.egui_context.as_ref().expect("egui context not set")
+        &self.egui_context
     }
 
     fn next_auto_name(&self) -> String {
@@ -1150,7 +1148,7 @@ mod tests {
 
     #[test]
     fn test_apply_preset_preserves_bypass_state() {
-        let mut client = EngineClient::new();
+        let mut client = EngineClient::new(egui::Context::default());
         let mut engine = EngineLifecycle::new();
         let _ = engine.prepare(48_000.0, 512, 2);
         client.engine = Some(Box::new(engine));
@@ -1172,5 +1170,22 @@ mod tests {
             Some(1.0),
             "Applying a preset must preserve bypass state"
         );
+    }
+
+    #[test]
+    fn test_engine_client_prepare_and_context_without_panics() {
+        let mut client = EngineClient::new(egui::Context::default());
+        // Context is always available by construction without set_egui_context().
+        let _ = client.egui_context().pixels_per_point();
+
+        client.prepare(48_000.0, 512, 2);
+        assert!(client.engine.is_some());
+        assert_eq!(client.sample_rate, 48_000.0);
+        assert_eq!(client.snapshot().get(ParamId(1)), Some(0.0));
+
+        // Re-preparing tears down and re-initializes the engine cleanly.
+        client.prepare(44_100.0, 256, 2);
+        assert!(client.engine.is_some());
+        assert_eq!(client.sample_rate, 44_100.0);
     }
 }
