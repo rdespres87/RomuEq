@@ -98,3 +98,14 @@
   - [x] Formalize Spec-Driven TDD protocol in `docs/development/TDD_METHODOLOGY.md`
   - [x] Update `AI_DEVELOPMENT_PROTOCOL.md` and `TEST_STRATEGY.md` with strict Red-Green-Refactor cycle
   - [x] Integrate `coverage` job in `.github/workflows/ci.yml` via `cargo-llvm-cov` with `>= 90%` line coverage gate on core DSP & engine crates
+- [x] v1.0.0 Release & P0/P1 Maturity Hardening (Audit 8.2/10):
+  - [x] Document macOS vs Windows platform scope and local DMG packaging in `README.md` (`d37165b`)
+  - [x] Fix Windows VST3 wrapper CMake MSVC `/MT` runtime mismatch (`889e65e`)
+  - [x] Fix Windows Inno Setup `createallsubdirs` flag error on flat preset glob (`4ca9d21`) and publish `v1.0.0` GitHub Release (all 4 macOS + Windows assets live)
+  - [x] Eliminate real-time audio hot-path `panic!()` on channel mismatch in `AudioBuffer` and `EngineLifecycle::process` (`4aa8ec8`)
+  - [x] Eliminate all 5 `unwrap()`/`expect()` calls in `crates/equaform-gui/src/standalone.rs` (`0803449`)
+  - [x] Synchronize `docs/agent/{SESSION_STATE,TASKS,HANDOFF}.md` to `v1.0.0` state
+- [ ] P2 Maturity Roadmap (8.2 -> 9.5/10):
+  - [ ] Modularize oversized files (`audio.rs`, `state.rs`, `parameter.rs`, `equaform-plugin/src/lib.rs`, `standalone.rs`)
+  - [ ] Audit and document `// SAFETY:` invariants across `unsafe` blocks
+  - [ ] Evaluate Typestate `Engine<State>`, SIMD biquad vectorization, and DSP Pro features (Mid/Side, Band Solo, Linear-phase EQ)
