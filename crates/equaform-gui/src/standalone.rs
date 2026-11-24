@@ -310,11 +310,21 @@ impl<A: GuiApp> App for StandaloneRunner<A> {
             match action {
                 WorkspaceAction::TogglePlayStop => {
                     if let Some(ref mut audio) = self.audio_stream {
-                        if self.audio_active {
-                            let _ = audio.stop();
-                            self.audio_active = false;
-                            self.status_message = Some(t.status_audio_muted.to_string());
+                        if audio.is_active() {
+                            let now_muted = !audio.is_muted();
+                            audio.set_muted(now_muted);
+                            self.audio_active = !now_muted;
+                            if now_muted {
+                                self.status_message = Some(t.status_audio_muted.to_string());
+                            } else {
+                                let out_name = audio
+                                    .selected_output_device()
+                                    .unwrap_or(t.output_slider);
+                                self.status_message =
+                                    Some(format!("{} → {out_name}", t.status_eq_active));
+                            }
                         } else {
+                            audio.set_muted(false);
                             if let Some(ref engine) = self.client.engine {
                                 let _ = audio.set_parameters(*engine.eq_parameters());
                             }

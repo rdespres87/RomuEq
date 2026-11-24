@@ -310,6 +310,7 @@ pub struct AudioStream {
     _input_stream: Option<Stream>,
     is_active: bool,
     is_running: Arc<AtomicBool>,
+    is_muted: Arc<AtomicBool>,
     source_mode: Arc<AtomicU8>,
     selected_output_device: Option<String>,
     selected_input_device: Option<String>,
@@ -341,6 +342,7 @@ impl AudioStream {
             _input_stream: None,
             is_active: false,
             is_running: Arc::new(AtomicBool::new(false)),
+            is_muted: Arc::new(AtomicBool::new(false)),
             source_mode: Arc::new(AtomicU8::new(AudioSourceMode::PassThrough as u8)),
             sample_rate,
             selected_input_device: None,
@@ -417,6 +419,16 @@ impl AudioStream {
     /// Returns whether the audio stream is currently active and playing.
     pub fn is_active(&self) -> bool {
         self.is_active
+    }
+
+    /// Mute or unmute output smoothly on the audio thread (5 ms ramp, zero stream teardown).
+    pub fn set_muted(&self, muted: bool) {
+        self.is_muted.store(muted, Ordering::Release);
+    }
+
+    /// Returns `true` if output is currently muted.
+    pub fn is_muted(&self) -> bool {
+        self.is_muted.load(Ordering::Acquire)
     }
 
     /// Returns the currently configured input device name, if any.
@@ -566,6 +578,7 @@ impl AudioStream {
 
         let is_running = Arc::clone(&self.is_running);
         is_running.store(true, Ordering::Release);
+        let is_muted = Arc::clone(&self.is_muted);
         let source_mode = Arc::clone(&self.source_mode);
         let peak_l = Arc::clone(&self.peak_l);
         let peak_r = Arc::clone(&self.peak_r);
@@ -622,6 +635,11 @@ impl AudioStream {
 
         let mut drift = ContinuousPiDriftController::new(rate_ratio);
         let mut phase = 0.0f64;
+        let mut mute_gain = if is_muted.load(Ordering::Acquire) {
+            0.0f32
+        } else {
+            1.0f32
+        };
 
         // Pre-allocate scratch buffers strictly to MAX_SCRATCH_FRAMES (ADR-007: zero allocation in callbacks)
         let mut left_in = vec![0.0f32; MAX_SCRATCH_FRAMES];
@@ -651,12 +669,14 @@ impl AudioStream {
                             drift: &mut drift,
                             telemetry: AudioTelemetry {
                                 is_running: &is_running,
+                                is_muted: &is_muted,
                                 source_mode: &source_mode,
                                 peak_l: &peak_l,
                                 peak_r: &peak_r,
                                 spectrum_samples: &spectrum_samples,
                             },
                             phase: &mut phase,
+                            mute_gain: &mut mute_gain,
                             scratch: AudioScratchBuffers {
                                 left_in: &mut left_in,
                                 right_in: &mut right_in,
@@ -691,12 +711,14 @@ impl AudioStream {
                                 drift: &mut drift,
                                 telemetry: AudioTelemetry {
                                     is_running: &is_running,
+                                    is_muted: &is_muted,
                                     source_mode: &source_mode,
                                     peak_l: &peak_l,
                                     peak_r: &peak_r,
                                     spectrum_samples: &spectrum_samples,
                                 },
                                 phase: &mut phase,
+                                mute_gain: &mut mute_gain,
                                 scratch: AudioScratchBuffers {
                                     left_in: &mut left_in,
                                     right_in: &mut right_in,
@@ -891,6 +913,7 @@ pub struct StreamFormatSpec {
 /// Lock-free atomic state and metering sinks shared between audio and UI threads.
 pub struct AudioTelemetry<'a> {
     pub is_running: &'a AtomicBool,
+    pub is_muted: &'a AtomicBool,
     pub source_mode: &'a AtomicU8,
     pub peak_l: &'a AtomicU32,
     pub peak_r: &'a AtomicU32,
@@ -914,6 +937,7 @@ pub struct AudioRenderContext<'a> {
     pub drift: &'a mut ContinuousPiDriftController,
     pub telemetry: AudioTelemetry<'a>,
     pub phase: &'a mut f64,
+    pub mute_gain: &'a mut f32,
     pub scratch: AudioScratchBuffers<'a>,
 }
 
@@ -927,11 +951,13 @@ fn process_output_block(data: &mut [f32], ctx: &mut AudioRenderContext<'_>) {
     let audio_consumer = ctx.audio_consumer;
     let drift = &mut *ctx.drift;
     let is_running = ctx.telemetry.is_running;
+    let is_muted = ctx.telemetry.is_muted;
     let source_mode = ctx.telemetry.source_mode;
     let peak_l = ctx.telemetry.peak_l;
     let peak_r = ctx.telemetry.peak_r;
     let spectrum_samples = ctx.telemetry.spectrum_samples;
     let phase = &mut *ctx.phase;
+    let mute_gain = &mut *ctx.mute_gain;
     let left_in = &mut *ctx.scratch.left_in;
     let right_in = &mut *ctx.scratch.right_in;
     let left_out = &mut *ctx.scratch.left_out;
@@ -1000,13 +1026,26 @@ fn process_output_block(data: &mut [f32], ctx: &mut AudioRenderContext<'_>) {
         offset += chunk;
     }
 
-    // 4. Multi-channel hardware interleaving, soft saturation, and zeroing unused channels
+    // 4. Multi-channel hardware interleaving, smooth 5 ms mute ramp, soft saturation, and zeroing unused channels
+    let target_mute_gain = if is_muted.load(Ordering::Acquire) {
+        0.0f32
+    } else {
+        1.0f32
+    };
+    let mute_step = 1.0f32 / (0.005 * sample_rate).max(1.0);
+
     let mut max_l = 0.0f32;
     let mut max_r = 0.0f32;
 
     for i in 0..frames {
-        let l = soft_limit(left_out[i]);
-        let r = soft_limit(right_out[i]);
+        if *mute_gain < target_mute_gain {
+            *mute_gain = (*mute_gain + mute_step).min(target_mute_gain);
+        } else if *mute_gain > target_mute_gain {
+            *mute_gain = (*mute_gain - mute_step).max(target_mute_gain);
+        }
+        let g = *mute_gain;
+        let l = soft_limit(left_out[i]) * g;
+        let r = soft_limit(right_out[i]) * g;
         max_l = max_l.max(l.abs());
         max_r = max_r.max(r.abs());
 
