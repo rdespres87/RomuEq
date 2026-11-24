@@ -142,7 +142,10 @@ impl<A: GuiApp> StandaloneRunner<A> {
                 app.on_audio_started();
                 client.sample_rate = audio_stream.sample_rate();
                 let out_name = detected_out.as_deref().unwrap_or(t.output_slider);
-                (true, Some(format_audio_status(initial_bypassed, out_name, t)))
+                (
+                    true,
+                    Some(format_audio_status(initial_bypassed, out_name, t)),
+                )
             }
             Err(e) => (false, Some(format!("{}: {e}", t.status_stream_error))),
         };
@@ -322,9 +325,8 @@ impl<A: GuiApp> App for StandaloneRunner<A> {
                             if now_muted {
                                 self.status_message = Some(t.status_audio_muted.to_string());
                             } else {
-                                let out_name = audio
-                                    .selected_output_device()
-                                    .unwrap_or(t.output_slider);
+                                let out_name =
+                                    audio.selected_output_device().unwrap_or(t.output_slider);
                                 let is_bypassed = self
                                     .client
                                     .snapshot()
@@ -343,9 +345,8 @@ impl<A: GuiApp> App for StandaloneRunner<A> {
                                 Ok(()) => {
                                     self.audio_active = true;
                                     self.client.sample_rate = audio.sample_rate();
-                                    let out_name = audio
-                                        .selected_output_device()
-                                        .unwrap_or(t.output_slider);
+                                    let out_name =
+                                        audio.selected_output_device().unwrap_or(t.output_slider);
                                     let is_bypassed = self
                                         .client
                                         .snapshot()
@@ -488,8 +489,7 @@ impl<A: GuiApp> App for StandaloneRunner<A> {
                     .get(ParamId(1))
                     .map(|v| v >= 0.5)
                     .unwrap_or(false);
-                self.status_message =
-                    Some(format_audio_status(is_bypassed, out_name, updated_t));
+                self.status_message = Some(format_audio_status(is_bypassed, out_name, updated_t));
             }
         }
 
@@ -795,8 +795,7 @@ impl EngineClient {
                 2 => params.global.output_gain_db = cmd.value.clamp(-24.0, 24.0),
                 3 => params.global.auto_gain = cmd.value > 0.5,
                 4 => {
-                    params.global.processing_mode =
-                        equaform_common::ProcessingMode::MinimumPhase;
+                    params.global.processing_mode = equaform_common::ProcessingMode::MinimumPhase;
                 }
                 5 => {
                     params.global.stereo_mode = equaform_common::StereoMode::Stereo;
@@ -1143,7 +1142,10 @@ mod tests {
         );
 
         let en = Translations::for_language(Language::English);
-        assert_eq!(format_audio_status(true, "Built-in", en), "EQ bypassed • Built-in");
+        assert_eq!(
+            format_audio_status(true, "Built-in", en),
+            "EQ bypassed • Built-in"
+        );
     }
 
     #[test]

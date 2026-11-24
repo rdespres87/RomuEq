@@ -54,4 +54,3 @@ pub fn calculate_auto_gain_compensation_db(
     let rms_gain_db = 10.0_f32 * mean_power.log10();
     (-rms_gain_db).clamp(-15.0, 12.0)
 }
-

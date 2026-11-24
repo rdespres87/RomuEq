@@ -20,7 +20,6 @@
 //! - **AnalysisEngine**: consumer-side API that drains frames and provides
 //!   the latest analysis snapshot.
 
-
 mod engine;
 pub mod fft;
 mod meters;

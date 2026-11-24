@@ -200,7 +200,8 @@ impl EngineLifecycle {
         for ch_idx in 0..self.topology.channels {
             let buffer_offset = ch_idx * self.topology.max_block_size;
             let samples = &mut self.buffer[buffer_offset..buffer_offset + block_size];
-            let dry_samples = &mut self.bypass.dry_buffer[buffer_offset..buffer_offset + block_size];
+            let dry_samples =
+                &mut self.bypass.dry_buffer[buffer_offset..buffer_offset + block_size];
 
             dry_samples.copy_from_slice(samples);
 

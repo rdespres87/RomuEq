@@ -328,4 +328,3 @@ impl SpectrumProcessor {
         }
     }
 }
-

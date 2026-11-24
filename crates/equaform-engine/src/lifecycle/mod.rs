@@ -40,9 +40,7 @@
 use crate::automation::AutomationIngestor;
 use equaform_analysis::AnalysisBuffer;
 use equaform_common::automation::{AutomationEvent, InterpolationMode};
-use equaform_common::{
-    EqParameters, MAX_BANDS, MAX_BLOCK_SIZE, MAX_CHANNELS,
-};
+use equaform_common::{EqParameters, MAX_BANDS, MAX_BLOCK_SIZE, MAX_CHANNELS};
 use equaform_dsp::coefficients::{BiquadCoefficients, FilterSpecification};
 
 // ---------------------------------------------------------------------------
@@ -490,4 +488,3 @@ impl Default for EngineLifecycle {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
-

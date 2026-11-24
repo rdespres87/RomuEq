@@ -135,7 +135,10 @@ pub fn render_spectrum_analyzer_localized(
         .x_grid_spacer(log_freq_grid_spacer)
         .label_formatter(move |_name, val| {
             let freq = 10.0_f64.powf(val.x);
-            format!("{freq_short}: {freq:.0} Hz\n{level_short}: {:+.1} dBFS", val.y)
+            format!(
+                "{freq_short}: {freq:.0} Hz\n{level_short}: {:+.1} dBFS",
+                val.y
+            )
         })
         .show(ui, |plot_ui| {
             plot_ui.set_auto_bounds(egui::Vec2b::FALSE);
@@ -148,4 +151,3 @@ pub fn render_spectrum_analyzer_localized(
 
     let _ = plot;
 }
-

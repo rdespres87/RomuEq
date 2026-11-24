@@ -63,4 +63,3 @@ pub(crate) fn one_third_octave_group_edges(group: usize) -> Option<(f64, f64)> {
     let high = center * 2.0_f64.powf(1.0 / 6.0);
     Some((low, high))
 }
-

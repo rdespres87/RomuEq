@@ -273,7 +273,8 @@ impl ContinuousPiDriftController {
         // 6. Phase-continuous sample-by-sample linear interpolation
         for i in 0..count {
             let frac = self.resampler.phase as f32;
-            left[i] = self.resampler.prev_l + frac * (self.resampler.curr_l - self.resampler.prev_l);
+            left[i] =
+                self.resampler.prev_l + frac * (self.resampler.curr_l - self.resampler.prev_l);
             right[i] =
                 self.resampler.prev_r + frac * (self.resampler.curr_r - self.resampler.prev_r);
             self.resampler.phase += step;

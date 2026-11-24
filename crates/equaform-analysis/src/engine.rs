@@ -242,7 +242,6 @@ impl Default for AnalysisEngine {
 // Tests
 // ---------------------------------------------------------------------------
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -819,5 +818,4 @@ mod tests {
             "consumed + dropped <= total"
         );
     }
-
 }

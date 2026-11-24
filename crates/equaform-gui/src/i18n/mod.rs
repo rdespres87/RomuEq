@@ -251,10 +251,7 @@ mod tests {
 
     #[test]
     fn test_language_persistence_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
-        let dir = std::env::temp_dir().join(format!(
-            "equaform_i18n_test_{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("equaform_i18n_test_{}", std::process::id()));
         let path = dir.join("language.txt");
 
         // Missing file falls back to English.

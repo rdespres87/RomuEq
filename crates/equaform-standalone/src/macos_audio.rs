@@ -142,12 +142,10 @@ pub mod macos_impl {
 
     extern "C" fn restore_on_process_exit() {
         // Restore user's selected physical output (or cached original physical device ID).
-        let target_id = find_physical_output_device()
-            .map(|(id, _)| id)
-            .or_else(|| {
-                let cached = RESTORE_DEVICE_ID.load(Ordering::Acquire);
-                (cached > 0).then_some(cached)
-            });
+        let target_id = find_physical_output_device().map(|(id, _)| id).or_else(|| {
+            let cached = RESTORE_DEVICE_ID.load(Ordering::Acquire);
+            (cached > 0).then_some(cached)
+        });
 
         if let Some(phys_id) = target_id {
             let _ = set_default_output_device(phys_id);

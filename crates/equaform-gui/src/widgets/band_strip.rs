@@ -21,11 +21,7 @@ pub struct BandRenderContext<'a> {
 /// Each control maps to exactly one stable ParamId and validates/clamps values
 /// before emitting commands through the batch. Only pushes a command when the
 /// value actually changes (tracked via egui response.changed()).
-pub fn render_band(
-    ui: &mut egui::Ui,
-    ctx: BandRenderContext<'_>,
-    batch: &mut GuiCommandBatch,
-) {
+pub fn render_band(ui: &mut egui::Ui, ctx: BandRenderContext<'_>, batch: &mut GuiCommandBatch) {
     let band_index = ctx.band_index;
     let params = ctx.params;
     let snapshot = ctx.snapshot;
@@ -194,4 +190,3 @@ pub fn render_band(
         });
     });
 }
-

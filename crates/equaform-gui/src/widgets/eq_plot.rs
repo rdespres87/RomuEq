@@ -127,8 +127,7 @@ impl EqCurveCache {
             let points_iter = (0..width).map(|k| {
                 let t = k as f32 / denom;
                 let f = 10.0_f32.powf(log_min + t * (log_max - log_min));
-                let db =
-                    biquad_response_at_frequency(&coeffs, f.min(nyquist_limit), sample_rate);
+                let db = biquad_response_at_frequency(&coeffs, f.min(nyquist_limit), sample_rate);
                 [
                     (f as f64).clamp(20.0, 20_000.0).log10(),
                     (db as f64).clamp(-40.0, 40.0),
@@ -151,7 +150,9 @@ impl EqCurveCache {
 
     /// Returns the cached curve for an individual active band, or `None` if inactive.
     pub fn band_curve(&self, band_index: usize) -> Option<&[[f64; 2]]> {
-        self.band_curves.get(band_index).and_then(|opt| opt.as_deref())
+        self.band_curves
+            .get(band_index)
+            .and_then(|opt| opt.as_deref())
     }
 
     /// Returns the number of cache recomputations performed since creation.
@@ -513,8 +514,7 @@ pub fn render_interactive_frequency_response_plot(
     let scroll_delta = ui.ctx().input(|i| i.raw_scroll_delta.y);
     if scroll_delta.abs() > 0.1 && (plot_hovered || local_dragged.is_some()) {
         let target_band = local_dragged.or_else(|| {
-            coord_under_pointer
-                .and_then(|pt| find_closest_band_node(bands, pt, plot_size, 400.0))
+            coord_under_pointer.and_then(|pt| find_closest_band_node(bands, pt, plot_size, 400.0))
         });
 
         if let Some(band_idx) = target_band {
@@ -635,7 +635,9 @@ mod tests {
         assert_eq!(cache.master_points().len(), direct.len());
 
         for (cached, direct_pt) in cache.master_points().iter().zip(direct.iter()) {
-            let expected_x = (direct_pt.frequency_hz as f64).clamp(20.0, 20_000.0).log10();
+            let expected_x = (direct_pt.frequency_hz as f64)
+                .clamp(20.0, 20_000.0)
+                .log10();
             let expected_y = (direct_pt.magnitude_db as f64).clamp(-40.0, 40.0);
             assert!((cached[0] - expected_x).abs() < 1e-9);
             assert!((cached[1] - expected_y).abs() < 1e-9);

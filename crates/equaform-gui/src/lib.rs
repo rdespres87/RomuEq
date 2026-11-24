@@ -337,7 +337,6 @@ pub fn default_8_bands() -> [equaform_common::BandParameters; equaform_common::M
     bands
 }
 
-
 // ---------------------------------------------------------------------------
 // Engine interface contract (implemented by equaform-engine)
 // ---------------------------------------------------------------------------
@@ -467,7 +466,6 @@ pub use workspace_ui::*;
 // Standalone entry point (feature-gated)
 // ---------------------------------------------------------------------------
 
-
 pub mod widgets;
 pub use widgets::{
     BandRenderContext, EqCurveCache, PlotContext, render_band, render_frequency_response_plot,
@@ -478,7 +476,6 @@ pub use widgets::{
 
 #[cfg(feature = "standalone")]
 pub mod standalone;
-
 
 #[cfg(test)]
 mod tests {

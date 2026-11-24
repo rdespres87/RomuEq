@@ -62,4 +62,3 @@ pub fn render_master_section_localized(
         }
     });
 }
-

@@ -697,9 +697,7 @@ impl Preset {
 
         // Tags (guard against OOM / DoS before allocating)
         let tag_count = reader.read_u32()? as usize;
-        let min_tag_bytes = tag_count
-            .checked_mul(4)
-            .ok_or(StateError::MalformedInput)?;
+        let min_tag_bytes = tag_count.checked_mul(4).ok_or(StateError::MalformedInput)?;
         if min_tag_bytes > reader.remaining() {
             return Err(StateError::MalformedInput);
         }
@@ -728,7 +726,11 @@ impl Preset {
             product: Cow::Borrowed(PRODUCT_NAME),
             name: Cow::Borrowed(&self.name),
             author: self.author.as_deref().map(Cow::Borrowed),
-            tags: self.tags.iter().map(|t| Cow::Borrowed(t.as_str())).collect(),
+            tags: self
+                .tags
+                .iter()
+                .map(|t| Cow::Borrowed(t.as_str()))
+                .collect(),
             parameters,
         };
         serde_json::to_string_pretty(&envelope).map_err(|_| StateError::InvalidJson)
@@ -1227,10 +1229,7 @@ mod tests {
 
     #[test]
     fn test_atomic_write_and_overwrite_no_tmp_leftover() {
-        let dir = std::env::temp_dir().join(format!(
-            "equaform_atomic_test_{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("equaform_atomic_test_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let file_path = dir.join("state.bin");
 

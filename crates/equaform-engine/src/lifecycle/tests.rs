@@ -138,8 +138,7 @@ fn test_lifecycle_process_after_prepare() {
     let inputs: Vec<Vec<f32>> = vec![vec![0.5; 64], vec![0.3; 64]];
     let mut outputs: Vec<Vec<f32>> = vec![vec![0.0; 64], vec![0.0; 64]];
     let input_refs: Vec<&[f32]> = inputs.iter().map(|v| v.as_slice()).collect();
-    let mut output_refs: Vec<&mut [f32]> =
-        outputs.iter_mut().map(|v| v.as_mut_slice()).collect();
+    let mut output_refs: Vec<&mut [f32]> = outputs.iter_mut().map(|v| v.as_mut_slice()).collect();
 
     assert!(engine.process(&input_refs, &mut output_refs));
     assert_eq!(engine.blocks_processed(), 1);
@@ -171,8 +170,7 @@ fn test_lifecycle_process_before_prepare_fails() {
     let inputs: Vec<Vec<f32>> = vec![vec![0.5; 64]];
     let mut outputs: Vec<Vec<f32>> = vec![vec![0.0; 64]];
     let input_refs: Vec<&[f32]> = inputs.iter().map(|v| v.as_slice()).collect();
-    let mut output_refs: Vec<&mut [f32]> =
-        outputs.iter_mut().map(|v| v.as_mut_slice()).collect();
+    let mut output_refs: Vec<&mut [f32]> = outputs.iter_mut().map(|v| v.as_mut_slice()).collect();
 
     assert!(!engine.process(&input_refs, &mut output_refs));
     assert_eq!(engine.state(), LifecycleState::Created);
@@ -186,8 +184,7 @@ fn test_lifecycle_process_block_size_1() {
     let inputs: Vec<Vec<f32>> = vec![vec![0.7]];
     let mut outputs: Vec<Vec<f32>> = vec![vec![0.0]];
     let input_refs: Vec<&[f32]> = inputs.iter().map(|v| v.as_slice()).collect();
-    let mut output_refs: Vec<&mut [f32]> =
-        outputs.iter_mut().map(|v| v.as_mut_slice()).collect();
+    let mut output_refs: Vec<&mut [f32]> = outputs.iter_mut().map(|v| v.as_mut_slice()).collect();
 
     assert!(engine.process(&input_refs, &mut output_refs));
     // With default params (unity gain), output should be near input.
@@ -202,8 +199,7 @@ fn test_lifecycle_process_block_size_max() {
     let inputs: Vec<Vec<f32>> = vec![vec![1.0; MAX_BLOCK_SIZE], vec![0.5; MAX_BLOCK_SIZE]];
     let mut outputs: Vec<Vec<f32>> = vec![vec![0.0; MAX_BLOCK_SIZE], vec![0.0; MAX_BLOCK_SIZE]];
     let input_refs: Vec<&[f32]> = inputs.iter().map(|v| v.as_slice()).collect();
-    let mut output_refs: Vec<&mut [f32]> =
-        outputs.iter_mut().map(|v| v.as_mut_slice()).collect();
+    let mut output_refs: Vec<&mut [f32]> = outputs.iter_mut().map(|v| v.as_mut_slice()).collect();
 
     assert!(engine.process(&input_refs, &mut output_refs));
     assert_eq!(engine.blocks_processed(), 1);
@@ -217,8 +213,7 @@ fn test_lifecycle_process_block_too_large_fails() {
     let inputs: Vec<Vec<f32>> = vec![vec![0.5; 512], vec![0.3; 512]];
     let mut outputs: Vec<Vec<f32>> = vec![vec![0.0; 512], vec![0.0; 512]];
     let input_refs: Vec<&[f32]> = inputs.iter().map(|v| v.as_slice()).collect();
-    let mut output_refs: Vec<&mut [f32]> =
-        outputs.iter_mut().map(|v| v.as_mut_slice()).collect();
+    let mut output_refs: Vec<&mut [f32]> = outputs.iter_mut().map(|v| v.as_mut_slice()).collect();
 
     // Block size 512 > max_block_size 256 → fails.
     assert!(!engine.process(&input_refs, &mut output_refs));
@@ -233,8 +228,7 @@ fn test_lifecycle_process_unequal_input_output_panics() {
     let inputs: Vec<Vec<f32>> = vec![vec![0.5; 64]];
     let mut outputs: Vec<Vec<f32>> = vec![vec![0.0; 64], vec![0.0; 64]];
     let input_refs: Vec<&[f32]> = inputs.iter().map(|v| v.as_slice()).collect();
-    let mut output_refs: Vec<&mut [f32]> =
-        outputs.iter_mut().map(|v| v.as_mut_slice()).collect();
+    let mut output_refs: Vec<&mut [f32]> = outputs.iter_mut().map(|v| v.as_mut_slice()).collect();
 
     engine.process(&input_refs, &mut output_refs);
 }
@@ -248,8 +242,7 @@ fn test_lifecycle_process_wrong_channel_count_fails() {
     let inputs: Vec<Vec<f32>> = vec![vec![0.5; 64]];
     let mut outputs: Vec<Vec<f32>> = vec![vec![0.0; 64]];
     let input_refs: Vec<&[f32]> = inputs.iter().map(|v| v.as_slice()).collect();
-    let mut output_refs: Vec<&mut [f32]> =
-        outputs.iter_mut().map(|v| v.as_mut_slice()).collect();
+    let mut output_refs: Vec<&mut [f32]> = outputs.iter_mut().map(|v| v.as_mut_slice()).collect();
 
     assert!(!engine.process(&input_refs, &mut output_refs));
 }
@@ -263,8 +256,7 @@ fn test_lifecycle_process_variable_block_sizes() {
     let inputs: Vec<Vec<f32>> = vec![vec![0.1], vec![0.2]];
     let mut outputs: Vec<Vec<f32>> = vec![vec![0.0], vec![0.0]];
     let mut input_refs: Vec<&[f32]> = inputs.iter().map(|v| v.as_slice()).collect();
-    let mut output_refs: Vec<&mut [f32]> =
-        outputs.iter_mut().map(|v| v.as_mut_slice()).collect();
+    let mut output_refs: Vec<&mut [f32]> = outputs.iter_mut().map(|v| v.as_mut_slice()).collect();
     assert!(engine.process(&input_refs, &mut output_refs));
 
     // Block size 64.
@@ -301,8 +293,7 @@ fn test_lifecycle_process_bypass_silences_output() {
     let inputs: Vec<Vec<f32>> = vec![vec![0.5; 64], vec![0.3; 64]];
     let mut outputs: Vec<Vec<f32>> = vec![vec![0.0; 64], vec![0.0; 64]];
     let input_refs: Vec<&[f32]> = inputs.iter().map(|v| v.as_slice()).collect();
-    let mut output_refs: Vec<&mut [f32]> =
-        outputs.iter_mut().map(|v| v.as_mut_slice()).collect();
+    let mut output_refs: Vec<&mut [f32]> = outputs.iter_mut().map(|v| v.as_mut_slice()).collect();
 
     assert!(engine.process(&input_refs, &mut output_refs));
 
@@ -320,8 +311,7 @@ fn test_lifecycle_process_bypass_silences_output() {
     // After transition, bypass output should equal the input signal exactly.
     let mut outputs2: Vec<Vec<f32>> = vec![vec![0.0; 64], vec![0.0; 64]];
     let _input_refs2: Vec<&[f32]> = inputs.iter().map(|v| v.as_slice()).collect();
-    let mut output_refs2: Vec<&mut [f32]> =
-        outputs2.iter_mut().map(|v| v.as_mut_slice()).collect();
+    let mut output_refs2: Vec<&mut [f32]> = outputs2.iter_mut().map(|v| v.as_mut_slice()).collect();
     for _ in 0..10 {
         let mut outputs_tmp: Vec<Vec<f32>> = vec![vec![0.0; 64], vec![0.0; 64]];
         let input_refs_tmp: Vec<&[f32]> = inputs.iter().map(|v| v.as_slice()).collect();
@@ -358,8 +348,7 @@ fn test_lifecycle_process_output_gain() {
     let inputs: Vec<Vec<f32>> = vec![vec![0.5; 64]];
     let mut outputs: Vec<Vec<f32>> = vec![vec![0.0; 64]];
     let input_refs: Vec<&[f32]> = inputs.iter().map(|v| v.as_slice()).collect();
-    let mut output_refs: Vec<&mut [f32]> =
-        outputs.iter_mut().map(|v| v.as_mut_slice()).collect();
+    let mut output_refs: Vec<&mut [f32]> = outputs.iter_mut().map(|v| v.as_mut_slice()).collect();
 
     assert!(engine.process(&input_refs, &mut output_refs));
 
@@ -399,8 +388,7 @@ fn test_lifecycle_process_band_boost() {
         .collect();
     let inputs: Vec<&[f32]> = vec![&input_samples];
     let mut outputs: Vec<Vec<f32>> = vec![vec![0.0; 64]];
-    let mut output_refs: Vec<&mut [f32]> =
-        outputs.iter_mut().map(|v| v.as_mut_slice()).collect();
+    let mut output_refs: Vec<&mut [f32]> = outputs.iter_mut().map(|v| v.as_mut_slice()).collect();
 
     assert!(engine.process(&inputs, &mut output_refs));
 
@@ -432,8 +420,7 @@ fn test_lifecycle_process_band_disable() {
     let inputs: Vec<Vec<f32>> = vec![vec![0.5; 64]];
     let mut outputs: Vec<Vec<f32>> = vec![vec![0.0; 64]];
     let input_refs: Vec<&[f32]> = inputs.iter().map(|v| v.as_slice()).collect();
-    let mut output_refs: Vec<&mut [f32]> =
-        outputs.iter_mut().map(|v| v.as_mut_slice()).collect();
+    let mut output_refs: Vec<&mut [f32]> = outputs.iter_mut().map(|v| v.as_mut_slice()).collect();
 
     assert!(engine.process(&input_refs, &mut output_refs));
 
@@ -457,8 +444,7 @@ fn test_lifecycle_process_stereo_channel_isolation() {
     let inputs: Vec<Vec<f32>> = vec![vec![1.0; 64], vec![0.0; 64]];
     let mut outputs: Vec<Vec<f32>> = vec![vec![0.0; 64], vec![0.0; 64]];
     let input_refs: Vec<&[f32]> = inputs.iter().map(|v| v.as_slice()).collect();
-    let mut output_refs: Vec<&mut [f32]> =
-        outputs.iter_mut().map(|v| v.as_mut_slice()).collect();
+    let mut output_refs: Vec<&mut [f32]> = outputs.iter_mut().map(|v| v.as_mut_slice()).collect();
 
     assert!(engine.process(&input_refs, &mut output_refs));
 
@@ -577,8 +563,7 @@ fn test_lifecycle_process_after_destroy_fails() {
     let inputs: Vec<Vec<f32>> = vec![vec![0.5; 64]];
     let mut outputs: Vec<Vec<f32>> = vec![vec![0.0; 64]];
     let input_refs: Vec<&[f32]> = inputs.iter().map(|v| v.as_slice()).collect();
-    let mut output_refs: Vec<&mut [f32]> =
-        outputs.iter_mut().map(|v| v.as_mut_slice()).collect();
+    let mut output_refs: Vec<&mut [f32]> = outputs.iter_mut().map(|v| v.as_mut_slice()).collect();
 
     assert!(!engine.process(&input_refs, &mut output_refs));
 }
@@ -611,8 +596,7 @@ fn test_flat_buffer_channel_layout() {
     let inputs: Vec<Vec<f32>> = vec![vec![1.0], vec![2.0]];
     let mut outputs: Vec<Vec<f32>> = vec![vec![0.0], vec![0.0]];
     let input_refs: Vec<&[f32]> = inputs.iter().map(|v| v.as_slice()).collect();
-    let mut output_refs: Vec<&mut [f32]> =
-        outputs.iter_mut().map(|v| v.as_mut_slice()).collect();
+    let mut output_refs: Vec<&mut [f32]> = outputs.iter_mut().map(|v| v.as_mut_slice()).collect();
 
     // Process should copy inputs to buffer, then buffer to outputs.
     assert!(engine.process(&input_refs, &mut output_refs));
@@ -638,8 +622,7 @@ fn test_flat_buffer_channel_isolation() {
     let inputs: Vec<Vec<f32>> = vec![vec![0.0], vec![0.0]];
     let mut outputs: Vec<Vec<f32>> = vec![vec![0.0], vec![0.0]];
     let input_refs: Vec<&[f32]> = inputs.iter().map(|v| v.as_slice()).collect();
-    let mut output_refs: Vec<&mut [f32]> =
-        outputs.iter_mut().map(|v| v.as_mut_slice()).collect();
+    let mut output_refs: Vec<&mut [f32]> = outputs.iter_mut().map(|v| v.as_mut_slice()).collect();
 
     assert!(engine.process(&input_refs, &mut output_refs));
 
