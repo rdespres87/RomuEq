@@ -92,10 +92,10 @@ pub fn remove_preset_from_disk(name: &str) {
     let _ = std::fs::remove_file(path);
 }
 
-/// Saves the last active preset name to `~/.romueq/last_preset.txt`.
+/// Saves the last active preset name atomically to `~/.equaform/last_preset.txt`.
 pub fn save_last_active_preset_name(name: &str) {
     let path = user_config_dir().join("last_preset.txt");
-    let _ = std::fs::write(path, name.as_bytes());
+    let _ = equaform_common::state::atomic_write(path, name.as_bytes());
 }
 
 /// Loads the last active preset name from `~/.romueq/last_preset.txt`.

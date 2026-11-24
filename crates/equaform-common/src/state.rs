@@ -4,13 +4,16 @@
 //!
 //! # Schema
 //!
-//! Schema version 1 envelope:
+//! Schema version 1 binary envelope:
 //!
 //! ```text
-//! schema_version: u32
+//! magic:          [u8; 4] = b"EQFR"
+//! schema_version: u32 LE (= 1)
 //! product:        u32 length + UTF-8 bytes
-//! param_count:    u32
-//! params:         param_count × (id: u32, value: f32)
+//! [preset meta]:  name, author, tags (Preset only)
+//! param_count:    u32 LE
+//! params:         param_count × (id: u32 LE, value: f32 LE)
+//! crc32:          u32 LE (IEEE 802.3 CRC32 over all preceding bytes)
 //! ```
 //!
 //! State save/load is a main-thread operation; audio processing never performs
@@ -18,7 +21,12 @@
 //! persisted state.
 
 use crate::parameter::{MAX_BANDS, ParameterCommand, band, global};
+use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::collections::BTreeMap;
+use std::io::Write;
+use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 // ===========================================================================
 // Error types
@@ -35,6 +43,10 @@ pub enum StateError {
     InvalidParameterValue { id: u32 },
     /// The product name does not match the expected value.
     UnknownProduct,
+    /// The CRC32 integrity checksum did not match the payload bytes.
+    ChecksumMismatch { expected: u32, actual: u32 },
+    /// JSON serialization or deserialization failed.
+    InvalidJson,
 }
 
 impl std::fmt::Display for StateError {
@@ -48,6 +60,13 @@ impl std::fmt::Display for StateError {
                 write!(f, "invalid parameter value for ID {id}")
             }
             StateError::UnknownProduct => write!(f, "unknown product name"),
+            StateError::ChecksumMismatch { expected, actual } => {
+                write!(
+                    f,
+                    "CRC32 checksum mismatch (expected 0x{expected:08x}, got 0x{actual:08x})"
+                )
+            }
+            StateError::InvalidJson => write!(f, "invalid JSON preset payload"),
         }
     }
 }
@@ -58,14 +77,219 @@ impl std::error::Error for StateError {}
 pub type StateResult<T> = Result<T, StateError>;
 
 // ===========================================================================
-// Schema version
+// Schema version, magic header & IEEE 802.3 CRC32
 // ===========================================================================
 
-/// The current (and only) persisted state schema version.
+/// Four-byte magic header identifying Equaform binary payloads.
+pub const STATE_MAGIC: [u8; 4] = *b"EQFR";
+
+/// The current persisted state schema version.
 pub const CURRENT_SCHEMA_VERSION: u32 = 1;
 
 /// The product name that identifies Equaform-8 state files.
 pub const PRODUCT_NAME: &str = "Equaform-8";
+
+/// Precomputed IEEE 802.3 CRC32 lookup table (reflected polynomial `0xEDB8_8320`).
+const CRC32_TABLE: [u32; 256] = {
+    let mut table = [0u32; 256];
+    let mut i = 0usize;
+    while i < 256 {
+        let mut crc = i as u32;
+        let mut bit = 0;
+        while bit < 8 {
+            if crc & 1 != 0 {
+                crc = (crc >> 1) ^ 0xEDB8_8320;
+            } else {
+                crc >>= 1;
+            }
+            bit += 1;
+        }
+        table[i] = crc;
+        i += 1;
+    }
+    table
+};
+
+/// Compute the standard IEEE 802.3 CRC32 checksum of `data`.
+pub fn crc32_ieee(data: &[u8]) -> u32 {
+    let mut crc = 0xFFFF_FFFFu32;
+    for &byte in data {
+        let idx = ((crc ^ u32::from(byte)) & 0xFF) as usize;
+        crc = (crc >> 8) ^ CRC32_TABLE[idx];
+    }
+    !crc
+}
+
+// ===========================================================================
+// Atomic disk persistence helper
+// ===========================================================================
+
+static TMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Atomically write `data` to `path` via a sibling temporary file + `fsync` + `rename`.
+///
+/// Guarantees that a crash or power loss mid-write never leaves a truncated or
+/// partially-written file at `path`. Cleans up the temporary file on error.
+pub fn atomic_write(path: impl AsRef<Path>, data: &[u8]) -> std::io::Result<()> {
+    let target = path.as_ref();
+    if let Some(parent) = target.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let file_name = target
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("equaform_state");
+    let pid = std::process::id();
+    let seq = TMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let tmp_name = format!(".{file_name}.{pid}.{seq}.tmp");
+    let tmp_path = match target.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent.join(tmp_name),
+        _ => std::path::PathBuf::from(tmp_name),
+    };
+
+    let write_result = (|| -> std::io::Result<()> {
+        let mut file = std::fs::File::create(&tmp_path)?;
+        file.write_all(data)?;
+        file.sync_all()?;
+        Ok(())
+    })();
+
+    if let Err(err) = write_result {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(err);
+    }
+
+    if let Err(err) = std::fs::rename(&tmp_path, target) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(err);
+    }
+
+    Ok(())
+}
+
+// ===========================================================================
+// Bounds-checked binary cursor
+// ===========================================================================
+
+/// Bounds-checked little-endian binary reader that never panics on truncated
+/// or adversarial inputs.
+struct BinaryReader<'a> {
+    data: &'a [u8],
+    offset: usize,
+}
+
+impl<'a> BinaryReader<'a> {
+    const fn new(data: &'a [u8]) -> Self {
+        Self { data, offset: 0 }
+    }
+
+    const fn remaining(&self) -> usize {
+        self.data.len().saturating_sub(self.offset)
+    }
+
+    fn read_bytes(&mut self, len: usize) -> StateResult<&'a [u8]> {
+        let end = self
+            .offset
+            .checked_add(len)
+            .ok_or(StateError::MalformedInput)?;
+        let slice = self
+            .data
+            .get(self.offset..end)
+            .ok_or(StateError::MalformedInput)?;
+        self.offset = end;
+        Ok(slice)
+    }
+
+    fn read_u8(&mut self) -> StateResult<u8> {
+        let slice = self.read_bytes(1)?;
+        Ok(slice[0])
+    }
+
+    fn read_u32(&mut self) -> StateResult<u32> {
+        let slice = self.read_bytes(4)?;
+        let arr: [u8; 4] = slice.try_into().map_err(|_| StateError::MalformedInput)?;
+        Ok(u32::from_le_bytes(arr))
+    }
+
+    fn read_f32(&mut self) -> StateResult<f32> {
+        let slice = self.read_bytes(4)?;
+        let arr: [u8; 4] = slice.try_into().map_err(|_| StateError::MalformedInput)?;
+        Ok(f32::from_le_bytes(arr))
+    }
+
+    fn read_str(&mut self) -> StateResult<&'a str> {
+        let len = self.read_u32()? as usize;
+        let bytes = self.read_bytes(len)?;
+        std::str::from_utf8(bytes).map_err(|_| StateError::MalformedInput)
+    }
+}
+
+/// Unwrap a framed binary envelope (`"EQFR"` + version + payload + CRC32).
+///
+/// Returns `(schema_version, reader_positioned_after_version)`.
+fn open_envelope(data: &[u8]) -> StateResult<(u32, BinaryReader<'_>)> {
+    // Minimum framed size: 4 (magic) + 4 (version) + 4 (crc32)
+    if data.len() < 12 || !data.starts_with(&STATE_MAGIC) {
+        return Err(StateError::MalformedInput);
+    }
+
+    let (body, crc_slice) = data.split_at(data.len() - 4);
+    let actual_crc = u32::from_le_bytes(
+        crc_slice
+            .try_into()
+            .map_err(|_| StateError::MalformedInput)?,
+    );
+    let expected_crc = crc32_ieee(body);
+    if expected_crc != actual_crc {
+        return Err(StateError::ChecksumMismatch {
+            expected: expected_crc,
+            actual: actual_crc,
+        });
+    }
+
+    let mut reader = BinaryReader::new(body);
+    let _magic = reader.read_bytes(4)?;
+    let schema_version = reader.read_u32()?;
+    if schema_version == 0 {
+        return Err(StateError::MalformedInput);
+    }
+    if schema_version > CURRENT_SCHEMA_VERSION {
+        return Err(StateError::UnsupportedFutureVersion {
+            version: schema_version,
+        });
+    }
+    Ok((schema_version, reader))
+}
+
+fn read_product_checked(reader: &mut BinaryReader<'_>) -> StateResult<()> {
+    let product = reader.read_str()?;
+    if product != PRODUCT_NAME && product != "RomuEq" {
+        return Err(StateError::UnknownProduct);
+    }
+    Ok(())
+}
+
+fn read_parameter_values(reader: &mut BinaryReader<'_>) -> StateResult<ParameterValues> {
+    let param_count = reader.read_u32()? as usize;
+    // Guard against OOM / DoS from malformed counts before iterating.
+    let required_bytes = param_count
+        .checked_mul(8)
+        .ok_or(StateError::MalformedInput)?;
+    if required_bytes > reader.remaining() {
+        return Err(StateError::MalformedInput);
+    }
+
+    let mut parameter_values = ParameterValues::new();
+    for _ in 0..param_count {
+        let id = reader.read_u32()?;
+        let value = reader.read_f32()?;
+        parameter_values.set(id, value);
+    }
+    Ok(parameter_values)
+}
 
 // ===========================================================================
 // Parameter values map
@@ -206,18 +430,27 @@ impl ProjectState {
         }
     }
 
-    /// Serialize this state to a binary buffer.
+    /// Serialize this state to a binary buffer with `"EQFR"` magic header
+    /// and trailing IEEE 802.3 CRC32 checksum.
     ///
     /// Format:
+    /// - `magic` (`b"EQFR"`, 4 bytes)
     /// - `schema_version` (u32 LE)
     /// - `product` length (u32 LE) + UTF-8 bytes
     /// - `param_count` (u32 LE)
     /// - for each param: `id` (u32 LE) + `value` (f32 LE)
+    /// - `crc32` (u32 LE, over all preceding bytes)
     pub fn serialize(&self) -> Vec<u8> {
-        let mut buf = Vec::new();
+        let mut buf = Vec::with_capacity(32 + self.parameter_values.len() * 8);
 
-        // Schema version
-        buf.extend_from_slice(&self.schema_version.to_le_bytes());
+        // Magic header + schema version
+        buf.extend_from_slice(&STATE_MAGIC);
+        let version = if self.schema_version == 0 {
+            CURRENT_SCHEMA_VERSION
+        } else {
+            self.schema_version
+        };
+        buf.extend_from_slice(&version.to_le_bytes());
 
         // Product name
         let product_bytes = PRODUCT_NAME.as_bytes();
@@ -233,81 +466,23 @@ impl ProjectState {
             buf.extend_from_slice(&value.to_le_bytes());
         }
 
+        // Trailing IEEE 802.3 CRC32
+        let checksum = crc32_ieee(&buf);
+        buf.extend_from_slice(&checksum.to_le_bytes());
+
         buf
     }
 
-    /// Deserialize a state from a binary buffer.
+    /// Deserialize a state from a framed binary buffer (`"EQFR"` + CRC32).
     ///
+    /// Returns `StateError::ChecksumMismatch` if CRC32 verification fails.
     /// Returns `StateError::UnsupportedFutureVersion` if the schema version
     /// is newer than `CURRENT_SCHEMA_VERSION`.
-    /// Returns `StateError::MalformedInput` if the data is truncated.
+    /// Returns `StateError::MalformedInput` if the data is truncated or malformed.
     pub fn deserialize(data: &[u8]) -> StateResult<Self> {
-        let mut offset = 0;
-
-        // Read schema version
-        let Some(slice) = data.get(offset..offset + 4) else {
-            return Err(StateError::MalformedInput);
-        };
-        let schema_version =
-            u32::from_le_bytes(slice.try_into().map_err(|_| StateError::MalformedInput)?);
-        offset += 4;
-
-        // Reject unsupported future versions
-        if schema_version > CURRENT_SCHEMA_VERSION {
-            return Err(StateError::UnsupportedFutureVersion {
-                version: schema_version,
-            });
-        }
-
-        // Read product name
-        let Some(slice) = data.get(offset..offset + 4) else {
-            return Err(StateError::MalformedInput);
-        };
-        let product_len =
-            u32::from_le_bytes(slice.try_into().map_err(|_| StateError::MalformedInput)?) as usize;
-        offset += 4;
-
-        let Some(slice) = data.get(offset..offset + product_len) else {
-            return Err(StateError::MalformedInput);
-        };
-        let product = std::str::from_utf8(slice).map_err(|_| StateError::MalformedInput)?;
-        offset += product_len;
-
-        if product != PRODUCT_NAME && product != "RomuEq" {
-            return Err(StateError::UnknownProduct);
-        }
-
-        // Read parameter count
-        let param_count = u32::from_le_bytes(
-            data[offset..offset + 4]
-                .try_into()
-                .map_err(|_| StateError::MalformedInput)?,
-        ) as usize;
-        offset += 4;
-
-        // Read parameters
-        let mut parameter_values = ParameterValues::new();
-        for _ in 0..param_count {
-            if offset + 8 > data.len() {
-                return Err(StateError::MalformedInput);
-            }
-
-            let id = u32::from_le_bytes(
-                data[offset..offset + 4]
-                    .try_into()
-                    .map_err(|_| StateError::MalformedInput)?,
-            );
-            offset += 4;
-
-            let value = f32::from_le_bytes(
-                data[offset..offset + 4]
-                    .try_into()
-                    .map_err(|_| StateError::MalformedInput)?,
-            );
-            offset += 4;
-
-            parameter_values.set(id, value);
-        }
+        let (schema_version, mut reader) = open_envelope(data)?;
+        read_product_checked(&mut reader)?;
+        let parameter_values = read_parameter_values(&mut reader)?;
 
         Ok(Self {
             schema_version,
@@ -435,9 +610,11 @@ impl Preset {
         }
     }
 
-    /// Serialize this preset to a binary buffer.
+    /// Serialize this preset to a binary buffer with `"EQFR"` magic header
+    /// and trailing IEEE 802.3 CRC32 checksum.
     ///
     /// Format:
+    /// - `magic` (`b"EQFR"`, 4 bytes)
     /// - `schema_version` (u32 LE)
     /// - `product` length (u32 LE) + UTF-8 bytes
     /// - `name` length (u32 LE) + UTF-8 bytes
@@ -446,10 +623,12 @@ impl Preset {
     /// - for each tag: length (u32 LE) + UTF-8 bytes
     /// - `param_count` (u32 LE)
     /// - for each param: `id` (u32 LE) + `value` (f32 LE)
+    /// - `crc32` (u32 LE, over all preceding bytes)
     pub fn serialize(&self) -> Vec<u8> {
-        let mut buf = Vec::new();
+        let mut buf = Vec::with_capacity(64 + self.parameter_values.len() * 8);
 
-        // Schema version
+        // Magic header + schema version
+        buf.extend_from_slice(&STATE_MAGIC);
         buf.extend_from_slice(&CURRENT_SCHEMA_VERSION.to_le_bytes());
 
         // Product name
@@ -490,156 +669,113 @@ impl Preset {
             buf.extend_from_slice(&value.to_le_bytes());
         }
 
+        // Trailing IEEE 802.3 CRC32
+        let checksum = crc32_ieee(&buf);
+        buf.extend_from_slice(&checksum.to_le_bytes());
+
         buf
     }
 
-    /// Deserialize a preset from a binary buffer.
+    /// Deserialize a preset from a framed binary buffer (`"EQFR"` + CRC32).
     pub fn deserialize(data: &[u8]) -> StateResult<Self> {
-        let mut offset = 0;
-
-        // Schema version (must be supported)
-        let Some(slice) = data.get(offset..offset + 4) else {
-            return Err(StateError::MalformedInput);
-        };
-        let schema_version =
-            u32::from_le_bytes(slice.try_into().map_err(|_| StateError::MalformedInput)?);
-        offset += 4;
-
-        if schema_version > CURRENT_SCHEMA_VERSION {
-            return Err(StateError::UnsupportedFutureVersion {
-                version: schema_version,
-            });
-        }
-
-        // Product name
-        let Some(slice) = data.get(offset..offset + 4) else {
-            return Err(StateError::MalformedInput);
-        };
-        let product_len =
-            u32::from_le_bytes(slice.try_into().map_err(|_| StateError::MalformedInput)?) as usize;
-        offset += 4;
-
-        let Some(slice) = data.get(offset..offset + product_len) else {
-            return Err(StateError::MalformedInput);
-        };
-        let product = std::str::from_utf8(slice).map_err(|_| StateError::MalformedInput)?;
-        offset += product_len;
-
-        if product != PRODUCT_NAME && product != "RomuEq" {
-            return Err(StateError::UnknownProduct);
-        }
+        let (_schema_version, mut reader) = open_envelope(data)?;
+        read_product_checked(&mut reader)?;
 
         // Preset name
-        let name_len = u32::from_le_bytes(
-            data[offset..offset + 4]
-                .try_into()
-                .map_err(|_| StateError::MalformedInput)?,
-        ) as usize;
-        offset += 4;
-
-        if offset + name_len > data.len() {
-            return Err(StateError::MalformedInput);
-        }
-
-        let name = std::str::from_utf8(&data[offset..offset + name_len])
-            .map_err(|_| StateError::MalformedInput)?;
-        offset += name_len;
+        let name = reader.read_str()?.to_string();
 
         // Author (optional)
-        let has_author = data[offset];
-        offset += 1;
-
+        let has_author = reader.read_u8()?;
         let author = if has_author != 0 {
-            if offset + 4 > data.len() {
-                return Err(StateError::MalformedInput);
-            }
-            let author_len = u32::from_le_bytes(
-                data[offset..offset + 4]
-                    .try_into()
-                    .map_err(|_| StateError::MalformedInput)?,
-            ) as usize;
-            offset += 4;
-
-            if offset + author_len > data.len() {
-                return Err(StateError::MalformedInput);
-            }
-
-            let author = std::str::from_utf8(&data[offset..offset + author_len])
-                .map_err(|_| StateError::MalformedInput)?;
-            offset += author_len;
-            Some(author.to_string())
+            Some(reader.read_str()?.to_string())
         } else {
             None
         };
 
-        // Tags
-        let tag_count = u32::from_le_bytes(
-            data[offset..offset + 4]
-                .try_into()
-                .map_err(|_| StateError::MalformedInput)?,
-        ) as usize;
-        offset += 4;
+        // Tags (guard against OOM / DoS before allocating)
+        let tag_count = reader.read_u32()? as usize;
+        let min_tag_bytes = tag_count
+            .checked_mul(4)
+            .ok_or(StateError::MalformedInput)?;
+        if min_tag_bytes > reader.remaining() {
+            return Err(StateError::MalformedInput);
+        }
 
         let mut tags = Vec::with_capacity(tag_count);
         for _ in 0..tag_count {
-            if offset + 4 > data.len() {
-                return Err(StateError::MalformedInput);
-            }
-            let tag_len = u32::from_le_bytes(
-                data[offset..offset + 4]
-                    .try_into()
-                    .map_err(|_| StateError::MalformedInput)?,
-            ) as usize;
-            offset += 4;
-
-            if offset + tag_len > data.len() {
-                return Err(StateError::MalformedInput);
-            }
-
-            let tag = std::str::from_utf8(&data[offset..offset + tag_len])
-                .map_err(|_| StateError::MalformedInput)?;
-            offset += tag_len;
-            tags.push(tag.to_string());
+            tags.push(reader.read_str()?.to_string());
         }
 
         // Parameter values
-        let param_count = u32::from_le_bytes(
-            data[offset..offset + 4]
-                .try_into()
-                .map_err(|_| StateError::MalformedInput)?,
-        ) as usize;
-        offset += 4;
-
-        let mut parameter_values = ParameterValues::new();
-        for _ in 0..param_count {
-            if offset + 8 > data.len() {
-                return Err(StateError::MalformedInput);
-            }
-
-            let id = u32::from_le_bytes(
-                data[offset..offset + 4]
-                    .try_into()
-                    .map_err(|_| StateError::MalformedInput)?,
-            );
-            offset += 4;
-
-            let value = f32::from_le_bytes(
-                data[offset..offset + 4]
-                    .try_into()
-                    .map_err(|_| StateError::MalformedInput)?,
-            );
-            offset += 4;
-
-            parameter_values.set(id, value);
-        }
+        let parameter_values = read_parameter_values(&mut reader)?;
 
         Ok(Self {
-            name: name.to_string(),
+            name,
             author,
             tags,
             parameter_values,
         })
     }
+
+    /// Export this preset as a pretty-printed, versioned JSON string.
+    pub fn to_json(&self) -> StateResult<String> {
+        let parameters: BTreeMap<u32, f32> = self.parameter_values.iter().collect();
+        let envelope = PresetJsonEnvelope {
+            schema_version: CURRENT_SCHEMA_VERSION,
+            product: Cow::Borrowed(PRODUCT_NAME),
+            name: Cow::Borrowed(&self.name),
+            author: self.author.as_deref().map(Cow::Borrowed),
+            tags: self.tags.iter().map(|t| Cow::Borrowed(t.as_str())).collect(),
+            parameters,
+        };
+        serde_json::to_string_pretty(&envelope).map_err(|_| StateError::InvalidJson)
+    }
+
+    /// Import a preset from a JSON string previously created by [`Preset::to_json`].
+    pub fn from_json(json: &str) -> StateResult<Self> {
+        let envelope: PresetJsonEnvelope<'_> =
+            serde_json::from_str(json).map_err(|_| StateError::InvalidJson)?;
+
+        if envelope.schema_version == 0 {
+            return Err(StateError::MalformedInput);
+        }
+        if envelope.schema_version > CURRENT_SCHEMA_VERSION {
+            return Err(StateError::UnsupportedFutureVersion {
+                version: envelope.schema_version,
+            });
+        }
+        if envelope.product != PRODUCT_NAME && envelope.product != "RomuEq" {
+            return Err(StateError::UnknownProduct);
+        }
+
+        let mut parameter_values = ParameterValues::new();
+        for (id, value) in envelope.parameters {
+            if !value.is_finite() {
+                return Err(StateError::InvalidParameterValue { id });
+            }
+            parameter_values.set(id, value);
+        }
+
+        Ok(Self {
+            name: envelope.name.into_owned(),
+            author: envelope.author.map(Cow::into_owned),
+            tags: envelope.tags.into_iter().map(Cow::into_owned).collect(),
+            parameter_values,
+        })
+    }
+}
+
+/// Versioned JSON serialization envelope for human-readable preset export/import.
+#[derive(Serialize, Deserialize)]
+struct PresetJsonEnvelope<'a> {
+    schema_version: u32,
+    product: Cow<'a, str>,
+    name: Cow<'a, str>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    author: Option<Cow<'a, str>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    tags: Vec<Cow<'a, str>>,
+    parameters: BTreeMap<u32, f32>,
 }
 
 // ===========================================================================
@@ -779,37 +915,49 @@ mod tests {
         assert_eq!(state.get(102), Some(1000.0));
     }
 
+    fn wrap_framed(body_after_magic: &[u8]) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(4 + body_after_magic.len() + 4);
+        buf.extend_from_slice(&STATE_MAGIC);
+        buf.extend_from_slice(body_after_magic);
+        let crc = crc32_ieee(&buf);
+        buf.extend_from_slice(&crc.to_le_bytes());
+        buf
+    }
+
     #[test]
     fn test_project_state_unsupported_future_version() {
-        let data = vec![
-            2, 0, 0, 0, // schema_version = 2 (future)
-            5, 0, 0, 0, // product length = 5
-            b'R', b'o', b'm', b'u', b'E', // "RomuEq"
-            0, 0, 0, 0, // param_count = 0
-        ];
-        let result = ProjectState::deserialize(&data);
+        let future_version = CURRENT_SCHEMA_VERSION + 1;
+        let mut body = Vec::new();
+        body.extend_from_slice(&future_version.to_le_bytes());
+        body.extend_from_slice(&6u32.to_le_bytes());
+        body.extend_from_slice(b"RomuEq");
+        body.extend_from_slice(&0u32.to_le_bytes());
+
+        let result = ProjectState::deserialize(&wrap_framed(&body));
         assert_eq!(
             result,
-            Err(StateError::UnsupportedFutureVersion { version: 2 })
+            Err(StateError::UnsupportedFutureVersion {
+                version: future_version
+            })
         );
     }
 
     #[test]
     fn test_project_state_malformed_input_truncated() {
-        let data = vec![1, 0, 0, 0, 5, 0, 0, 0, b'R']; // truncated product name
+        let data = vec![1, 0, 0, 0, 5, 0, 0, 0, b'R']; // missing magic / truncated
         let result = ProjectState::deserialize(&data);
         assert_eq!(result, Err(StateError::MalformedInput));
     }
 
     #[test]
     fn test_project_state_unknown_product() {
-        let data = vec![
+        let body = vec![
             1, 0, 0, 0, // schema_version = 1
             5, 0, 0, 0, // product length = 5
             b'X', b'x', b'x', b'x', b'x', // unknown product
             0, 0, 0, 0, // param_count = 0
         ];
-        let result = ProjectState::deserialize(&data);
+        let result = ProjectState::deserialize(&wrap_framed(&body));
         assert_eq!(result, Err(StateError::UnknownProduct));
     }
 
@@ -898,7 +1046,7 @@ mod tests {
 
     #[test]
     fn test_preset_unsupported_future_version() {
-        let data = vec![
+        let body = vec![
             99, 0, 0, 0, // schema_version = 99 (future)
             5, 0, 0, 0, // product length = 5
             b'R', b'o', b'm', b'u', b'E', // "RomuEq"
@@ -907,7 +1055,7 @@ mod tests {
             0, 0, 0, 0, // tag_count = 0
             0, 0, 0, 0, // param_count = 0
         ];
-        let result = Preset::deserialize(&data);
+        let result = Preset::deserialize(&wrap_framed(&body));
         assert_eq!(
             result,
             Err(StateError::UnsupportedFutureVersion { version: 99 })
@@ -916,14 +1064,14 @@ mod tests {
 
     #[test]
     fn test_preset_malformed_input() {
-        let data = vec![1, 0, 0, 0, 5, 0, 0, 0, b'R']; // truncated
+        let data = vec![1, 0, 0, 0, 5, 0, 0, 0, b'R']; // missing magic / truncated
         let result = Preset::deserialize(&data);
         assert_eq!(result, Err(StateError::MalformedInput));
     }
 
     #[test]
     fn test_preset_unknown_product() {
-        let data = vec![
+        let body = vec![
             1, 0, 0, 0, // schema_version = 1
             5, 0, 0, 0, // product length = 5
             b'X', b'x', b'x', b'x', b'x', // unknown product
@@ -932,7 +1080,7 @@ mod tests {
             0, 0, 0, 0, // tag_count = 0
             0, 0, 0, 0, // param_count = 0
         ];
-        let result = Preset::deserialize(&data);
+        let result = Preset::deserialize(&wrap_framed(&body));
         assert_eq!(result, Err(StateError::UnknownProduct));
     }
 
@@ -971,5 +1119,132 @@ mod tests {
         let serialized = preset.serialize();
         let deserialized = Preset::deserialize(&serialized).unwrap();
         assert_eq!(deserialized, preset);
+    }
+
+    // -----------------------------------------------------------------------
+    // Integrity & persistence tests: CRC32, JSON, atomic_write
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_crc32_ieee_standard_vector() {
+        assert_eq!(crc32_ieee(b"123456789"), 0xCBF4_3926);
+        assert_eq!(crc32_ieee(b""), 0x0000_0000);
+    }
+
+    #[test]
+    fn test_project_state_magic_and_crc32_corruption_detection() {
+        let state = ProjectState::new();
+        let serialized = state.serialize();
+
+        // Starts with "EQFR" magic header
+        assert_eq!(&serialized[..4], &STATE_MAGIC);
+
+        // Flip a bit in the payload -> ChecksumMismatch
+        let mut corrupted_payload = serialized.clone();
+        let mid = serialized.len() / 2;
+        corrupted_payload[mid] ^= 0x01;
+        assert!(matches!(
+            ProjectState::deserialize(&corrupted_payload),
+            Err(StateError::ChecksumMismatch { .. })
+        ));
+
+        // Flip a bit in the trailing CRC32 -> ChecksumMismatch
+        let mut corrupted_crc = serialized.clone();
+        let last = corrupted_crc.len() - 1;
+        corrupted_crc[last] ^= 0x80;
+        assert!(matches!(
+            ProjectState::deserialize(&corrupted_crc),
+            Err(StateError::ChecksumMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn test_preset_crc32_corruption_detection() {
+        let mut preset = Preset::new("Integrity Check");
+        preset.author = Some("Audio Lab".to_string());
+        preset.tags = vec!["mastering".to_string()];
+        preset.parameter_values.set(102, 1000.0);
+
+        let mut serialized = preset.serialize();
+        assert_eq!(&serialized[..4], &STATE_MAGIC);
+
+        serialized[12] ^= 0xFF;
+        assert!(matches!(
+            Preset::deserialize(&serialized),
+            Err(StateError::ChecksumMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn test_preset_json_roundtrip_and_errors() {
+        let mut preset = Preset::new("JSON Mastering");
+        preset.author = Some("Equaform".to_string());
+        preset.tags = vec!["master".to_string(), "clean".to_string()];
+        preset.parameter_values.set(global::OUTPUT_GAIN_DB, -1.5);
+        preset.parameter_values.set(102, 80.0);
+        preset.parameter_values.set(103, 2.5);
+
+        let json = preset.to_json().unwrap();
+        assert!(json.contains("\"Equaform-8\""));
+        assert!(json.contains("\"JSON Mastering\""));
+
+        let decoded = Preset::from_json(&json).unwrap();
+        assert_eq!(decoded, preset);
+
+        // Malformed JSON
+        assert_eq!(
+            Preset::from_json("{not valid json"),
+            Err(StateError::InvalidJson)
+        );
+
+        // Future schema version in JSON
+        let future_json = r#"{
+            "schema_version": 99,
+            "product": "Equaform-8",
+            "name": "Future",
+            "parameters": {}
+        }"#;
+        assert_eq!(
+            Preset::from_json(future_json),
+            Err(StateError::UnsupportedFutureVersion { version: 99 })
+        );
+
+        // Unknown product in JSON
+        let unknown_prod = r#"{
+            "schema_version": 1,
+            "product": "OtherEQ",
+            "name": "Foreign",
+            "parameters": {}
+        }"#;
+        assert_eq!(
+            Preset::from_json(unknown_prod),
+            Err(StateError::UnknownProduct)
+        );
+    }
+
+    #[test]
+    fn test_atomic_write_and_overwrite_no_tmp_leftover() {
+        let dir = std::env::temp_dir().join(format!(
+            "equaform_atomic_test_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let file_path = dir.join("state.bin");
+
+        atomic_write(&file_path, b"first payload").unwrap();
+        assert_eq!(std::fs::read(&file_path).unwrap(), b"first payload");
+
+        atomic_write(&file_path, b"second payload").unwrap();
+        assert_eq!(std::fs::read(&file_path).unwrap(), b"second payload");
+
+        // Ensure no leftover .tmp files exist in the directory
+        let entries: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(entries, vec!["state.bin".to_string()]);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

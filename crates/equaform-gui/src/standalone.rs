@@ -440,7 +440,7 @@ fn user_config_dir() -> std::path::PathBuf {
 
 fn save_selected_output_device(dev: &str) {
     let path = user_config_dir().join("last_output_device.txt");
-    let _ = std::fs::write(path, dev.as_bytes());
+    let _ = equaform_common::state::atomic_write(path, dev.as_bytes());
 }
 
 fn load_saved_output_device() -> Option<String> {
@@ -461,7 +461,7 @@ fn save_complete_app_state(client: &EngineClient) {
     }
     let bytes = state.serialize();
     let path = user_config_dir().join("app_state.bin");
-    let _ = std::fs::write(path, bytes);
+    let _ = equaform_common::state::atomic_write(path, &bytes);
 }
 
 fn load_complete_app_state(client: &mut EngineClient) -> bool {

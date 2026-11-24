@@ -76,14 +76,9 @@ impl Language {
             .unwrap_or_default()
     }
 
-    /// Save the language preference to the given file path, creating parent directories if needed.
+    /// Save the language preference atomically to the given file path, creating parent directories if needed.
     pub fn save_to_path(self, path: &Path) -> std::io::Result<()> {
-        if let Some(parent) = path.parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)?;
-            }
-        }
-        std::fs::write(path, self.code())
+        equaform_common::state::atomic_write(path, self.code().as_bytes())
     }
 
     /// Load the saved language preference from the user config directory.

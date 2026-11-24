@@ -3,7 +3,7 @@
 //! Handles in-memory preset storage, file-based persistence, and migration
 //! of loaded presets through the versioned state schema.
 
-use equaform_common::state::{Preset, ProjectState, StateError};
+use equaform_common::state::{Preset, ProjectState, StateError, atomic_write};
 
 /// Errors that can occur during preset management operations.
 #[derive(Debug, PartialEq)]
@@ -130,19 +130,50 @@ impl PresetManager {
         self.presets.len() < before
     }
 
-    /// Save a preset to a file on disk.
+    /// Save a preset to a file on disk atomically.
     ///
-    /// Serializes the preset using the binary schema and writes it to `path`.
+    /// Serializes the preset using the framed binary schema (with CRC32) and
+    /// writes it atomically to `path` via temporary file + rename.
     pub fn save_to_file(&self, name: &str, path: &str) -> Result<(), PresetManagerError> {
         let preset = self
             .get(name)
             .ok_or_else(|| PresetManagerError::IoError(format!("preset '{name}' not found")))?;
 
         let data = preset.preset.serialize();
-        std::fs::write(path, &data)
+        atomic_write(path, &data)
             .map_err(|e| PresetManagerError::IoError(format!("write '{path}': {e}")))?;
 
         Ok(())
+    }
+
+    /// Export a preset to a human-readable JSON file on disk atomically.
+    pub fn export_to_json_file(&self, name: &str, path: &str) -> Result<(), PresetManagerError> {
+        let preset = self
+            .get(name)
+            .ok_or_else(|| PresetManagerError::IoError(format!("preset '{name}' not found")))?;
+
+        let json = preset.preset.to_json()?;
+        atomic_write(path, json.as_bytes())
+            .map_err(|e| PresetManagerError::IoError(format!("write '{path}': {e}")))?;
+
+        Ok(())
+    }
+
+    /// Import a preset from a JSON file on disk, validating all parameters.
+    pub fn import_from_json_file(&mut self, path: &str) -> Result<NamedPreset, PresetManagerError> {
+        let json = std::fs::read_to_string(path)
+            .map_err(|e| PresetManagerError::IoError(format!("read '{path}': {e}")))?;
+
+        let mut preset = Preset::from_json(&json)?;
+        // Strip read-only telemetry parameter ID 6 (auto-gain compensation readout) if present
+        preset.parameter_values.remove(6);
+        preset.parameter_values.validate()?;
+
+        let name = preset.name.clone();
+        self.remove(&name);
+        self.add(name.clone(), preset.clone())?;
+
+        Ok(NamedPreset::new(name, preset))
     }
 
     /// Load a preset from a file on disk.
@@ -208,7 +239,7 @@ impl PresetManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use equaform_common::state::CURRENT_SCHEMA_VERSION;
+    use equaform_common::state::{CURRENT_SCHEMA_VERSION, STATE_MAGIC, crc32_ieee};
 
     // -----------------------------------------------------------------------
     // PresetManager basic tests
@@ -416,13 +447,13 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_load_preset_with_future_version() {
-        // Create a preset file with a future schema version (2)
+    fn test_load_preset_with_future_version_rejected() {
         let tmp = std::env::temp_dir().join("equaform_test_future.bin");
         let path = tmp.to_str().unwrap();
 
-        // Schema version 1 data (will be read, then migration will reject if > current)
-        let mut data = CURRENT_SCHEMA_VERSION.to_le_bytes().to_vec();
+        let future_version = CURRENT_SCHEMA_VERSION + 1;
+        let mut data = STATE_MAGIC.to_vec();
+        data.extend_from_slice(&future_version.to_le_bytes());
 
         // Product name "Equaform-8"
         let product = b"Equaform-8";
@@ -433,25 +464,50 @@ mod tests {
         let name = b"Future";
         data.extend_from_slice(&(name.len() as u32).to_le_bytes());
         data.extend_from_slice(name);
+        data.push(0); // no author
+        data.extend_from_slice(&0u32.to_le_bytes()); // 0 tags
+        data.extend_from_slice(&0u32.to_le_bytes()); // 0 params
 
-        // No author
-        data.push(0);
-
-        // No tags
-        data.extend_from_slice(&0u32.to_le_bytes());
-
-        // One parameter
-        data.extend_from_slice(&1u32.to_le_bytes());
-        data.extend_from_slice(&102u32.to_le_bytes());
-        data.extend_from_slice(&440.0f32.to_le_bytes());
+        let crc = crc32_ieee(&data);
+        data.extend_from_slice(&crc.to_le_bytes());
 
         std::fs::write(path, &data).unwrap();
 
         let mut manager = PresetManager::new();
         let result = manager.load_from_file(path);
-        assert!(result.is_ok());
+        assert_eq!(
+            result.unwrap_err(),
+            PresetManagerError::StateError(StateError::UnsupportedFutureVersion {
+                version: future_version
+            })
+        );
 
-        // Cleanup
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_export_and_import_json_file_roundtrip() {
+        let tmp = std::env::temp_dir().join("equaform_test_preset.json");
+        let path = tmp.to_str().unwrap();
+
+        let mut manager = PresetManager::new();
+        let mut preset = Preset::new("JsonExport");
+        preset.author = Some("Studio".to_string());
+        preset.tags = vec!["vocal".to_string()];
+        preset.parameter_values.set(102, 2500.0);
+        preset.parameter_values.set(103, 3.0);
+        manager.add("JsonExport".to_string(), preset).unwrap();
+
+        manager.export_to_json_file("JsonExport", path).unwrap();
+
+        let mut loaded_manager = PresetManager::new();
+        let loaded = loaded_manager.import_from_json_file(path).unwrap();
+        assert_eq!(loaded.name, "JsonExport");
+        assert_eq!(loaded.preset.author, Some("Studio".to_string()));
+        assert_eq!(loaded.preset.tags, vec!["vocal".to_string()]);
+        assert_eq!(loaded.preset.parameter_values.get(102), Some(2500.0));
+        assert_eq!(loaded.preset.parameter_values.get(103), Some(3.0));
+
         let _ = std::fs::remove_file(path);
     }
 }

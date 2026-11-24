@@ -57,7 +57,7 @@ pub mod macos_impl {
     }
 
     fn save_selected_output_device(name: &str) {
-        let _ = std::fs::write(saved_output_device_path(), name.as_bytes());
+        let _ = equaform_common::state::atomic_write(saved_output_device_path(), name.as_bytes());
     }
 
     extern "C" fn restore_on_process_exit() {
