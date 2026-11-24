@@ -439,6 +439,9 @@ pub trait GuiApp: Send {
         "Equaform-8"
     }
 
+    /// Called immediately after the standalone audio pass-through stream starts.
+    fn on_audio_started(&mut self) {}
+
     /// Returns the window size hint (width, height) in physical pixels.
     fn window_size(&self) -> (f32, f32) {
         (800.0, 600.0)

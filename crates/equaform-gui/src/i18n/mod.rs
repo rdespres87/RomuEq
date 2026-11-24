@@ -97,6 +97,7 @@ impl Language {
 /// Zero-allocation static translation catalog for all GUI strings.
 #[derive(Clone, Copy, Debug)]
 pub struct Translations {
+    pub window_title: &'static str,
     pub bypass_on: &'static str,
     pub bypass_off: &'static str,
     pub tooltip_enable_eq: &'static str,

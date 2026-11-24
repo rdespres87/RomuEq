@@ -8,13 +8,21 @@ mod macos_audio;
 
 use equaform_gui::GuiApp;
 use equaform_gui::standalone;
+#[cfg(target_os = "macos")]
+use std::sync::{Arc, Mutex};
 
 /// The main Equaform application.
-struct EquaformApp;
+struct EquaformApp {
+    #[cfg(target_os = "macos")]
+    audio_guard: Option<Arc<Mutex<macos_audio::SystemAudioRoutingGuard>>>,
+}
 
 impl GuiApp for EquaformApp {
     fn new() -> Self {
-        Self
+        Self {
+            #[cfg(target_os = "macos")]
+            audio_guard: None,
+        }
     }
 
     fn window_title(&self) -> &str {
@@ -28,11 +36,20 @@ impl GuiApp for EquaformApp {
     fn update(&mut self, client: &mut dyn equaform_gui::GuiClient) {
         let _presets = client.list_presets();
     }
+
+    fn on_audio_started(&mut self) {
+        #[cfg(target_os = "macos")]
+        if let Some(ref guard) = self.audio_guard {
+            if let Ok(mut guard) = guard.lock() {
+                guard.activate_routing();
+            }
+        }
+    }
 }
 
 fn main() {
     #[cfg(target_os = "macos")]
-    let mut _audio_guard = {
+    let audio_guard = {
         if !macos_audio::is_driver_installed_on_disk() {
             println!(
                 "[Equaform-8] Virtual audio driver 'Equaform-8' not found on system. Launching setup..."
@@ -41,16 +58,22 @@ fn main() {
                 eprintln!("[Equaform-8] Installation of EquaformDriver skipped or failed: {e}");
             }
         }
-        macos_audio::SystemAudioRoutingGuard::activate()
+        Arc::new(Mutex::new(macos_audio::SystemAudioRoutingGuard::prepare()))
     };
 
-    let app = EquaformApp::new();
+    let mut app = EquaformApp::new();
+    #[cfg(target_os = "macos")]
+    {
+        app.audio_guard = Some(Arc::clone(&audio_guard));
+    }
     let result = standalone::run(app);
 
     #[cfg(target_os = "macos")]
     {
         // Restore system audio immediately when GUI closes
-        _audio_guard.restore();
+        if let Ok(mut guard) = audio_guard.lock() {
+            guard.restore();
+        }
     }
 
     if let Err(e) = result {

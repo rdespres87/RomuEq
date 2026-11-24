@@ -2,8 +2,27 @@
 
 use crate::*;
 use eframe::App;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use equaform_common::state::Preset;
+
+static ACTIVE_EGUI_CTX: OnceLock<egui::Context> = OnceLock::new();
+static GRACEFUL_SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+/// Request a clean GUI + audio shutdown identical to closing the application window.
+///
+/// Safe to call from any non-signal thread (e.g. a POSIX self-pipe signal watcher).
+/// Returns `true` if the active eframe viewport was notified to close.
+pub fn request_graceful_shutdown() -> bool {
+    GRACEFUL_SHUTDOWN_REQUESTED.store(true, Ordering::Release);
+    if let Some(ctx) = ACTIVE_EGUI_CTX.get() {
+        ctx.request_repaint();
+        true
+    } else {
+        false
+    }
+}
 
 /// Run the GUI application as a standalone desktop app.
 pub fn run(app: impl GuiApp) -> eframe::Result {
@@ -15,13 +34,20 @@ pub fn run(app: impl GuiApp) -> eframe::Result {
             .with_resizable(true),
         ..Default::default()
     };
-    let window_title = app.window_title().to_string();
+    let saved_lang = Language::load_saved();
+    let window_title = Translations::for_language(saved_lang)
+        .window_title
+        .to_string();
     eframe::run_native(
         &window_title,
         options,
         Box::new(move |cc| {
+            let _ = ACTIVE_EGUI_CTX.set(cc.egui_ctx.clone());
             let ppp = cc.egui_ctx.pixels_per_point();
             cc.egui_ctx.set_pixels_per_point(ppp);
+            if GRACEFUL_SHUTDOWN_REQUESTED.load(Ordering::Acquire) {
+                cc.egui_ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
             Ok(Box::new(StandaloneRunner::new(app, cc.egui_ctx.clone())))
         }),
     )
@@ -46,7 +72,7 @@ struct StandaloneRunner<A: GuiApp> {
 }
 
 impl<A: GuiApp> StandaloneRunner<A> {
-    fn new(app: A, ctx: egui::Context) -> Self {
+    fn new(mut app: A, ctx: egui::Context) -> Self {
         let mut client = EngineClient::new();
         client.set_egui_context(ctx);
         // Initialize the engine at startup so encode_snapshot() returns real data.
@@ -108,6 +134,7 @@ impl<A: GuiApp> StandaloneRunner<A> {
         let t = Translations::for_language(saved_lang);
         let (audio_active, status_message) = match audio_stream.start() {
             Ok(()) => {
+                app.on_audio_started();
                 client.sample_rate = audio_stream.sample_rate();
                 let out_name = detected_out.as_deref().unwrap_or(t.output_slider);
                 (true, Some(format!("{} → {out_name}", t.status_eq_active)))
@@ -147,6 +174,10 @@ impl<A: GuiApp> StandaloneRunner<A> {
 
 impl<A: GuiApp> App for StandaloneRunner<A> {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if GRACEFUL_SHUTDOWN_REQUESTED.load(Ordering::Acquire) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
+        }
         let is_focused = ctx.input(|i| i.focused);
         let is_minimized = ctx.input(|i| i.viewport().minimized.unwrap_or(false));
         let has_interaction =
@@ -374,6 +405,10 @@ impl<A: GuiApp> App for StandaloneRunner<A> {
                 }
                 WorkspaceAction::SetLanguage(lang) => {
                     lang.save();
+                    let updated_t = Translations::for_language(lang);
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Title(
+                        updated_t.window_title.to_string(),
+                    ));
                 }
             }
         }

@@ -12,6 +12,16 @@ pub mod macos_impl {
     };
     use std::ffi::CStr;
     use std::os::raw::c_char;
+    use std::sync::Once;
+    use std::sync::atomic::{AtomicI32, AtomicU32, Ordering};
+
+    const SIGHUP: i32 = 1;
+    const SIGINT: i32 = 2;
+    const SIGTERM: i32 = 15;
+
+    static SIGNAL_PIPE_WRITE_FD: AtomicI32 = AtomicI32::new(-1);
+    static RESTORE_DEVICE_ID: AtomicU32 = AtomicU32::new(0);
+    static SIGNAL_HANDLER_INIT: Once = Once::new();
 
     const SYSTEM_OBJECT: u32 = 1;
 
@@ -31,6 +41,76 @@ pub mod macos_impl {
 
     unsafe extern "C" {
         fn atexit(cb: extern "C" fn()) -> i32;
+        fn pipe(fds: *mut i32) -> i32;
+        fn read(fd: i32, buf: *mut u8, count: usize) -> isize;
+        fn write(fd: i32, buf: *const u8, count: usize) -> isize;
+        fn close(fd: i32) -> i32;
+        fn signal(sig: i32, handler: extern "C" fn(i32)) -> usize;
+    }
+
+    extern "C" fn handle_termination_signal(sig: i32) {
+        let fd = SIGNAL_PIPE_WRITE_FD.load(Ordering::Relaxed);
+        if fd >= 0 {
+            let byte = (sig & 0xFF) as u8;
+            // POSIX guarantees `write` on a pipe fd is async-signal-safe.
+            unsafe {
+                let _ = write(fd, &byte as *const u8, 1);
+            }
+        }
+    }
+
+    fn register_posix_signal_handlers() {
+        unsafe {
+            let _ = signal(SIGINT, handle_termination_signal);
+            let _ = signal(SIGTERM, handle_termination_signal);
+            let _ = signal(SIGHUP, handle_termination_signal);
+        }
+    }
+
+    /// Install POSIX `SIGINT`/`SIGTERM`/`SIGHUP` handlers using an async-signal-safe
+    /// self-pipe so `Ctrl+C` cleanly restores macOS CoreAudio output before exiting.
+    pub fn install_signal_handlers() {
+        SIGNAL_HANDLER_INIT.call_once(|| {
+            let mut fds = [-1i32; 2];
+            if unsafe { pipe(fds.as_mut_ptr()) } == 0 {
+                let read_fd = fds[0];
+                let write_fd = fds[1];
+                SIGNAL_PIPE_WRITE_FD.store(write_fd, Ordering::Release);
+                let _ = std::thread::Builder::new()
+                    .name("equaform-signal-watcher".to_string())
+                    .spawn(move || {
+                        loop {
+                            let mut byte = 0u8;
+                            let n = unsafe { read(read_fd, &mut byte as *mut u8, 1) };
+                            if n > 0 {
+                                unsafe {
+                                    let _ = close(read_fd);
+                                }
+                                eprintln!(
+                                    "[Equaform-8] Signal {byte} received — initiating graceful shutdown..."
+                                );
+                                // Trigger normal eframe close -> on_exit() -> audio.stop() -> restore output.
+                                if equaform_gui::standalone::request_graceful_shutdown() {
+                                    std::thread::sleep(std::time::Duration::from_millis(1500));
+                                }
+                                // Fallback if window was not open yet or event loop did not exit in time.
+                                restore_on_process_exit();
+                                let code = 128 + i32::from(byte);
+                                std::process::exit(code);
+                            }
+                            if n == 0 {
+                                unsafe {
+                                    let _ = close(read_fd);
+                                }
+                                break;
+                            }
+                            // n < 0 (e.g. EINTR when signal lands on this thread): retry read.
+                        }
+                    });
+            }
+        });
+        // Always (re-)register signal dispositions in case winit/eframe/AppKit overrode them.
+        register_posix_signal_handlers();
     }
 
     fn saved_output_device_path() -> std::path::PathBuf {
@@ -61,14 +141,16 @@ pub mod macos_impl {
     }
 
     extern "C" fn restore_on_process_exit() {
-        // If current macOS default output is Equaform-8/RomuEq, restore to user's selected physical output
-        if let Some(cur_id) = get_default_output_device_id() {
-            let cur_name = get_device_name(cur_id).unwrap_or_default();
-            if is_virtual_device_name(&cur_name) {
-                if let Some((phys_id, _)) = find_physical_output_device() {
-                    let _ = set_default_output_device(phys_id);
-                }
-            }
+        // Restore user's selected physical output (or cached original physical device ID).
+        let target_id = find_physical_output_device()
+            .map(|(id, _)| id)
+            .or_else(|| {
+                let cached = RESTORE_DEVICE_ID.load(Ordering::Acquire);
+                (cached > 0).then_some(cached)
+            });
+
+        if let Some(phys_id) = target_id {
+            let _ = set_default_output_device(phys_id);
         }
     }
 
@@ -396,25 +478,34 @@ pub mod macos_impl {
     }
 
     /// Guard struct that saves original physical output and switches system output to virtual device.
-    /// Restores the chosen hardware device when dropped (app quit or panic).
+    /// Restores the chosen hardware device when dropped (app quit, panic, or `SIGINT`/`SIGTERM`).
     pub struct SystemAudioRoutingGuard {
         pub original_device_id: Option<u32>,
         pub original_device_name: Option<String>,
+        pub virtual_device_id: Option<u32>,
+        pub virtual_device_name: Option<String>,
         pub routing_active: bool,
     }
 
     impl SystemAudioRoutingGuard {
-        /// Create guard and intercept system audio if Equaform-8 is available.
-        pub fn activate() -> Self {
+        /// Detect the original physical output, install exit/signal handlers, and sync the
+        /// virtual device sample rate without switching the macOS default output yet.
+        ///
+        /// Call [`Self::activate_routing`] once the audio pass-through stream has started
+        /// to eliminate any silence gap during window/GPU initialization.
+        pub fn prepare() -> Self {
             let mut guard = Self {
                 original_device_id: None,
                 original_device_name: None,
+                virtual_device_id: None,
+                virtual_device_name: None,
                 routing_active: false,
             };
 
             unsafe {
                 let _ = atexit(restore_on_process_exit);
             }
+            install_signal_handlers();
 
             // Detect current default output in macOS before rerouting
             if let Some(cur_id) = get_default_output_device_id() {
@@ -423,12 +514,14 @@ pub mod macos_impl {
                 if !is_virtual_device_name(&name) {
                     guard.original_device_id = Some(cur_id);
                     guard.original_device_name = Some(name.clone());
+                    RESTORE_DEVICE_ID.store(cur_id, Ordering::Release);
                     save_selected_output_device(&name);
                 } else {
                     // macOS was already on Equaform/RomuEq: resolve physical output device dynamically
                     if let Some((phys_id, phys_name)) = find_physical_output_device() {
                         guard.original_device_id = Some(phys_id);
                         guard.original_device_name = Some(phys_name);
+                        RESTORE_DEVICE_ID.store(phys_id, Ordering::Release);
                     }
                 }
             }
@@ -486,16 +579,39 @@ pub mod macos_impl {
                     }
                 }
 
+                guard.virtual_device_id = Some(virt_id);
+                guard.virtual_device_name = Some(virt_name);
+            }
+
+            guard
+        }
+
+        /// Switch macOS system default output to the prepared virtual device.
+        pub fn activate_routing(&mut self) {
+            // Re-assert POSIX signal handlers after eframe/winit/cpal initialization.
+            install_signal_handlers();
+            if self.routing_active {
+                return;
+            }
+            if let (Some(virt_id), Some(virt_name)) =
+                (self.virtual_device_id, self.virtual_device_name.as_deref())
+            {
                 if let Err(e) = set_default_output_device(virt_id) {
                     eprintln!("[Equaform-8] Failed to route system output to {virt_name}: {e}");
                 } else {
                     println!(
                         "[Equaform-8] macOS system audio successfully routed to {virt_name} (ID: {virt_id})"
                     );
-                    guard.routing_active = true;
+                    self.routing_active = true;
                 }
             }
+        }
 
+        /// Prepare and immediately intercept system audio if Equaform-8 is available.
+        #[allow(dead_code)]
+        pub fn activate() -> Self {
+            let mut guard = Self::prepare();
+            guard.activate_routing();
             guard
         }
 

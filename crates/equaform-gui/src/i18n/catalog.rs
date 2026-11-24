@@ -3,6 +3,7 @@
 use super::Translations;
 
 pub(super) const EN: Translations = Translations {
+    window_title: "Equaform-8 — Parametric Equalizer",
     bypass_on: "⏻ BYPASS",
     bypass_off: "⏻ ACTIVE",
     tooltip_enable_eq: "Click to enable EQ processing",
@@ -66,6 +67,7 @@ pub(super) const EN: Translations = Translations {
 };
 
 pub(super) const FR: Translations = Translations {
+    window_title: "Equaform-8 — Égaliseur Paramétrique",
     bypass_on: "⏻ BYPASS",
     bypass_off: "⏻ ACTIF",
     tooltip_enable_eq: "Cliquer pour activer l'égaliseur",
@@ -129,6 +131,7 @@ pub(super) const FR: Translations = Translations {
 };
 
 pub(super) const DE: Translations = Translations {
+    window_title: "Equaform-8 — Parametrischer Equalizer",
     bypass_on: "⏻ BYPASS",
     bypass_off: "⏻ AKTIV",
     tooltip_enable_eq: "Klicken zum Aktivieren des EQs",
@@ -192,6 +195,7 @@ pub(super) const DE: Translations = Translations {
 };
 
 pub(super) const ES: Translations = Translations {
+    window_title: "Equaform-8 — Ecualizador Paramétrico",
     bypass_on: "⏻ BYPASS",
     bypass_off: "⏻ ACTIVO",
     tooltip_enable_eq: "Clic para activar el ecualizador",
