@@ -8,7 +8,7 @@ use equaform_common::{BandParameters, MAX_BANDS, ParamId};
 
 use crate::i18n::{Language, Translations};
 use crate::preset_manager::PresetManager;
-use crate::presets_io::is_factory_preset;
+use crate::presets_io::{is_factory_preset, partition_and_sort_presets};
 use crate::{
     AnalysisSnapshot, BandControls, BandRenderContext, EqCurveCache, GuiCommandBatch,
     ParamSnapshot, PlotContext, render_band, render_interactive_frequency_response_plot,
@@ -290,7 +290,8 @@ pub fn render_workspace(
         ui.separator();
 
         ui.label(egui::RichText::new(t.preset_label).strong());
-        let presets: Vec<String> = preset_manager.iter().map(|p| p.name.clone()).collect();
+        let (user_presets, factory_presets) =
+            partition_and_sort_presets(preset_manager.iter().map(|p| p.name.as_str()));
         let selected_text = if current_preset.is_empty() {
             t.select_preset.to_string()
         } else {
@@ -302,7 +303,13 @@ pub fn render_workspace(
             .width(170.0)
             .selected_text(selected_text)
             .show_ui(ui, |ui| {
-                for name in &presets {
+                for name in &user_presets {
+                    ui.selectable_value(&mut chosen_preset, name.clone(), name.as_str());
+                }
+                if !user_presets.is_empty() && !factory_presets.is_empty() {
+                    ui.separator();
+                }
+                for name in &factory_presets {
                     ui.selectable_value(&mut chosen_preset, name.clone(), name.as_str());
                 }
             });

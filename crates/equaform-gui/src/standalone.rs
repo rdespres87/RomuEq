@@ -1034,7 +1034,7 @@ impl GuiClient for EngineClient {
     }
 
     fn list_presets(&self) -> Vec<String> {
-        self.preset_manager.iter().map(|p| p.name.clone()).collect()
+        crate::presets_io::sorted_preset_names(self.preset_manager.iter().map(|p| p.name.as_str()))
     }
 
     fn remove_preset(&mut self, name: &str) -> bool {

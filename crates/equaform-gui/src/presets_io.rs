@@ -335,3 +335,112 @@ pub fn populate_factory_presets(preset_manager: &mut PresetManager) {
         }
     }
 }
+
+/// Case-insensitive comparator for preset names with exact-case tie-breaking.
+fn cmp_preset_name(a: &str, b: &str) -> std::cmp::Ordering {
+    a.to_lowercase()
+        .cmp(&b.to_lowercase())
+        .then_with(|| a.cmp(b))
+}
+
+/// Comparator for factory preset names where `"Flat"` always sorts first,
+/// followed by case-insensitive alphabetical order.
+fn cmp_factory_preset_name(a: &str, b: &str) -> std::cmp::Ordering {
+    (a != "Flat")
+        .cmp(&(b != "Flat"))
+        .then_with(|| cmp_preset_name(a, b))
+}
+
+/// Partitions preset names into sorted `(user_presets, factory_presets)`.
+///
+/// - User presets are sorted case-insensitively A-Z (with exact-case tie-break).
+/// - Factory presets place `"Flat"` first, followed by remaining factory presets
+///   sorted case-insensitively A-Z (with exact-case tie-break).
+pub fn partition_and_sort_presets<'a>(
+    names: impl IntoIterator<Item = &'a str>,
+) -> (Vec<String>, Vec<String>) {
+    let mut user = Vec::new();
+    let mut factory = Vec::new();
+
+    for name in names {
+        if is_factory_preset(name) {
+            factory.push(name.to_string());
+        } else {
+            user.push(name.to_string());
+        }
+    }
+
+    user.sort_by(|a, b| cmp_preset_name(a, b));
+    factory.sort_by(|a, b| cmp_factory_preset_name(a, b));
+
+    (user, factory)
+}
+
+/// Returns all preset names in display order: user presets (A-Z) followed by
+/// factory presets (`"Flat"` first, then A-Z).
+pub fn sorted_preset_names<'a>(names: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+    let (mut user, factory) = partition_and_sort_presets(names);
+    user.extend(factory);
+    user
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mixed_user_and_factory_presets_sorted_correctly() {
+        let names = [
+            "Gamma",
+            "Vocal Air",
+            "alpha",
+            "Flat",
+            "Beta",
+            "Acoustic Clarity",
+            "Rock / Metal",
+        ];
+
+        let (user, factory) = partition_and_sort_presets(names);
+
+        assert_eq!(user, vec!["alpha", "Beta", "Gamma"]);
+        assert_eq!(
+            factory,
+            vec!["Flat", "Acoustic Clarity", "Rock / Metal", "Vocal Air"]
+        );
+    }
+
+    #[test]
+    fn case_insensitive_tie_breaking() {
+        let names = ["beta", "Alpha", "alpha", "BETA"];
+        let (user, factory) = partition_and_sort_presets(names);
+
+        assert_eq!(user, vec!["Alpha", "alpha", "BETA", "beta"]);
+        assert!(factory.is_empty());
+    }
+
+    #[test]
+    fn empty_user_only_and_factory_only_inputs() {
+        let (u0, f0) = partition_and_sort_presets(std::iter::empty());
+        assert!(u0.is_empty());
+        assert!(f0.is_empty());
+
+        let (u1, f1) = partition_and_sort_presets(["Zeta", "alpha", "Mid"]);
+        assert_eq!(u1, vec!["alpha", "Mid", "Zeta"]);
+        assert!(f1.is_empty());
+
+        let (u2, f2) = partition_and_sort_presets(["Vocal Air", "Flat", "Loudness"]);
+        assert!(u2.is_empty());
+        assert_eq!(f2, vec!["Flat", "Loudness", "Vocal Air"]);
+    }
+
+    #[test]
+    fn sorted_preset_names_concatenates_user_then_factory() {
+        let names = ["perso 2", "Vocal Air", "perso", "Flat", "Acoustic Clarity"];
+        let result = sorted_preset_names(names);
+
+        assert_eq!(
+            result,
+            vec!["perso", "perso 2", "Flat", "Acoustic Clarity", "Vocal Air"]
+        );
+    }
+}
