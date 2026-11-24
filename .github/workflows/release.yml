@@ -1,97 +1,83 @@
 # .github/workflows/release.yml
 #
-# Automatically bumps SemVer, records RELEASE_NOTES.md in git, tags the release,
-# builds the combined macOS DMG (AUv2/VST3/CLAP plugins + Equaform-8.app
-# standalone) and Windows installer, and publishes a GitHub Release on every
-# push to `main`.
+# Triggered ONLY on pushing a version tag `v*` (e.g. `v1.0.0`) or manual
+# workflow_dispatch — never on regular pushes to `main`.
+# Generates and commits RELEASE_NOTES.md to `main`, builds the combined macOS
+# DMG (AUv2/VST3/CLAP plugins + Equaform-8.app standalone) and Windows
+# installer from the tagged commit, and publishes the GitHub Release.
 
 name: Release
 
 on:
   push:
-    branches:
-      - main
-    paths-ignore:
-      - 'RELEASE_NOTES.md'
-      - 'docs/**'
+    tags:
+      - 'v*'
   workflow_dispatch:
     inputs:
-      version:
-        description: 'Optional explicit release version (e.g. 1.0.1); auto-bumped if empty'
-        required: false
-        default: ''
+      tag:
+        description: 'Existing version tag to release (e.g. v1.0.0)'
+        required: true
         type: string
 
 permissions:
   contents: write
 
 concurrency:
-  group: release-main
+  group: release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   prepare-release:
-    name: Compute Version, Commit RELEASE_NOTES.md & Tag
+    name: Generate & Commit RELEASE_NOTES.md
     runs-on: ubuntu-latest
     outputs:
-      should_release: ${{ steps.guard.outputs.should_release }}
       version: ${{ steps.gen.outputs.version }}
       tag: ${{ steps.gen.outputs.tag }}
-      release_sha: ${{ steps.commit.outputs.release_sha }}
 
     steps:
-      - name: Guard against automated release loops
-        id: guard
+      - name: Resolve target release tag
+        id: meta
         env:
           EVENT_NAME: ${{ github.event_name }}
-          HEAD_MSG: ${{ github.event.head_commit.message }}
-          ACTOR: ${{ github.actor }}
+          INPUT_TAG: ${{ inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          SHOULD_RELEASE="true"
-          if [ "${EVENT_NAME}" = "push" ]; then
-            case "${HEAD_MSG}" in
-              "chore(release):"*|*"[skip release]"*|*"[skip ci]"*)
-                SHOULD_RELEASE="false"
-                ;;
-            esac
-            if [ "${ACTOR}" = "github-actions[bot]" ]; then
-              SHOULD_RELEASE="false"
-            fi
+          set -euo pipefail
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
+            TAG="${INPUT_TAG}"
+          else
+            TAG="${REF_NAME}"
           fi
-          echo "should_release=${SHOULD_RELEASE}" >> "${GITHUB_OUTPUT}"
-          if [ "${SHOULD_RELEASE}" = "false" ]; then
-            echo "Release skipped by loop guard."
+          if ! printf '%s\n' "${TAG}" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Invalid release tag '${TAG}' (expected vX.Y.Z, e.g. v1.0.0)."
+            exit 1
           fi
+          echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
 
-      - name: Checkout repository
-        if: steps.guard.outputs.should_release == 'true'
+      - name: Checkout tagged commit
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: main
+          ref: ${{ steps.meta.outputs.tag }}
 
-      - name: Generate RELEASE_NOTES.md and compute SemVer
+      - name: Generate RELEASE_NOTES.md
         id: gen
-        if: steps.guard.outputs.should_release == 'true'
         env:
-          INPUT_VERSION: ${{ inputs.version }}
+          TAG: ${{ steps.meta.outputs.tag }}
         run: |
           set -euo pipefail
           chmod +x scripts/generate-release-notes.sh
-          if [ -n "${INPUT_VERSION}" ]; then
-            ./scripts/generate-release-notes.sh --github-output "${GITHUB_OUTPUT}" --version "${INPUT_VERSION}"
-          else
-            ./scripts/generate-release-notes.sh --github-output "${GITHUB_OUTPUT}"
-          fi
+          ./scripts/generate-release-notes.sh --version "${TAG}" --output /tmp/RELEASE_NOTES.md --github-output "${GITHUB_OUTPUT}"
 
-      - name: Commit RELEASE_NOTES.md and push release tag
-        id: commit
-        if: steps.guard.outputs.should_release == 'true'
+      - name: Record RELEASE_NOTES.md on main
         env:
-          VERSION: ${{ steps.gen.outputs.version }}
           TAG: ${{ steps.gen.outputs.tag }}
         run: |
           set -euo pipefail
+          git fetch origin main
+          git checkout -B main origin/main
+          cp /tmp/RELEASE_NOTES.md RELEASE_NOTES.md
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
@@ -100,30 +86,26 @@ jobs:
             echo "No changes to RELEASE_NOTES.md; skipping commit."
           else
             git commit -m "chore(release): ${TAG} — update RELEASE_NOTES.md [skip ci]"
+            git push origin HEAD:main
           fi
 
-          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
-            echo "::error::Tag ${TAG} already exists; refusing to overwrite an existing release."
-            exit 1
-          fi
-
-          git tag -a "${TAG}" -m "Equaform-8 ${TAG}"
-          git push origin HEAD:main
-          git push origin "refs/tags/${TAG}"
-          echo "release_sha=$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
+      - name: Upload RELEASE_NOTES.md artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: /tmp/RELEASE_NOTES.md
 
   build-macos:
     name: Build & Package macOS DMG (Plugins + Standalone)
     runs-on: macos-latest
     needs: prepare-release
-    if: needs.prepare-release.outputs.should_release == 'true'
     timeout-minutes: 45
 
     steps:
-      - name: Checkout release commit
+      - name: Checkout tagged commit
         uses: actions/checkout@v4
         with:
-          ref: ${{ needs.prepare-release.outputs.release_sha }}
+          ref: ${{ needs.prepare-release.outputs.tag }}
           submodules: recursive
           fetch-depth: 0
 
@@ -174,14 +156,13 @@ jobs:
     name: Build & Package Windows Plugins (x64)
     runs-on: windows-latest
     needs: prepare-release
-    if: needs.prepare-release.outputs.should_release == 'true'
     timeout-minutes: 45
 
     steps:
-      - name: Checkout release commit
+      - name: Checkout tagged commit
         uses: actions/checkout@v4
         with:
-          ref: ${{ needs.prepare-release.outputs.release_sha }}
+          ref: ${{ needs.prepare-release.outputs.tag }}
           submodules: recursive
           fetch-depth: 0
 
@@ -263,13 +244,13 @@ jobs:
     name: Publish GitHub Release (macOS + Windows)
     runs-on: ubuntu-latest
     needs: [prepare-release, build-macos, build-windows]
-    if: needs.prepare-release.outputs.should_release == 'true'
 
     steps:
-      - name: Checkout release commit (for RELEASE_NOTES.md)
-        uses: actions/checkout@v4
+      - name: Download release notes
+        uses: actions/download-artifact@v4
         with:
-          ref: ${{ needs.prepare-release.outputs.release_sha }}
+          name: release-notes
+          path: release-notes/
 
       - name: Download macOS artifacts
         uses: actions/download-artifact@v4
@@ -291,7 +272,7 @@ jobs:
         with:
           tag_name: ${{ needs.prepare-release.outputs.tag }}
           name: "Equaform-8 ${{ needs.prepare-release.outputs.tag }}"
-          body_path: RELEASE_NOTES.md
+          body_path: release-notes/RELEASE_NOTES.md
           draft: false
           prerelease: false
           files: release-assets/*

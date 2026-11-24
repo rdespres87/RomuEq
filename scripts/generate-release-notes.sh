@@ -33,7 +33,14 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
-LAST_TAG="$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)"
+RAW_LAST_TAG="$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)"
+CLEAN_REQ_VERSION="${VERSION#v}"
+
+if [ -n "${CLEAN_REQ_VERSION}" ] && [ "${RAW_LAST_TAG}" = "v${CLEAN_REQ_VERSION}" ]; then
+    LAST_TAG="$(git describe --tags --abbrev=0 --match 'v*' HEAD^ 2>/dev/null || true)"
+else
+    LAST_TAG="${RAW_LAST_TAG}"
+fi
 
 if [ -n "${LAST_TAG}" ]; then
     LOG_RANGE="${LAST_TAG}..HEAD"
