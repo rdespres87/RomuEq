@@ -55,8 +55,8 @@ Source: "..\..\..\target\release\bundle\Equaform-8.vst3\*"; DestDir: "{commoncf6
 Source: "..\..\..\target\release\bundle\Equaform-8.clap"; DestDir: "{commoncf64}\CLAP"; Flags: ignoreversion; Components: clap or vst3
 
 ; Factory Presets deployed to shared ProgramData and user AppData
-Source: "..\..\..\target\release\staging\presets\*.req"; DestDir: "{commonappdata}\Equaform\presets"; Flags: ignoreversion createallsubdirs; Components: presets
-Source: "..\..\..\target\release\staging\presets\*.req"; DestDir: "{userappdata}\Equaform\presets"; Flags: ignoreversion uninsneveruninstall createallsubdirs; Components: presets
+Source: "..\..\..\target\release\staging\presets\*.req"; DestDir: "{commonappdata}\Equaform\presets"; Flags: ignoreversion; Components: presets
+Source: "..\..\..\target\release\staging\presets\*.req"; DestDir: "{userappdata}\Equaform\presets"; Flags: ignoreversion uninsneveruninstall; Components: presets
 
 ; Documentation & Testing Guide
 Source: "README_WINDOWS.txt"; DestDir: "{autopf}\Equaform"; Flags: ignoreversion
