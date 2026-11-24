@@ -10,6 +10,8 @@ pub mod automation;
 pub mod lifecycle;
 pub mod parameter_store;
 pub mod plugin;
+pub mod typestate;
 
-// Re-export for plugin crate
+// Re-export for plugin and host crates
 pub use lifecycle::{EngineLifecycle, calculate_auto_gain_compensation_db};
+pub use typestate::{Engine, EngineConfigError, EngineState, Prepared, Running, Unconfigured};

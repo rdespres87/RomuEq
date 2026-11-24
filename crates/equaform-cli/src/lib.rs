@@ -5,7 +5,7 @@
 //! integration tests.
 
 use equaform_common::EqParameters;
-use equaform_engine::EngineLifecycle;
+use equaform_engine::Engine;
 use hound::{WavReader, WavWriter};
 use std::path::PathBuf;
 use std::time::Instant;
@@ -142,11 +142,11 @@ pub fn process_file(
         })
         .collect();
 
-    // Create and prepare the engine
-    let mut engine = EngineLifecycle::new();
-    if !engine.prepare(effective_sample_rate, 512, channels) {
-        return Err("Failed to prepare engine".into());
-    }
+    // Create, prepare, and start the typestate engine
+    let mut engine = Engine::new()
+        .prepare(effective_sample_rate, 512, channels)
+        .map_err(|(_, e)| format!("Failed to prepare engine: {e}"))?
+        .start();
 
     engine.set_parameters(eq_params);
 
