@@ -2,9 +2,10 @@
 #
 # Triggered ONLY on pushing a version tag `v*` (e.g. `v1.0.0`) or manual
 # workflow_dispatch — never on regular pushes to `main`.
-# Generates and commits RELEASE_NOTES.md to `main`, builds the combined macOS
-# DMG (AUv2/VST3/CLAP plugins + Equaform-8.app standalone) and Windows
-# installer from the tagged commit, and publishes the GitHub Release.
+# Uses RELEASE_NOTES.md committed in the tagged commit (with fallback generation
+# if absent), builds the combined macOS DMG (AUv2/VST3/CLAP plugins +
+# Equaform-8.app standalone) and Windows installer, and publishes the GitHub
+# Release. Never pushes back to `main` (compatible with branch protection).
 
 name: Release
 
@@ -28,7 +29,7 @@ concurrency:
 
 jobs:
   prepare-release:
-    name: Generate & Commit RELEASE_NOTES.md
+    name: Prepare Release Metadata & Notes
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.gen.outputs.version }}
@@ -60,33 +61,22 @@ jobs:
           fetch-depth: 0
           ref: ${{ steps.meta.outputs.tag }}
 
-      - name: Generate RELEASE_NOTES.md
+      - name: Prepare RELEASE_NOTES.md
         id: gen
         env:
           TAG: ${{ steps.meta.outputs.tag }}
         run: |
           set -euo pipefail
-          chmod +x scripts/generate-release-notes.sh
-          ./scripts/generate-release-notes.sh --version "${TAG}" --output /tmp/RELEASE_NOTES.md --github-output "${GITHUB_OUTPUT}"
-
-      - name: Record RELEASE_NOTES.md on main
-        env:
-          TAG: ${{ steps.gen.outputs.tag }}
-        run: |
-          set -euo pipefail
-          git fetch origin main
-          git checkout -B main origin/main
-          cp /tmp/RELEASE_NOTES.md RELEASE_NOTES.md
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          git add RELEASE_NOTES.md
-          if git diff --cached --quiet; then
-            echo "No changes to RELEASE_NOTES.md; skipping commit."
+          VERSION="${TAG#v}"
+          if [ -s RELEASE_NOTES.md ]; then
+            echo "Using committed RELEASE_NOTES.md from ${TAG}"
+            cp RELEASE_NOTES.md /tmp/RELEASE_NOTES.md
+            echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+            echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
           else
-            git commit -m "chore(release): ${TAG} — update RELEASE_NOTES.md [skip ci]"
-            git push origin HEAD:main
+            echo "RELEASE_NOTES.md missing in ${TAG}; generating fallback notes."
+            chmod +x scripts/generate-release-notes.sh
+            ./scripts/generate-release-notes.sh --version "${TAG}" --output /tmp/RELEASE_NOTES.md --github-output "${GITHUB_OUTPUT}"
           fi
 
       - name: Upload RELEASE_NOTES.md artifact
@@ -176,18 +166,15 @@ jobs:
         with:
           shared-key: windows-x64
 
-      - name: Setup Ninja
-        uses: ilammy/setup-ninja@v1
-
       - name: Setup MSVC developer environment
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
 
-      - name: Install Inno Setup
+      - name: Install Ninja & Inno Setup
         shell: pwsh
         run: |
-          choco install innosetup --no-progress
+          choco install ninja innosetup --no-progress
           "C:\Program Files (x86)\Inno Setup 6" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Build equaform-plugin (CLAP DLL)
