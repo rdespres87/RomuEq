@@ -2,7 +2,7 @@ use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use equaform_common::{FilterType, Slope};
-use equaform_dsp::{BiquadFilter, compute_coefficients};
+use equaform_dsp::{BiquadFilter, compute_coefficients, process_stereo_planar_in_place};
 
 const SAMPLE_RATE: f32 = 48_000.0;
 
@@ -101,10 +101,45 @@ fn bench_eight_band_cascade(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_stereo_planar_block(c: &mut Criterion) {
+    let mut group = c.benchmark_group("biquad_stereo_planar_block");
+    let coeffs = compute_coefficients(FilterType::Bell, 1000.0, 4.0, 1.2, Slope::Db12, SAMPLE_RATE);
+
+    for block_frames in [64usize, 256, 512, 1024] {
+        let mut left: Vec<f32> = (0..block_frames)
+            .map(|i| ((i as f32) * 0.017).sin() * 0.5)
+            .collect();
+        let mut right: Vec<f32> = (0..block_frames)
+            .map(|i| ((i as f32) * 0.023).cos() * 0.5)
+            .collect();
+        let mut delay_l = [0.0f32; 4];
+        let mut delay_r = [0.0f32; 4];
+
+        group.throughput(Throughput::Elements(block_frames as u64));
+        group.bench_with_input(
+            BenchmarkId::from_parameter(block_frames),
+            &block_frames,
+            |b, _| {
+                b.iter(|| {
+                    process_stereo_planar_in_place(
+                        black_box(&mut left),
+                        black_box(&mut right),
+                        black_box(&coeffs),
+                        &mut delay_l,
+                        &mut delay_r,
+                    );
+                });
+            },
+        );
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_compute_coefficients,
     bench_biquad_process_block,
-    bench_eight_band_cascade
+    bench_eight_band_cascade,
+    bench_stereo_planar_block
 );
 criterion_main!(benches);

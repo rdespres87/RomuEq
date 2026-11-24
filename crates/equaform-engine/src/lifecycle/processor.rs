@@ -5,6 +5,7 @@ use equaform_analysis::AnalysisFrame;
 use equaform_common::automation::AutomationValueProvider;
 use equaform_common::{BandParameters, MAX_BANDS, ParamId};
 use equaform_dsp::coefficients::{BiquadCoefficients, FilterSpecification};
+use equaform_dsp::{process_mono_in_place, process_stereo_planar_in_place};
 
 impl EngineLifecycle {
     /// Create an automation value provider for the current block.
@@ -197,33 +198,80 @@ impl EngineLifecycle {
         let step = 1.0_f32 / (crossfade_samples.max(1) as f32);
         let is_ramping = (start_mix - target_mix).abs() > f32::EPSILON;
 
-        for ch_idx in 0..self.topology.channels {
-            let buffer_offset = ch_idx * self.topology.max_block_size;
-            let samples = &mut self.buffer[buffer_offset..buffer_offset + block_size];
-            let dry_samples =
-                &mut self.bypass.dry_buffer[buffer_offset..buffer_offset + block_size];
+        if self.topology.channels == 2 {
+            let max_block = self.topology.max_block_size;
+            let (left_buf, right_buf) = self.buffer.split_at_mut(max_block);
+            let left = &mut left_buf[..block_size];
+            let right = &mut right_buf[..block_size];
 
-            dry_samples.copy_from_slice(samples);
+            let (dry_left_buf, dry_right_buf) = self.bypass.dry_buffer.split_at_mut(max_block);
+            let dry_left = &mut dry_left_buf[..block_size];
+            let dry_right = &mut dry_right_buf[..block_size];
+
+            dry_left.copy_from_slice(left);
+            dry_right.copy_from_slice(right);
 
             for (band_idx, coeffs) in block_coeffs.iter().enumerate() {
                 if !self.eq_params.bands[band_idx].enabled {
                     continue;
                 }
-                let delay_offset = band_idx * self.topology.channels * DELAY_SAMPLES_PER_STAGE
-                    + ch_idx * DELAY_SAMPLES_PER_STAGE;
-                let delay =
-                    &mut self.delay_line[delay_offset..delay_offset + DELAY_SAMPLES_PER_STAGE];
-                apply_biquad_stage(samples, coeffs, delay);
+                let band_delay_offset = band_idx * 2 * DELAY_SAMPLES_PER_STAGE;
+                let (delay_l_slice, delay_r_slice) = self.delay_line
+                    [band_delay_offset..band_delay_offset + 2 * DELAY_SAMPLES_PER_STAGE]
+                    .split_at_mut(DELAY_SAMPLES_PER_STAGE);
+                if let (Ok(delay_l), Ok(delay_r)) = (
+                    <&mut [f32; 4]>::try_from(delay_l_slice),
+                    <&mut [f32; 4]>::try_from(delay_r_slice),
+                ) {
+                    process_stereo_planar_in_place(left, right, coeffs, delay_l, delay_r);
+                }
             }
 
             if output_gain_linear != 1.0 {
-                samples.iter_mut().for_each(|s| *s *= output_gain_linear);
+                for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+                    *l *= output_gain_linear;
+                    *r *= output_gain_linear;
+                }
             }
 
             if is_ramping {
-                apply_bypass_crossfade(samples, dry_samples, start_mix, target_mix, step);
+                apply_bypass_crossfade(left, dry_left, start_mix, target_mix, step);
+                apply_bypass_crossfade(right, dry_right, start_mix, target_mix, step);
             } else if self.bypass.target_bypass {
-                samples.copy_from_slice(dry_samples);
+                left.copy_from_slice(dry_left);
+                right.copy_from_slice(dry_right);
+            }
+        } else {
+            for ch_idx in 0..self.topology.channels {
+                let buffer_offset = ch_idx * self.topology.max_block_size;
+                let samples = &mut self.buffer[buffer_offset..buffer_offset + block_size];
+                let dry_samples =
+                    &mut self.bypass.dry_buffer[buffer_offset..buffer_offset + block_size];
+
+                dry_samples.copy_from_slice(samples);
+
+                for (band_idx, coeffs) in block_coeffs.iter().enumerate() {
+                    if !self.eq_params.bands[band_idx].enabled {
+                        continue;
+                    }
+                    let delay_offset = band_idx * self.topology.channels * DELAY_SAMPLES_PER_STAGE
+                        + ch_idx * DELAY_SAMPLES_PER_STAGE;
+                    let delay_slice =
+                        &mut self.delay_line[delay_offset..delay_offset + DELAY_SAMPLES_PER_STAGE];
+                    if let Ok(delay) = <&mut [f32; 4]>::try_from(delay_slice) {
+                        process_mono_in_place(samples, coeffs, delay);
+                    }
+                }
+
+                if output_gain_linear != 1.0 {
+                    samples.iter_mut().for_each(|s| *s *= output_gain_linear);
+                }
+
+                if is_ramping {
+                    apply_bypass_crossfade(samples, dry_samples, start_mix, target_mix, step);
+                } else if self.bypass.target_bypass {
+                    samples.copy_from_slice(dry_samples);
+                }
             }
         }
 
@@ -236,36 +284,6 @@ impl EngineLifecycle {
             };
         }
     }
-}
-
-/// Apply a single direct-form I biquad stage in-place using pre-allocated delay state.
-#[inline]
-fn apply_biquad_stage(samples: &mut [f32], coeffs: &BiquadCoefficients, delay: &mut [f32]) {
-    let b0 = coeffs.b0;
-    let b1 = coeffs.b1;
-    let b2 = coeffs.b2;
-    let a1 = coeffs.a1;
-    let a2 = coeffs.a2;
-
-    let mut x1 = delay[0];
-    let mut x2 = delay[1];
-    let mut y1 = delay[2];
-    let mut y2 = delay[3];
-
-    for sample in samples.iter_mut() {
-        let x_n = *sample;
-        let y_n = b0 * x_n + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
-        *sample = y_n;
-        x2 = x1;
-        x1 = x_n;
-        y2 = y1;
-        y1 = y_n;
-    }
-
-    delay[0] = x1;
-    delay[1] = x2;
-    delay[2] = y1;
-    delay[3] = y2;
 }
 
 /// Apply continuous equal-power sin/cos crossfade between wet (`samples`) and `dry_samples`.

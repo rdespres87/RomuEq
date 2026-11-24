@@ -82,6 +82,19 @@ impl BiquadState {
     pub fn coefficients(&self) -> &BiquadCoefficients {
         &self.coeffs
     }
+
+    /// Snapshot delay state as `[x1, x2, y1, y2]`.
+    #[inline]
+    pub(crate) fn delay_array(&self) -> [f32; 4] {
+        [self.x[0], self.x[1], self.y[0], self.y[1]]
+    }
+
+    /// Restore delay state from `[x1, x2, y1, y2]`.
+    #[inline]
+    pub(crate) fn set_delay_array(&mut self, delay: [f32; 4]) {
+        self.x = [delay[0], delay[1]];
+        self.y = [delay[2], delay[3]];
+    }
 }
 
 // ===========================================================================
@@ -145,6 +158,31 @@ impl BiquadFilter {
         );
 
         let num_channels = self.channels.len();
+
+        if num_channels == 2 {
+            let coeffs_l = self.channels[0].coeffs;
+            let coeffs_r = self.channels[1].coeffs;
+            if coeffs_l.b0 == coeffs_r.b0
+                && coeffs_l.b1 == coeffs_r.b1
+                && coeffs_l.b2 == coeffs_r.b2
+                && coeffs_l.a1 == coeffs_r.a1
+                && coeffs_l.a2 == coeffs_r.a2
+            {
+                let mut delay_l = self.channels[0].delay_array();
+                let mut delay_r = self.channels[1].delay_array();
+                crate::simd::process_stereo_interleaved(
+                    input,
+                    output,
+                    &coeffs_l,
+                    &mut delay_l,
+                    &mut delay_r,
+                );
+                self.channels[0].set_delay_array(delay_l);
+                self.channels[1].set_delay_array(delay_r);
+                return;
+            }
+        }
+
         let frames = input.len() / num_channels;
 
         for frame in 0..frames {
