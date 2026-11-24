@@ -1,4 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
+cmake_policy(SET CMP0091 NEW)
 
 if (APPLE)
     set(CMAKE_OSX_DEPLOYMENT_TARGET "12.0" CACHE STRING "Minimum macOS version" FORCE)
@@ -7,6 +8,12 @@ if (APPLE)
 else()
     project(EquaformPlugins VERSION 1.0.0 LANGUAGES C CXX)
     set(CLAP_WRAPPER_BUILD_AUV2 OFF CACHE BOOL "" FORCE)
+endif()
+
+if (MSVC AND NOT DEFINED CMAKE_MSVC_RUNTIME_LIBRARY)
+    # Match clap-wrapper's static CRT (/MT) across both parent and subdirectory scopes
+    # so equaform_vst3 and base-sdk-vst3 never mismatch (LNK2038).
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()
 
 set(CMAKE_CXX_STANDARD 20 CACHE STRING "C++ standard" FORCE)
