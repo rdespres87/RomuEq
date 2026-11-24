@@ -36,6 +36,8 @@ pub trait PluginEditor: 'static {
     fn destroy(&mut self);
 }
 
+pub mod shared_host;
+
 #[cfg(target_os = "macos")]
 pub mod cocoa;
 
