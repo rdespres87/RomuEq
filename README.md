@@ -2,27 +2,39 @@
 
 ![Equaform-8 Parametric Equalizer](docs/assets/equaform-8-gui.jpg)
 
-Real-time 8-band parametric equalizer written in Rust, available as a **native macOS standalone application** (with CoreAudio HAL virtual driver) and as **DAW plugins (`CLAP`, `VST3`, `AUv2`)**, plus an offline CLI processor.
+Real-time 8-band parametric equalizer written in Rust, available as **DAW plugins (`CLAP`, `VST3`, `AUv2`)** on macOS and **DAW plugins (`CLAP`, `VST3`)** on Windows x64, plus a **native macOS standalone application** (`Equaform-8.app` with CoreAudio HAL virtual driver) and an offline CLI processor.
+
+## Platform Support Matrix
+
+| Target | macOS (Apple Silicon / Intel) | Windows (x64) |
+| :--- | :---: | :---: |
+| **CLAP Plugin** | Yes (`Equaform-8.clap`) | Yes (`Equaform-8.clap`) |
+| **VST3 Plugin** | Yes (`Equaform-8.vst3`) | Yes (`Equaform-8.vst3`) |
+| **AUv2 Plugin** | Yes (`Equaform-8.component`) | N/A |
+| **Standalone App** | Yes (`Equaform-8.app` + `Equaform.driver`) | **No (Plugins only)** |
+| **Release Deliverable** | `Equaform-8-vX.Y.Z.dmg` (Plugins + Standalone) | `Equaform-8-Plugins-Windows-vX.Y.Z.exe` (Plugins only) |
+
+> **Windows Scope Note:** Windows releases intentionally ship **DAW plugins only (`VST3` and `CLAP`)** with the 15 factory presets. The standalone system-wide application is **macOS-only** because it relies on the native CoreAudio HAL virtual driver (`driver/equaform-hal`).
 
 ## Implemented Targets & Features
 
 - **DAW Plugins (`CLAP`, `VST3`, `AUv2`)**
-  - Native **CLAP** implementation in `crates/equaform-plugin` with an embedded macOS Cocoa (`NSView`) + Metal (`wgpu` / `egui-wgpu`) editor (`1180×560`).
-  - **VST3** (Ableton Live, Cubase, Reaper, Bitwig) and **Audio Unit v2** (`aufx` / `Eqf8` / `Eqfm` for Logic Pro, GarageBand, MainStage) generated via `clap-wrapper` with an embedded `.clap` bundle.
-  - **51 automatable parameters** (8 bands × Active/Type/Frequency/Gain/Q/Slope + Global Gain, Output Trim, Bypass) with sample-accurate sub-block automation, Touch/Latch UI gestures, text value parsing, and versioned JSON state persistence.
-- **Standalone macOS Application (`Equaform-8.app`)**
+  - Native **CLAP** implementation in `crates/equaform-plugin` with embedded **macOS Cocoa (`NSView`) + Metal** and **Windows Win32 (`HWND`) + DirectX 12 / Vulkan** editors (`wgpu` / `egui-wgpu`, `1180×560`).
+  - **VST3** (Ableton Live, Cubase, Reaper, Bitwig, FL Studio) on macOS & Windows, and **Audio Unit v2** (`aufx` / `Eqf8` / `Eqfm` for Logic Pro, GarageBand, MainStage) on macOS, generated via `clap-wrapper`.
+  - **51 automatable parameters** (8 bands × Active/Type/Frequency/Gain/Q/Slope + Global Gain, Output Trim, Bypass) with sample-accurate sub-block automation, Touch/Latch UI gestures, text value parsing, and versioned CRC32 binary + JSON state persistence.
+- **Standalone macOS Application (`Equaform-8.app` — macOS only)**
   - System-wide EQ powered by a native C11 CoreAudio `AudioServerPlugIn` virtual audio driver (`driver/equaform-hal`) and drift-compensated CoreAudio playback.
 - **CLI / Offline Renderer (`equaform-cli`)**
   - Offline WAV processing and diagnostics using the shared DSP engine.
 - **DSP, Analysis & Shared UI (`equaform-gui`)**
-  - 8-band minimum-phase EQ (`Bell`, `LowShelf`, `HiShelf`, `HiPass`, `LowPass`; 6/12/18/24 dB/oct slopes), `[-40 dB .. +40 dB]` response curve plot, real-time FFT spectrum analyzer, and stereo L/R VU-meter.
+  - 8-band minimum-phase EQ (`Bell`, `LowShelf`, `HiShelf`, `HiPass`, `LowPass`; 6/12/18/24 dB/oct slopes), `[-40 dB .. +40 dB]` response curve plot (dirty-flag cached), real-time FFT spectrum analyzer, stereo L/R VU-meter, and native zero-allocation i18n (`EN` / `FR` / `DE`).
   - Lock-free audio hot path (`ADR-007`: zero allocation, non-blocking ring buffers & atomic snapshots).
-  - **15 factory presets** and user presets synchronized across standalone and plugins in `~/.equaform/presets/*.req`.
+  - **15 factory presets** and user presets synchronized across standalone and plugins (`~/.equaform/presets/*.req` on macOS, `%APPDATA%\Equaform\presets\*.req` on Windows).
 
 ## Future Scope
 
 - Dynamic EQ, linear-phase mode, oversampling, and Mid/Side processing
-- Windows & Linux packaging for `CLAP` / `VST3` plugins
+- Linux packaging for `CLAP` / `VST3` plugins
 - Audio Unit v3 (`AUv3`) and multichannel support
 
 ## Repository Layout
@@ -78,11 +90,19 @@ Verify the Audio Unit registration with Apple's validator:
 auval -v aufx Eqf8 Eqfm
 ```
 
-### Standalone Application (`Equaform-8.app`)
+### Standalone Application (`Equaform-8.app` — macOS only)
 
 ```bash
 ./scripts/package-macos-app.sh
 ```
+
+### Combined Distribution DMG (Plugins + Standalone)
+
+```bash
+./scripts/package-distribution-plugins.sh 1.0.0
+```
+
+This generates `target/release/dist/Equaform-8-v1.0.0.dmg` (and its `.sha256` checksum) containing both the DAW plugins installer (`Equaform-8-Plugins-Installer.pkg` for `AUv2`, `VST3`, `CLAP`, and presets) and the standalone `Equaform-8.app` bundle.
 
 ## Real-Time Contract
 
