@@ -286,6 +286,9 @@ fn read_parameter_values(reader: &mut BinaryReader<'_>) -> StateResult<Parameter
     for _ in 0..param_count {
         let id = reader.read_u32()?;
         let value = reader.read_f32()?;
+        if !value.is_finite() {
+            return Err(StateError::InvalidParameterValue { id });
+        }
         parameter_values.set(id, value);
     }
     Ok(parameter_values)
@@ -1246,5 +1249,95 @@ mod tests {
         assert_eq!(entries, vec!["state.bin".to_string()]);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_fuzz_adversarial_corpus_never_panics() {
+        // 1. Hand-crafted adversarial inputs with valid CRC32 framing
+        let mut oom_param_count = Vec::new();
+        oom_param_count.extend_from_slice(&CURRENT_SCHEMA_VERSION.to_le_bytes());
+        oom_param_count.extend_from_slice(&6u32.to_le_bytes());
+        oom_param_count.extend_from_slice(b"RomuEq");
+        oom_param_count.extend_from_slice(&u32::MAX.to_le_bytes());
+
+        let mut oom_tag_count = Vec::new();
+        oom_tag_count.extend_from_slice(&CURRENT_SCHEMA_VERSION.to_le_bytes());
+        oom_tag_count.extend_from_slice(&6u32.to_le_bytes());
+        oom_tag_count.extend_from_slice(b"RomuEq");
+        oom_tag_count.extend_from_slice(&1u32.to_le_bytes());
+        oom_tag_count.push(b'A');
+        oom_tag_count.push(0); // no author
+        oom_tag_count.extend_from_slice(&u32::MAX.to_le_bytes()); // tag_count = u32::MAX
+
+        let mut invalid_utf8_name = Vec::new();
+        invalid_utf8_name.extend_from_slice(&CURRENT_SCHEMA_VERSION.to_le_bytes());
+        invalid_utf8_name.extend_from_slice(&6u32.to_le_bytes());
+        invalid_utf8_name.extend_from_slice(b"RomuEq");
+        invalid_utf8_name.extend_from_slice(&2u32.to_le_bytes());
+        invalid_utf8_name.extend_from_slice(&[0xFF, 0xFE]);
+
+        let mut nan_param = Vec::new();
+        nan_param.extend_from_slice(&CURRENT_SCHEMA_VERSION.to_le_bytes());
+        nan_param.extend_from_slice(&6u32.to_le_bytes());
+        nan_param.extend_from_slice(b"RomuEq");
+        nan_param.extend_from_slice(&1u32.to_le_bytes());
+        nan_param.extend_from_slice(&1u32.to_le_bytes());
+        nan_param.extend_from_slice(&f32::NAN.to_le_bytes());
+
+        let crafted: Vec<Vec<u8>> = vec![
+            vec![],
+            vec![0; 4],
+            vec![0; 8],
+            STATE_MAGIC.to_vec(),
+            wrap_framed(&[]),
+            wrap_framed(&[0xFF; 4]),
+            wrap_framed(&oom_param_count),
+            wrap_framed(&oom_tag_count),
+            wrap_framed(&invalid_utf8_name),
+            wrap_framed(&nan_param),
+        ];
+
+        for payload in &crafted {
+            assert!(ProjectState::deserialize(payload).is_err());
+            assert!(Preset::deserialize(payload).is_err());
+        }
+
+        // 2. Deterministic PRNG corpus (raw + valid-CRC32 framed)
+        let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut next_u8 = || -> u8 {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed & 0xFF) as u8
+        };
+
+        for idx in 0..500usize {
+            let len = idx % 128;
+            let raw: Vec<u8> = (0..len).map(|_| next_u8()).collect();
+            let framed = wrap_framed(&raw);
+
+            let _ = ProjectState::deserialize(&raw);
+            let _ = Preset::deserialize(&raw);
+            let _ = ProjectState::deserialize(&framed);
+            let _ = Preset::deserialize(&framed);
+
+            if let Ok(text) = std::str::from_utf8(&raw) {
+                let _ = Preset::from_json(text);
+            }
+        }
+
+        // 3. Adversarial JSON payloads (non-finite / oversized / wrong types)
+        let bad_jsons = [
+            "",
+            "null",
+            "[]",
+            "{}",
+            r#"{"schema_version":1,"product":"Equaform-8","name":"X","parameters":{"1":null}}"#,
+            r#"{"schema_version":1,"product":"Equaform-8","name":"X","parameters":{"bad":1.0}}"#,
+            r#"{"schema_version":0,"product":"Equaform-8","name":"X","parameters":{}}"#,
+        ];
+        for json in bad_jsons {
+            assert!(Preset::from_json(json).is_err());
+        }
     }
 }

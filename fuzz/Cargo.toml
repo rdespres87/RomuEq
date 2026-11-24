@@ -1,0 +1,19 @@
+[package]
+name = "equaform-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+equaform-common = { path = "../crates/equaform-common" }
+
+[[bin]]
+name = "state_deserialize"
+path = "fuzz_targets/state_deserialize.rs"
+test = false
+doc = false
+bench = false

@@ -11,6 +11,7 @@ members = [
     "crates/equaform-cli",
     "crates/equaform-integration-tests",
 ]
+exclude = ["fuzz"]
 
 [workspace.package]
 edition = "2024"
