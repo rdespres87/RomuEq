@@ -1,16 +1,15 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # package-distribution-plugins.sh
-# Builds and packages Equaform-8 DAW plugins (CLAP, VST3, AUv2) and factory
-# presets into a production-grade macOS .pkg installer and distributable DMG.
-#
-# NOTE: Standalone app (Equaform-8.app) and CoreAudio HAL driver (Equaform.driver)
-#       are STRICTLY EXCLUDED from this package.
+# Builds and packages Equaform-8 DAW plugins (CLAP, VST3, AUv2), the macOS
+# standalone application (Equaform-8.app), and factory presets into a
+# production-grade macOS .pkg installer and distributable DMG.
 # ==============================================================================
 
 set -euo pipefail
 
-VERSION="1.0.0"
+VERSION="${1:-${RELEASE_VERSION:-1.0.0}}"
+VERSION="${VERSION#v}"
 BUNDLE_IDENTIFIER_BASE="com.equaform.audio.equalizer"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -28,11 +27,12 @@ DIST_OUT_DIR="${RELEASE_DIR}/dist"
 CLAP_BUNDLE="${TARGET_BUNDLE_DIR}/Equaform-8.clap"
 VST3_BUNDLE="${TARGET_BUNDLE_DIR}/Equaform-8.vst3"
 AU_BUNDLE="${TARGET_BUNDLE_DIR}/Equaform-8.component"
+APP_BUNDLE="${TARGET_BUNDLE_DIR}/Equaform-8.app"
 
 DIST_RESOURCES_DIR="${ROOT_DIR}/scripts/distribution"
 
 echo "========================================================================"
-echo " Equaform-8 DAW Plugins Distribution Packager (v${VERSION})"
+echo " Equaform-8 macOS Distribution Packager (Plugins + Standalone v${VERSION})"
 echo "========================================================================"
 
 # --- Preflight Dependency Checks ---
@@ -139,11 +139,22 @@ codesign --verify --deep --strict "${VST3_BUNDLE}"
 codesign --verify --deep --strict "${AU_BUNDLE}"
 echo "    Plugin bundles successfully signed and strictly verified."
 
-# --- Step 5: Export the 15 Factory Presets ---
-echo "==> [5/8] Exporting 15 binary factory presets..."
+# --- Step 5: Build Standalone macOS Application (Equaform-8.app) ---
+echo "==> [5/9] Building standalone macOS application (Equaform-8.app)..."
+chmod +x "${SCRIPT_DIR}/package-macos-app.sh"
+"${SCRIPT_DIR}/package-macos-app.sh" "${VERSION}"
+if [[ ! -d "${APP_BUNDLE}" ]]; then
+    echo "ERROR: Expected standalone app bundle not found at ${APP_BUNDLE}" >&2
+    exit 1
+fi
+codesign --verify --deep --strict "${APP_BUNDLE}"
+echo "    Standalone app bundle built and verified: ${APP_BUNDLE}"
+
+# --- Step 6: Export the 15 Factory Presets ---
+echo "==> [6/9] Exporting 15 binary factory presets..."
 CORE_PRESETS_DIR="${PKG_STAGING_DIR}/root-core/Library/Application Support/Equaform/presets"
 mkdir -p "${CORE_PRESETS_DIR}"
-cargo run -p equaform-gui --example dump_factory_presets -- "${CORE_PRESETS_DIR}"
+cargo run --release -p equaform-gui --example dump_factory_presets -- "${CORE_PRESETS_DIR}"
 
 PRESET_COUNT=$(find "${CORE_PRESETS_DIR}" -type f -name "*.req" | wc -l | tr -d ' ')
 if [[ "${PRESET_COUNT}" -lt 15 ]]; then
@@ -152,13 +163,13 @@ if [[ "${PRESET_COUNT}" -lt 15 ]]; then
 fi
 echo "    Exported ${PRESET_COUNT} factory presets successfully."
 
-# --- Step 6: Build Component Packages (pkgbuild) ---
-echo "==> [6/8] Building modular component packages (pkgbuild)..."
+# --- Step 7: Build Component Packages (pkgbuild) ---
+echo "==> [7/9] Building modular component packages (pkgbuild)..."
 export COPYFILE_DISABLE=1
 find "${PKG_STAGING_DIR}" -name "._*" -delete 2>/dev/null || true
 xattr -rc "${PKG_STAGING_DIR}" 2>/dev/null || true
 
-# 6a. Core package (Presets + preinstall/postinstall hooks)
+# 7a. Core package (Presets + preinstall/postinstall hooks)
 pkgbuild \
     --root "${PKG_STAGING_DIR}/root-core" \
     --scripts "${DIST_RESOURCES_DIR}/scripts" \
@@ -167,7 +178,17 @@ pkgbuild \
     --install-location "/" \
     "${PKG_STAGING_DIR}/components/equaform-core.pkg"
 
-# 6b. Audio Unit v2 package
+# 7b. Standalone Application package (/Applications/Equaform-8.app)
+mkdir -p "${PKG_STAGING_DIR}/root-standalone/Applications"
+cp -R "${APP_BUNDLE}" "${PKG_STAGING_DIR}/root-standalone/Applications/"
+pkgbuild \
+    --root "${PKG_STAGING_DIR}/root-standalone" \
+    --identifier "${BUNDLE_IDENTIFIER_BASE}.pkg.standalone" \
+    --version "${VERSION}" \
+    --install-location "/" \
+    "${PKG_STAGING_DIR}/components/equaform-standalone.pkg"
+
+# 7c. Audio Unit v2 package
 mkdir -p "${PKG_STAGING_DIR}/root-au/Library/Audio/Plug-Ins/Components"
 cp -R "${AU_BUNDLE}" "${PKG_STAGING_DIR}/root-au/Library/Audio/Plug-Ins/Components/"
 pkgbuild \
@@ -177,7 +198,7 @@ pkgbuild \
     --install-location "/" \
     "${PKG_STAGING_DIR}/components/equaform-au.pkg"
 
-# 6c. VST3 package
+# 7d. VST3 package
 mkdir -p "${PKG_STAGING_DIR}/root-vst3/Library/Audio/Plug-Ins/VST3"
 cp -R "${VST3_BUNDLE}" "${PKG_STAGING_DIR}/root-vst3/Library/Audio/Plug-Ins/VST3/"
 pkgbuild \
@@ -187,7 +208,7 @@ pkgbuild \
     --install-location "/" \
     "${PKG_STAGING_DIR}/components/equaform-vst3.pkg"
 
-# 6d. CLAP package
+# 7e. CLAP package
 mkdir -p "${PKG_STAGING_DIR}/root-clap/Library/Audio/Plug-Ins/CLAP"
 cp -R "${CLAP_BUNDLE}" "${PKG_STAGING_DIR}/root-clap/Library/Audio/Plug-Ins/CLAP/"
 pkgbuild \
@@ -197,19 +218,26 @@ pkgbuild \
     --install-location "/" \
     "${PKG_STAGING_DIR}/components/equaform-clap.pkg"
 
-# --- Step 7: Synthesize Master Installer Package (productbuild) ---
-echo "==> [7/8] Synthesizing master installer package (productbuild)..."
-INSTALLER_PKG="${DMG_STAGING_DIR}/Equaform-8-Plugins-Installer.pkg"
+# --- Step 8: Synthesize Master Installer Package (productbuild) ---
+echo "==> [8/9] Synthesizing master installer package (productbuild)..."
+STAGED_DIST_XML="${PKG_STAGING_DIR}/Distribution.xml"
+sed "s/__VERSION__/${VERSION}/g" "${DIST_RESOURCES_DIR}/Distribution.xml" > "${STAGED_DIST_XML}"
+
+INSTALLER_PKG="${DMG_STAGING_DIR}/Equaform-8-Installer.pkg"
 productbuild \
-    --distribution "${DIST_RESOURCES_DIR}/Distribution.xml" \
+    --distribution "${STAGED_DIST_XML}" \
     --package-path "${PKG_STAGING_DIR}/components" \
     --resources "${DIST_RESOURCES_DIR}/resources" \
     "${INSTALLER_PKG}"
 
 echo "    Master installer package created at: ${INSTALLER_PKG}"
 
-# --- Step 8: Build Distributable Disk Image (DMG) ---
-echo "==> [8/8] Assembling DMG contents and building disk image..."
+# --- Step 9: Build Distributable Disk Image (DMG) ---
+echo "==> [9/9] Assembling DMG contents and building disk image..."
+
+# Include standalone app directly at DMG root + Applications symlink for drag-and-drop
+cp -R "${APP_BUNDLE}" "${DMG_STAGING_DIR}/"
+ln -s /Applications "${DMG_STAGING_DIR}/Applications"
 
 # Copy documentation and helper scripts to DMG root
 cp "${DIST_RESOURCES_DIR}/dmg-root/README_TESTER.txt" "${DMG_STAGING_DIR}/"
@@ -229,17 +257,18 @@ cp "${DIST_RESOURCES_DIR}/dmg-root/install-user-plugins.command" "${MANUAL_DIR}/
 chmod +x "${MANUAL_DIR}/install-user-plugins.command"
 
 # Create final DMG
-DMG_PATH="${DIST_OUT_DIR}/Equaform-8-Plugins-v${VERSION}.dmg"
+DMG_FILENAME="Equaform-8-v${VERSION}.dmg"
+DMG_PATH="${DIST_OUT_DIR}/${DMG_FILENAME}"
 echo "    Packaging DMG: ${DMG_PATH}..."
 hdiutil create \
-    -volname "Equaform-8-Plugins" \
+    -volname "Equaform-8" \
     -srcfolder "${DMG_STAGING_DIR}" \
     -ov \
     -format UDZO \
     "${DMG_PATH}"
 
-# Generate SHA256 checksum
-shasum -a 256 "${DMG_PATH}" > "${DMG_PATH}.sha256"
+# Generate portable SHA-256 checksum (basename-only for `shasum -a 256 -c`)
+(cd "${DIST_OUT_DIR}" && shasum -a 256 "${DMG_FILENAME}" > "${DMG_FILENAME}.sha256")
 
 echo ""
 echo "========================================================================"
@@ -250,10 +279,11 @@ echo " File Size          : $(du -sh "${DMG_PATH}" | cut -f1)"
 echo " SHA-256 Checksum   : $(cat "${DMG_PATH}.sha256")"
 echo ""
 echo " Contents inside DMG:"
-echo "   - Equaform-8-Plugins-Installer.pkg"
+echo "   - Equaform-8-Installer.pkg (Plugins AUv2/VST3/CLAP + Standalone + Presets)"
+echo "   - Equaform-8.app + Applications symlink (direct drag-and-drop)"
 echo "   - README_TESTER.txt"
 echo "   - TEST_GUIDE_MAC.md"
 echo "   - Open-Installer-Gatekeeper.command"
 echo "   - Uninstall-Equaform-Plugins.command"
-echo "   - Manual-Install/ (with raw bundles + install-user-plugins.command)"
+echo "   - Manual-Install/ (raw plugin bundles + install-user-plugins.command)"
 echo "========================================================================"

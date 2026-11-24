@@ -3,6 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+VERSION="${1:-${RELEASE_VERSION:-1.0.0}}"
 
 echo "==> Building native CoreAudio HAL driver..."
 chmod +x "$SCRIPT_DIR/build-driver.sh"
@@ -27,7 +28,7 @@ if [ -f "$ROOT_DIR/crates/equaform-standalone/resources/Equaform.icns" ]; then
     cp "$ROOT_DIR/crates/equaform-standalone/resources/Equaform.icns" "$APP_DIR/Contents/Resources/Equaform-8.icns"
 fi
 
-cat << 'EOF' > "$APP_DIR/Contents/Info.plist"
+cat << EOF > "$APP_DIR/Contents/Info.plist"
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -45,13 +46,13 @@ cat << 'EOF' > "$APP_DIR/Contents/Info.plist"
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0.0</string>
+    <string>${VERSION}</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>${VERSION}</string>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSMicrophoneUsageDescription</key>
-    <string>Equaform-8 nécessite l'accès au flux audio pour égaliser le son de votre Mac en temps réel.</string>
+    <string>Equaform-8 requires audio access to equalize your Mac audio in real time.</string>
 </dict>
 </plist>
 EOF

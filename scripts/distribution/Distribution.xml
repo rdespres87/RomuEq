@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <installer-gui-script minSpecVersion="1">
-    <title>Equaform-8 DAW Plugins</title>
+    <title>Equaform-8</title>
     <options customize="always" require-scripts="false" hostArchitectures="arm64"/>
     <domains enable_anywhere="false" enable_currentUserHome="false" enable_localSystem="true"/>
     
@@ -10,6 +10,7 @@
     
     <choices-outline>
         <line choice="com.equaform.pkg.core"/>
+        <line choice="com.equaform.pkg.standalone"/>
         <line choice="com.equaform.pkg.au"/>
         <line choice="com.equaform.pkg.vst3"/>
         <line choice="com.equaform.pkg.clap"/>
@@ -17,6 +18,10 @@
     
     <choice id="com.equaform.pkg.core" title="Equaform-8 Presets &amp; Configuration" visible="true" enabled="false" selected="true" description="Factory presets (15 presets) and CoreAudio registration setup.">
         <pkg-ref id="com.equaform.pkg.core"/>
+    </choice>
+
+    <choice id="com.equaform.pkg.standalone" title="Equaform-8 Standalone Application" selected="true" description="Standalone macOS desktop application installed to /Applications/Equaform-8.app.">
+        <pkg-ref id="com.equaform.pkg.standalone"/>
     </choice>
     
     <choice id="com.equaform.pkg.au" title="Audio Unit v2 (AUv2)" selected="true" description="Apple Audio Unit for Logic Pro, GarageBand, and macOS hosts.">
@@ -31,8 +36,9 @@
         <pkg-ref id="com.equaform.pkg.clap"/>
     </choice>
     
-    <pkg-ref id="com.equaform.pkg.core" version="1.0.0" onConclusion="none">equaform-core.pkg</pkg-ref>
-    <pkg-ref id="com.equaform.pkg.au" version="1.0.0" onConclusion="none">equaform-au.pkg</pkg-ref>
-    <pkg-ref id="com.equaform.pkg.vst3" version="1.0.0" onConclusion="none">equaform-vst3.pkg</pkg-ref>
-    <pkg-ref id="com.equaform.pkg.clap" version="1.0.0" onConclusion="none">equaform-clap.pkg</pkg-ref>
+    <pkg-ref id="com.equaform.pkg.core" version="__VERSION__" onConclusion="none">equaform-core.pkg</pkg-ref>
+    <pkg-ref id="com.equaform.pkg.standalone" version="__VERSION__" onConclusion="none">equaform-standalone.pkg</pkg-ref>
+    <pkg-ref id="com.equaform.pkg.au" version="__VERSION__" onConclusion="none">equaform-au.pkg</pkg-ref>
+    <pkg-ref id="com.equaform.pkg.vst3" version="__VERSION__" onConclusion="none">equaform-vst3.pkg</pkg-ref>
+    <pkg-ref id="com.equaform.pkg.clap" version="__VERSION__" onConclusion="none">equaform-clap.pkg</pkg-ref>
 </installer-gui-script>

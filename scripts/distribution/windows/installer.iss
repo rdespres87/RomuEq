@@ -4,7 +4,9 @@
 ; ==============================================================================
 
 #define MyAppName "Equaform-8 DAW Plugins"
-#define MyAppVersion "1.0.0"
+#ifndef MyAppVersion
+  #define MyAppVersion "1.0.0"
+#endif
 #define MyAppPublisher "Equaform Audio"
 #define MyAppURL "https://github.com/romueq/equaform"
 #define MyAppId "{{D1A39C6B-70A5-42FE-9D72-B129D5B463AE}}"

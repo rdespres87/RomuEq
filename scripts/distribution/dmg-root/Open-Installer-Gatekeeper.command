@@ -8,7 +8,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PKG_PATH="${SCRIPT_DIR}/Equaform-8-Plugins-Installer.pkg"
+PKG_PATH="${SCRIPT_DIR}/Equaform-8-Installer.pkg"
 
 echo "============================================================"
 echo " Equaform-8 Installer Gatekeeper Helper"
@@ -23,7 +23,7 @@ if [[ ! -f "${PKG_PATH}" ]]; then
 fi
 
 TMP_DIR=$(mktemp -d /tmp/equaform-installer.XXXXXX)
-PKG_COPY="${TMP_DIR}/Equaform-8-Plugins-Installer.pkg"
+PKG_COPY="${TMP_DIR}/Equaform-8-Installer.pkg"
 
 echo "Preparing installer in temporary directory..."
 cp "${PKG_PATH}" "${PKG_COPY}"

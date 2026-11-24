@@ -7,8 +7,9 @@ set -euo pipefail
 echo "[postinstall] Configuring Equaform-8 DAW Plugins..."
 
 # 1. Strip Gatekeeper quarantine from newly installed bundles
-echo "[postinstall] Stripping quarantine attributes from audio plugins..."
+echo "[postinstall] Stripping quarantine attributes from audio plugins and standalone app..."
 for BUNDLE in \
+    "/Applications/Equaform-8.app" \
     "/Library/Audio/Plug-Ins/Components/Equaform-8.component" \
     "/Library/Audio/Plug-Ins/VST3/Equaform-8.vst3" \
     "/Library/Audio/Plug-Ins/CLAP/Equaform-8.clap"; do

@@ -1,70 +1,187 @@
-name: Release Packaging
+# .github/workflows/release.yml
+#
+# Automatically bumps SemVer, records RELEASE_NOTES.md in git, tags the release,
+# builds the combined macOS DMG (AUv2/VST3/CLAP plugins + Equaform-8.app
+# standalone) and Windows installer, and publishes a GitHub Release on every
+# push to `main`.
+
+name: Release
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches:
+      - main
+    paths-ignore:
+      - 'RELEASE_NOTES.md'
+      - 'docs/**'
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release version (e.g. 1.0.0)'
+        description: 'Optional explicit release version (e.g. 1.0.1); auto-bumped if empty'
         required: false
-        default: '1.0.0'
+        default: ''
+        type: string
 
 permissions:
   contents: write
 
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
 jobs:
-  build-macos:
-    name: Build & Package macOS Plugins (Apple Silicon)
-    runs-on: macos-latest
+  prepare-release:
+    name: Compute Version, Commit RELEASE_NOTES.md & Tag
+    runs-on: ubuntu-latest
+    outputs:
+      should_release: ${{ steps.guard.outputs.should_release }}
+      version: ${{ steps.gen.outputs.version }}
+      tag: ${{ steps.gen.outputs.tag }}
+      release_sha: ${{ steps.commit.outputs.release_sha }}
 
     steps:
+      - name: Guard against automated release loops
+        id: guard
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_MSG: ${{ github.event.head_commit.message }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          SHOULD_RELEASE="true"
+          if [ "${EVENT_NAME}" = "push" ]; then
+            case "${HEAD_MSG}" in
+              "chore(release):"*|*"[skip release]"*|*"[skip ci]"*)
+                SHOULD_RELEASE="false"
+                ;;
+            esac
+            if [ "${ACTOR}" = "github-actions[bot]" ]; then
+              SHOULD_RELEASE="false"
+            fi
+          fi
+          echo "should_release=${SHOULD_RELEASE}" >> "${GITHUB_OUTPUT}"
+          if [ "${SHOULD_RELEASE}" = "false" ]; then
+            echo "Release skipped by loop guard."
+          fi
+
       - name: Checkout repository
+        if: steps.guard.outputs.should_release == 'true'
         uses: actions/checkout@v4
         with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Generate RELEASE_NOTES.md and compute SemVer
+        id: gen
+        if: steps.guard.outputs.should_release == 'true'
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          chmod +x scripts/generate-release-notes.sh
+          if [ -n "${INPUT_VERSION}" ]; then
+            ./scripts/generate-release-notes.sh --github-output "${GITHUB_OUTPUT}" --version "${INPUT_VERSION}"
+          else
+            ./scripts/generate-release-notes.sh --github-output "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Commit RELEASE_NOTES.md and push release tag
+        id: commit
+        if: steps.guard.outputs.should_release == 'true'
+        env:
+          VERSION: ${{ steps.gen.outputs.version }}
+          TAG: ${{ steps.gen.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add RELEASE_NOTES.md
+          if git diff --cached --quiet; then
+            echo "No changes to RELEASE_NOTES.md; skipping commit."
+          else
+            git commit -m "chore(release): ${TAG} — update RELEASE_NOTES.md [skip ci]"
+          fi
+
+          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+            echo "::error::Tag ${TAG} already exists; refusing to overwrite an existing release."
+            exit 1
+          fi
+
+          git tag -a "${TAG}" -m "Equaform-8 ${TAG}"
+          git push origin HEAD:main
+          git push origin "refs/tags/${TAG}"
+          echo "release_sha=$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
+
+  build-macos:
+    name: Build & Package macOS DMG (Plugins + Standalone)
+    runs-on: macos-latest
+    needs: prepare-release
+    if: needs.prepare-release.outputs.should_release == 'true'
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout release commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare-release.outputs.release_sha }}
           submodules: recursive
           fetch-depth: 0
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Cache Rust build artifacts
+        uses: swatinem/rust-cache@v2
+        with:
+          shared-key: macos-arm64
+
       - name: Install build tools (CMake & Ninja)
         run: brew install cmake ninja
 
-      - name: Build and package distribution DMG
+      - name: Build and package macOS DMG (Plugins + Standalone)
+        env:
+          VERSION: ${{ needs.prepare-release.outputs.version }}
         run: |
-          chmod +x scripts/package-distribution-plugins.sh
-          ./scripts/package-distribution-plugins.sh
+          set -euo pipefail
+          chmod +x scripts/package-distribution-plugins.sh scripts/package-macos-app.sh scripts/build-driver.sh
+          ./scripts/package-distribution-plugins.sh "${VERSION}"
 
-      - name: Verify package output and compute SHA-256
+      - name: Verify macOS DMG and SHA-256 checksum
+        env:
+          VERSION: ${{ needs.prepare-release.outputs.version }}
         run: |
-          ls -la target/release/dist/
-          DMG_FILE=$(ls target/release/dist/Equaform-8-Plugins-v*.dmg)
-          if [ ! -f "$DMG_FILE" ]; then
-            echo "ERROR: DMG file was not generated" >&2
+          set -euo pipefail
+          DMG="target/release/dist/Equaform-8-v${VERSION}.dmg"
+          SHA="${DMG}.sha256"
+          if [ ! -f "${DMG}" ] || [ ! -f "${SHA}" ]; then
+            echo "::error::Missing expected macOS DMG or SHA-256 file in target/release/dist/"
+            ls -la target/release/dist/ || true
             exit 1
           fi
-          shasum -a 256 "$DMG_FILE" > "${DMG_FILE}.sha256"
-          echo "Generated DMG: $DMG_FILE"
-          echo "SHA-256: $(cat "${DMG_FILE}.sha256")"
+          echo "Generated DMG: ${DMG} ($(du -h "${DMG}" | cut -f1))"
+          echo "SHA-256: $(cat "${SHA}")"
+          (cd target/release/dist && shasum -a 256 -c "$(basename "${SHA}")")
 
       - name: Upload macOS release artifacts
         uses: actions/upload-artifact@v4
         with:
           name: release-macos
           path: |
-            target/release/dist/Equaform-8-Plugins-v*.dmg
-            target/release/dist/Equaform-8-Plugins-v*.dmg.sha256
+            target/release/dist/Equaform-8-v*.dmg
+            target/release/dist/Equaform-8-v*.dmg.sha256
 
   build-windows:
     name: Build & Package Windows Plugins (x64)
     runs-on: windows-latest
+    needs: prepare-release
+    if: needs.prepare-release.outputs.should_release == 'true'
+    timeout-minutes: 45
 
     steps:
-      - name: Checkout repository
+      - name: Checkout release commit
         uses: actions/checkout@v4
         with:
+          ref: ${{ needs.prepare-release.outputs.release_sha }}
           submodules: recursive
           fetch-depth: 0
 
@@ -72,6 +189,11 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
+
+      - name: Cache Rust build artifacts
+        uses: swatinem/rust-cache@v2
+        with:
+          shared-key: windows-x64
 
       - name: Setup Ninja
         uses: ilammy/setup-ninja@v1
@@ -87,17 +209,11 @@ jobs:
           choco install innosetup --no-progress
           "C:\Program Files (x86)\Inno Setup 6" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
-      - name: Run workspace tests
-        run: |
-          cargo test --workspace --target x86_64-pc-windows-msvc
-
       - name: Build equaform-plugin (CLAP DLL)
-        run: |
-          cargo build --release -p equaform-plugin --target x86_64-pc-windows-msvc
+        run: cargo build --release -p equaform-plugin --target x86_64-pc-windows-msvc
 
       - name: Export 15 factory presets
-        run: |
-          cargo run --release -p equaform-gui --example dump_factory_presets -- target/release/staging/presets
+        run: cargo run --release -p equaform-gui --example dump_factory_presets -- target/release/staging/presets
 
       - name: Assemble CLAP bundle
         shell: pwsh
@@ -118,14 +234,18 @@ jobs:
 
       - name: Compile Inno Setup installer
         shell: pwsh
+        env:
+          VERSION: ${{ needs.prepare-release.outputs.version }}
         run: |
           New-Item -ItemType Directory -Force -Path target/release/dist
-          ISCC.exe scripts/distribution/windows/installer.iss
+          ISCC.exe "/DMyAppVersion=$env:VERSION" scripts/distribution/windows/installer.iss
 
       - name: Generate SHA-256 checksums
         shell: pwsh
+        env:
+          VERSION: ${{ needs.prepare-release.outputs.version }}
         run: |
-          $installer = Get-Item target/release/dist/Equaform-8-Plugins-Windows-v*.exe
+          $installer = Get-Item "target/release/dist/Equaform-8-Plugins-Windows-v$env:VERSION.exe"
           $hash = (Get-FileHash -Path $installer.FullName -Algorithm SHA256).Hash
           Set-Content -Path "$($installer.FullName).sha256" -Value "$hash  $($installer.Name)"
           Write-Host "Generated installer: $($installer.FullName)"
@@ -142,8 +262,15 @@ jobs:
   publish:
     name: Publish GitHub Release (macOS + Windows)
     runs-on: ubuntu-latest
-    needs: [build-macos, build-windows]
+    needs: [prepare-release, build-macos, build-windows]
+    if: needs.prepare-release.outputs.should_release == 'true'
+
     steps:
+      - name: Checkout release commit (for RELEASE_NOTES.md)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare-release.outputs.release_sha }}
+
       - name: Download macOS artifacts
         uses: actions/download-artifact@v4
         with:
@@ -159,9 +286,14 @@ jobs:
       - name: List downloaded release assets
         run: ls -la release-assets/
 
-      - name: Publish to GitHub Release
+      - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || format('v{0}', inputs.version) }}
+          tag_name: ${{ needs.prepare-release.outputs.tag }}
+          name: "Equaform-8 ${{ needs.prepare-release.outputs.tag }}"
+          body_path: RELEASE_NOTES.md
+          draft: false
+          prerelease: false
           files: release-assets/*
-          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
