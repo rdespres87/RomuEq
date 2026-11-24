@@ -139,7 +139,7 @@ pub fn is_factory_preset(name: &str) -> bool {
     FACTORY_PRESETS.contains(&name)
 }
 
-/// Populates the preset manager with the 15 standard factory presets.
+/// Populates the preset manager with the 16 standard factory presets.
 pub fn populate_factory_presets(preset_manager: &mut PresetManager) {
     let mut add = |name: &str, configure: fn(&mut EqParameters)| {
         let mut params = EqParameters {

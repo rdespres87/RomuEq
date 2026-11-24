@@ -1568,7 +1568,7 @@ pub mod standalone {
             client.prepare(48000.0, 512, 2);
 
             // Populate built-in presets, load user presets from disk, and restore full saved state BEFORE starting audio
-            populate_factory_presets(&mut client);
+            initialize_client_presets(&mut client);
 
             let mut audio_stream = audio::AudioStream::new();
 
@@ -2000,140 +2000,8 @@ pub mod standalone {
         true
     }
 
-    fn populate_factory_presets(client: &mut EngineClient) {
-        let mut add = |name: &str, configure: fn(&mut equaform_common::EqParameters)| {
-            if let Some(ref mut eng) = client.engine {
-                let mut params = equaform_common::EqParameters {
-                    bands: default_8_bands(),
-                    ..Default::default()
-                };
-                configure(&mut params);
-                eng.set_parameters(params);
-                let _ = client.create_preset(name);
-            }
-        };
-
-        add("Flat", |_| {});
-        add("Bass Boost (+6 dB)", |p| {
-            p.bands[0].gain_db = 6.0;
-            p.bands[1].gain_db = 3.5;
-        });
-        add("Électro / EDM", |p| {
-            p.bands[0].gain_db = 5.5;
-            p.bands[1].gain_db = 4.0;
-            p.bands[3].gain_db = -2.5;
-            p.bands[5].gain_db = 1.5;
-            p.bands[7].gain_db = 4.5;
-        });
-        add("Rock / Metal", |p| {
-            p.bands[0].gain_db = 2.0;
-            p.bands[1].gain_db = 4.5;
-            p.bands[2].gain_db = -1.5;
-            p.bands[3].gain_db = -3.0;
-            p.bands[5].gain_db = 3.5;
-            p.bands[6].gain_db = 2.5;
-            p.bands[7].gain_db = 2.0;
-        });
-        add("Hip-Hop / R&B", |p| {
-            p.bands[0].gain_db = 7.0;
-            p.bands[1].gain_db = 4.5;
-            p.bands[2].gain_db = 1.0;
-            p.bands[3].gain_db = -2.0;
-            p.bands[5].gain_db = 1.5;
-            p.bands[7].gain_db = 3.0;
-        });
-        add("Jazz / Warmth", |p| {
-            p.bands[0].gain_db = 1.5;
-            p.bands[1].gain_db = 2.5;
-            p.bands[2].gain_db = 3.0;
-            p.bands[3].gain_db = 1.5;
-            p.bands[5].gain_db = -1.0;
-            p.bands[6].gain_db = -2.0;
-            p.bands[7].gain_db = -2.5;
-        });
-        add("Pop Moderne", |p| {
-            p.bands[0].gain_db = 4.0;
-            p.bands[1].gain_db = 3.0;
-            p.bands[3].gain_db = -2.0;
-            p.bands[4].gain_db = 1.0;
-            p.bands[5].gain_db = 2.5;
-            p.bands[6].gain_db = 3.0;
-            p.bands[7].gain_db = 4.0;
-        });
-        add("Acoustic Clarity", |p| {
-            p.bands[1].gain_db = -2.0;
-            p.bands[4].gain_db = 2.5;
-            p.bands[5].gain_db = 3.5;
-            p.bands[7].gain_db = 4.0;
-        });
-        add("Vocal Air", |p| {
-            p.bands[0].gain_db = -4.0;
-            p.bands[1].gain_db = -2.5;
-            p.bands[4].gain_db = 2.0;
-            p.bands[5].gain_db = 3.5;
-            p.bands[7].gain_db = 5.0;
-        });
-        add("Podcast / Voix", |p| {
-            p.bands[0].gain_db = -8.0;
-            p.bands[1].gain_db = -4.0;
-            p.bands[2].gain_db = -2.0;
-            p.bands[4].gain_db = 2.5;
-            p.bands[5].gain_db = 4.0;
-            p.bands[7].gain_db = 1.5;
-        });
-        add("Cinéma / Dialogues", |p| {
-            p.bands[0].gain_db = 5.0;
-            p.bands[1].gain_db = 2.0;
-            p.bands[3].gain_db = -2.5;
-            p.bands[4].gain_db = 2.0;
-            p.bands[5].gain_db = 3.5;
-            p.bands[7].gain_db = 2.0;
-        });
-        add("Gaming / FPS", |p| {
-            p.bands[0].gain_db = -6.0;
-            p.bands[1].gain_db = -3.0;
-            p.bands[2].gain_db = -1.5;
-            p.bands[4].gain_db = 3.0;
-            p.bands[5].gain_db = 5.0;
-            p.bands[6].gain_db = 4.0;
-            p.bands[7].gain_db = -2.0;
-        });
-        add("Casque Audiophile (Harman)", |p| {
-            p.bands[0].gain_db = 4.5;
-            p.bands[1].gain_db = 2.5;
-            p.bands[2].gain_db = -0.5;
-            p.bands[5].gain_db = 2.0;
-            p.bands[6].gain_db = 1.0;
-            p.bands[7].gain_db = 1.5;
-        });
-        add("Écoute Nocturne (Night Mode)", |p| {
-            p.bands[0].gain_db = -9.0;
-            p.bands[1].gain_db = -5.0;
-            p.bands[2].gain_db = -2.0;
-            p.bands[4].gain_db = 2.0;
-            p.bands[5].gain_db = 2.5;
-            p.bands[6].gain_db = -2.0;
-            p.bands[7].gain_db = -4.0;
-        });
-        add("Loudness", |p| {
-            p.bands[0].gain_db = 5.0;
-            p.bands[1].gain_db = 3.0;
-            p.bands[3].gain_db = -2.5;
-            p.bands[7].gain_db = 4.0;
-        });
-
-        // Load any user-saved presets from ~/.equaform/presets/
-        let presets_dir = user_config_dir().join("presets");
-        if let Ok(entries) = std::fs::read_dir(presets_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().and_then(|e| e.to_str()) == Some("req") {
-                    if let Some(p_str) = path.to_str() {
-                        let _ = client.load_preset_from_file(p_str);
-                    }
-                }
-            }
-        }
+    fn initialize_client_presets(client: &mut EngineClient) {
+        crate::presets_io::populate_factory_presets(&mut client.preset_manager);
 
         let initial_preset = load_last_active_preset_name()
             .filter(|n| client.preset_manager.get(n).is_some())
