@@ -150,6 +150,47 @@ impl BypassTransitionState {
     }
 }
 
+/// Click-free Band Solo crossfade state and pre-allocated planar mix buffer.
+///
+/// Tracks a continuous `mix` scalar in `[0.0, 1.0]` (`0.0` = normal EQ,
+/// `1.0` = solo audition) and preserves `active_mask` during fade-out so
+/// toggling solo off ramps down smoothly before clearing solo delay lines.
+pub(super) struct SoloTransitionState {
+    pub(super) target_solo: bool,
+    pub(super) mix: f32,
+    pub(super) active_mask: u8,
+    pub(super) mix_buffer: Box<[f32]>,
+}
+
+impl SoloTransitionState {
+    pub(super) fn new() -> Self {
+        Self {
+            target_solo: false,
+            mix: 0.0,
+            active_mask: 0,
+            mix_buffer: vec![0.0; FLAT_BUFFER_SIZE].into_boxed_slice(),
+        }
+    }
+
+    pub(super) fn reset(&mut self) {
+        self.target_solo = false;
+        self.mix = 0.0;
+        self.active_mask = 0;
+        self.mix_buffer.fill(0.0);
+    }
+
+    #[inline]
+    pub(super) fn update(&mut self, solo: bool, current_mask: u8, is_first_block: bool) {
+        if solo {
+            self.active_mask = current_mask;
+        }
+        self.target_solo = solo;
+        if is_first_block {
+            self.mix = if solo { 1.0 } else { 0.0 };
+        }
+    }
+}
+
 /// Pre-computed biquad coefficients and perceptual auto-gain cache.
 pub(super) struct CoefficientCache {
     pub(super) coeffs: [BiquadCoefficients; MAX_BANDS],
@@ -214,8 +255,8 @@ pub struct EngineLifecycle {
     /// Pre-allocated planar scratch buffer for parallel Band Solo audition summing
     /// (heap-allocated once in `new()` to keep stack footprint small; zero allocations in `process()`).
     solo_scratch: Box<[f32]>,
-    /// Tracks whether Band Solo was active on the previous block (for clean state reset).
-    solo_was_active: bool,
+    /// Click-free Band Solo crossfade state and pre-allocated planar mix buffer.
+    solo: SoloTransitionState,
     /// Current EQ parameters.
     eq_params: EqParameters,
     /// Number of blocks processed since last reset.
@@ -255,7 +296,7 @@ impl EngineLifecycle {
             delay_line: [0.0; DELAY_BUFFER_SIZE],
             solo_delay_line: [0.0; DELAY_BUFFER_SIZE],
             solo_scratch: vec![0.0; FLAT_BUFFER_SIZE].into_boxed_slice(),
-            solo_was_active: false,
+            solo: SoloTransitionState::new(),
             eq_params: EqParameters::default(),
             blocks_processed: 0,
             sample_offset: 0,
@@ -311,7 +352,7 @@ impl EngineLifecycle {
         self.delay_line.fill(0.0);
         self.solo_delay_line.fill(0.0);
         self.solo_scratch.fill(0.0);
-        self.solo_was_active = false;
+        self.solo.reset();
         self.bypass.reset();
 
         // Initialize the automation ingestor on prepare (not process) so it is
@@ -404,7 +445,7 @@ impl EngineLifecycle {
             self.delay_line.fill(0.0);
             self.solo_delay_line.fill(0.0);
             self.solo_scratch.fill(0.0);
-            self.solo_was_active = false;
+            self.solo.reset();
             self.blocks_processed = 0;
             self.sample_offset = 0;
             if let Some(ref mut ingestor) = self.automation_ingestor {
@@ -428,7 +469,7 @@ impl EngineLifecycle {
         self.delay_line.fill(0.0);
         self.solo_delay_line.fill(0.0);
         self.solo_scratch.fill(0.0);
-        self.solo_was_active = false;
+        self.solo.reset();
         self.blocks_processed = 0;
         self.sample_offset = 0;
         self.automation_ingestor = None;

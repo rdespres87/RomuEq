@@ -71,8 +71,9 @@ impl EngineLifecycle {
 
         self.process_dsp(block_size, &automation_provider);
 
-        let frame = AnalysisFrame::compute(
-            &self.buffer[..block_size * self.topology.channels],
+        let frame = AnalysisFrame::compute_planar(
+            &self.buffer,
+            self.topology.max_block_size,
             self.topology.channels,
             self.topology.sample_rate,
             block_size,
@@ -183,14 +184,29 @@ impl EngineLifecycle {
             self.apply_block_automation(block_size, sample_rate, provider, &mut block_coeffs);
         }
 
-        let solo_active = self.eq_params.any_band_solo();
-        if !solo_active && self.solo_was_active {
-            self.solo_delay_line.fill(0.0);
+        let mut solo_mask: u8 = 0;
+        for band_idx in 0..MAX_BANDS {
+            if self.eq_params.is_band_solo(band_idx) {
+                solo_mask |= 1 << band_idx;
+            }
         }
-        self.solo_was_active = solo_active;
+        let solo_now = solo_mask != 0;
+        self.solo
+            .update(solo_now, solo_mask, self.blocks_processed == 0);
 
-        let auto_comp_db = if self.eq_params.global.auto_gain && !solo_active {
-            self.coeff_cache.auto_gain_db
+        let solo_target = if self.solo.target_solo {
+            1.0_f32
+        } else {
+            0.0_f32
+        };
+        let solo_start = self.solo.mix;
+        let solo_ramping = (solo_start - solo_target).abs() > f32::EPSILON;
+        let run_solo = self.solo.target_solo || solo_ramping;
+        let run_normal = !self.solo.target_solo || solo_ramping;
+        let active_solo_mask = self.solo.active_mask;
+
+        let auto_comp_db = if self.eq_params.global.auto_gain {
+            self.coeff_cache.auto_gain_db * (1.0 - solo_start)
         } else {
             0.0
         };
@@ -219,68 +235,7 @@ impl EngineLifecycle {
             dry_left.copy_from_slice(left);
             dry_right.copy_from_slice(right);
 
-            if solo_active {
-                left.fill(0.0);
-                right.fill(0.0);
-                let (scratch_l_buf, scratch_r_buf) = self.solo_scratch.split_at_mut(max_block);
-                let scratch_l = &mut scratch_l_buf[..block_size];
-                let scratch_r = &mut scratch_r_buf[..block_size];
-
-                for (band_idx, solo_coeffs) in self.coeff_cache.solo_coeffs.iter().enumerate() {
-                    if !self.eq_params.is_band_solo(band_idx) {
-                        continue;
-                    }
-                    let routing = self.eq_params.band_routing(band_idx);
-                    scratch_l.copy_from_slice(dry_left);
-                    scratch_r.copy_from_slice(dry_right);
-                    let band_delay_offset = band_idx * 2 * DELAY_SAMPLES_PER_STAGE;
-                    let (delay_l_slice, delay_r_slice) = self.solo_delay_line
-                        [band_delay_offset..band_delay_offset + 2 * DELAY_SAMPLES_PER_STAGE]
-                        .split_at_mut(DELAY_SAMPLES_PER_STAGE);
-                    if let (Ok(delay_l), Ok(delay_r)) = (
-                        <&mut [f32; 4]>::try_from(delay_l_slice),
-                        <&mut [f32; 4]>::try_from(delay_r_slice),
-                    ) {
-                        match routing {
-                            BandRouting::Stereo => {
-                                process_stereo_planar_in_place(
-                                    scratch_l,
-                                    scratch_r,
-                                    solo_coeffs,
-                                    delay_l,
-                                    delay_r,
-                                );
-                            }
-                            BandRouting::Left => {
-                                process_mono_in_place(scratch_l, solo_coeffs, delay_l);
-                                scratch_r.fill(0.0);
-                            }
-                            BandRouting::Right => {
-                                scratch_l.fill(0.0);
-                                process_mono_in_place(scratch_r, solo_coeffs, delay_r);
-                            }
-                            BandRouting::Mid => {
-                                lr_to_ms_in_place(scratch_l, scratch_r);
-                                process_mono_in_place(scratch_l, solo_coeffs, delay_l);
-                                scratch_r.fill(0.0);
-                                ms_to_lr_in_place(scratch_l, scratch_r);
-                            }
-                            BandRouting::Side => {
-                                lr_to_ms_in_place(scratch_l, scratch_r);
-                                scratch_l.fill(0.0);
-                                process_mono_in_place(scratch_r, solo_coeffs, delay_r);
-                                ms_to_lr_in_place(scratch_l, scratch_r);
-                            }
-                        }
-                    }
-                    for (dst, &src) in left.iter_mut().zip(scratch_l.iter()) {
-                        *dst += src;
-                    }
-                    for (dst, &src) in right.iter_mut().zip(scratch_r.iter()) {
-                        *dst += src;
-                    }
-                }
-            } else {
+            if run_normal {
                 let mut has_ms_band = false;
                 for (band_idx, coeffs) in block_coeffs.iter().enumerate() {
                     if !self.eq_params.bands[band_idx].enabled {
@@ -349,6 +304,49 @@ impl EngineLifecycle {
                 }
             }
 
+            if run_solo {
+                let (scratch_l_buf, scratch_r_buf) = self.solo_scratch.split_at_mut(max_block);
+                let scratch_l = &mut scratch_l_buf[..block_size];
+                let scratch_r = &mut scratch_r_buf[..block_size];
+
+                if solo_ramping {
+                    let (solo_l_buf, solo_r_buf) = self.solo.mix_buffer.split_at_mut(max_block);
+                    let solo_l = &mut solo_l_buf[..block_size];
+                    let solo_r = &mut solo_r_buf[..block_size];
+                    render_stereo_solo_audition(
+                        StereoSoloIo {
+                            out_l: solo_l,
+                            out_r: solo_r,
+                            dry_l: dry_left,
+                            dry_r: dry_right,
+                            scratch_l,
+                            scratch_r,
+                        },
+                        active_solo_mask,
+                        &self.coeff_cache.solo_coeffs,
+                        &self.eq_params,
+                        &mut self.solo_delay_line,
+                    );
+                    apply_bypass_crossfade(left, solo_l, solo_start, solo_target, step);
+                    apply_bypass_crossfade(right, solo_r, solo_start, solo_target, step);
+                } else {
+                    render_stereo_solo_audition(
+                        StereoSoloIo {
+                            out_l: left,
+                            out_r: right,
+                            dry_l: dry_left,
+                            dry_r: dry_right,
+                            scratch_l,
+                            scratch_r,
+                        },
+                        active_solo_mask,
+                        &self.coeff_cache.solo_coeffs,
+                        &self.eq_params,
+                        &mut self.solo_delay_line,
+                    );
+                }
+            }
+
             if output_gain_linear != 1.0 {
                 for (l, r) in left.iter_mut().zip(right.iter_mut()) {
                     *l *= output_gain_linear;
@@ -372,27 +370,7 @@ impl EngineLifecycle {
 
                 dry_samples.copy_from_slice(samples);
 
-                if solo_active {
-                    samples.fill(0.0);
-                    let scratch = &mut self.solo_scratch[buffer_offset..buffer_offset + block_size];
-                    for (band_idx, solo_coeffs) in self.coeff_cache.solo_coeffs.iter().enumerate() {
-                        if !self.eq_params.is_band_solo(band_idx) {
-                            continue;
-                        }
-                        scratch.copy_from_slice(dry_samples);
-                        let delay_offset =
-                            band_idx * self.topology.channels * DELAY_SAMPLES_PER_STAGE
-                                + ch_idx * DELAY_SAMPLES_PER_STAGE;
-                        let delay_slice = &mut self.solo_delay_line
-                            [delay_offset..delay_offset + DELAY_SAMPLES_PER_STAGE];
-                        if let Ok(delay) = <&mut [f32; 4]>::try_from(delay_slice) {
-                            process_mono_in_place(scratch, solo_coeffs, delay);
-                        }
-                        for (dst, &src) in samples.iter_mut().zip(scratch.iter()) {
-                            *dst += src;
-                        }
-                    }
-                } else {
+                if run_normal {
                     for (band_idx, coeffs) in block_coeffs.iter().enumerate() {
                         if !self.eq_params.bands[band_idx].enabled {
                             continue;
@@ -408,6 +386,40 @@ impl EngineLifecycle {
                     }
                 }
 
+                if run_solo {
+                    let scratch = &mut self.solo_scratch[buffer_offset..buffer_offset + block_size];
+                    if solo_ramping {
+                        let solo_out =
+                            &mut self.solo.mix_buffer[buffer_offset..buffer_offset + block_size];
+                        render_mono_solo_audition(
+                            MonoSoloIo {
+                                out: solo_out,
+                                dry: dry_samples,
+                                scratch,
+                                ch_idx,
+                                channels: self.topology.channels,
+                            },
+                            active_solo_mask,
+                            &self.coeff_cache.solo_coeffs,
+                            &mut self.solo_delay_line,
+                        );
+                        apply_bypass_crossfade(samples, solo_out, solo_start, solo_target, step);
+                    } else {
+                        render_mono_solo_audition(
+                            MonoSoloIo {
+                                out: samples,
+                                dry: dry_samples,
+                                scratch,
+                                ch_idx,
+                                channels: self.topology.channels,
+                            },
+                            active_solo_mask,
+                            &self.coeff_cache.solo_coeffs,
+                            &mut self.solo_delay_line,
+                        );
+                    }
+                }
+
                 if output_gain_linear != 1.0 {
                     samples.iter_mut().for_each(|s| *s *= output_gain_linear);
                 }
@@ -420,6 +432,20 @@ impl EngineLifecycle {
             }
         }
 
+        if solo_ramping {
+            let delta = step * block_size as f32;
+            self.solo.mix = if solo_start < solo_target {
+                (solo_start + delta).min(solo_target)
+            } else {
+                (solo_start - delta).max(solo_target)
+            };
+        }
+        if !self.solo.target_solo && self.solo.mix <= f32::EPSILON {
+            self.solo.mix = 0.0;
+            self.solo.active_mask = 0;
+            self.solo_delay_line.fill(0.0);
+        }
+
         if is_ramping {
             let delta = step * block_size as f32;
             self.bypass.mix = if start_mix < target_mix {
@@ -427,6 +453,118 @@ impl EngineLifecycle {
             } else {
                 (start_mix - delta).max(target_mix)
             };
+        }
+    }
+}
+
+/// Borrowed planar slices for stereo Band Solo audition rendering.
+struct StereoSoloIo<'a> {
+    out_l: &'a mut [f32],
+    out_r: &'a mut [f32],
+    dry_l: &'a [f32],
+    dry_r: &'a [f32],
+    scratch_l: &'a mut [f32],
+    scratch_r: &'a mut [f32],
+}
+
+/// Borrowed slices and channel metadata for mono/multi-channel Band Solo rendering.
+struct MonoSoloIo<'a> {
+    out: &'a mut [f32],
+    dry: &'a [f32],
+    scratch: &'a mut [f32],
+    ch_idx: usize,
+    channels: usize,
+}
+
+/// Render parallel stereo Band Solo audition into `io.out_l` / `io.out_r` from dry input.
+fn render_stereo_solo_audition(
+    io: StereoSoloIo<'_>,
+    active_mask: u8,
+    solo_coeffs: &[BiquadCoefficients; MAX_BANDS],
+    eq_params: &equaform_common::EqParameters,
+    solo_delay_line: &mut [f32],
+) {
+    io.out_l.fill(0.0);
+    io.out_r.fill(0.0);
+
+    for (band_idx, coeffs) in solo_coeffs.iter().enumerate() {
+        if (active_mask & (1 << band_idx)) == 0 {
+            continue;
+        }
+        let routing = eq_params.band_routing(band_idx);
+        io.scratch_l.copy_from_slice(io.dry_l);
+        io.scratch_r.copy_from_slice(io.dry_r);
+        let band_delay_offset = band_idx * 2 * DELAY_SAMPLES_PER_STAGE;
+        let (delay_l_slice, delay_r_slice) = solo_delay_line
+            [band_delay_offset..band_delay_offset + 2 * DELAY_SAMPLES_PER_STAGE]
+            .split_at_mut(DELAY_SAMPLES_PER_STAGE);
+        if let (Ok(delay_l), Ok(delay_r)) = (
+            <&mut [f32; 4]>::try_from(delay_l_slice),
+            <&mut [f32; 4]>::try_from(delay_r_slice),
+        ) {
+            match routing {
+                BandRouting::Stereo => {
+                    process_stereo_planar_in_place(
+                        io.scratch_l,
+                        io.scratch_r,
+                        coeffs,
+                        delay_l,
+                        delay_r,
+                    );
+                }
+                BandRouting::Left => {
+                    process_mono_in_place(io.scratch_l, coeffs, delay_l);
+                    io.scratch_r.fill(0.0);
+                }
+                BandRouting::Right => {
+                    io.scratch_l.fill(0.0);
+                    process_mono_in_place(io.scratch_r, coeffs, delay_r);
+                }
+                BandRouting::Mid => {
+                    lr_to_ms_in_place(io.scratch_l, io.scratch_r);
+                    process_mono_in_place(io.scratch_l, coeffs, delay_l);
+                    io.scratch_r.fill(0.0);
+                    ms_to_lr_in_place(io.scratch_l, io.scratch_r);
+                }
+                BandRouting::Side => {
+                    lr_to_ms_in_place(io.scratch_l, io.scratch_r);
+                    io.scratch_l.fill(0.0);
+                    process_mono_in_place(io.scratch_r, coeffs, delay_r);
+                    ms_to_lr_in_place(io.scratch_l, io.scratch_r);
+                }
+            }
+        }
+        for (dst, &src) in io.out_l.iter_mut().zip(io.scratch_l.iter()) {
+            *dst += src;
+        }
+        for (dst, &src) in io.out_r.iter_mut().zip(io.scratch_r.iter()) {
+            *dst += src;
+        }
+    }
+}
+
+/// Render parallel mono/multi-channel Band Solo audition into `io.out` from `io.dry`.
+fn render_mono_solo_audition(
+    io: MonoSoloIo<'_>,
+    active_mask: u8,
+    solo_coeffs: &[BiquadCoefficients; MAX_BANDS],
+    solo_delay_line: &mut [f32],
+) {
+    io.out.fill(0.0);
+    for (band_idx, coeffs) in solo_coeffs.iter().enumerate() {
+        if (active_mask & (1 << band_idx)) == 0 {
+            continue;
+        }
+        io.scratch.copy_from_slice(io.dry);
+        let delay_offset =
+            band_idx * io.channels * DELAY_SAMPLES_PER_STAGE + io.ch_idx * DELAY_SAMPLES_PER_STAGE;
+        let delay_slice =
+            &mut solo_delay_line[delay_offset..delay_offset + DELAY_SAMPLES_PER_STAGE];
+        if let Ok(delay) = <&mut [f32; 4]>::try_from(delay_slice) {
+            process_mono_in_place(io.scratch, coeffs, delay);
+        }
+        for (dst, &src) in io.out.iter_mut().zip(io.scratch.iter()) {
+            *dst += src;
         }
     }
 }

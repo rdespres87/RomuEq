@@ -1530,3 +1530,57 @@ fn test_left_only_band_isolates_right_channel() {
     }
     assert!(solo_test_rms(&ol) > 3.0 * solo_test_rms(&sig[..256]));
 }
+
+#[test]
+fn test_solo_toggle_is_click_free() {
+    let mut eng = Box::new(EngineLifecycle::new());
+    eng.prepare(48_000.0, 64, 2);
+
+    let mut params = EqParameters::default();
+    params.bands[0].frequency_hz = 100.0;
+    params.bands[0].q = 2.0;
+    eng.set_parameters(params);
+
+    let sr = 48_000.0;
+    let block = 64usize;
+    let total_blocks = 30usize;
+    let mut out_l_all = Vec::with_capacity(total_blocks * block);
+    let mut out_r_all = Vec::with_capacity(total_blocks * block);
+
+    let mut in_block = vec![0.0_f32; block];
+    let mut out_l = vec![0.0_f32; block];
+    let mut out_r = vec![0.0_f32; block];
+
+    for b in 0..total_blocks {
+        if b == 10 {
+            params.set_band_solo(0, true);
+            eng.set_parameters(params);
+        } else if b == 20 {
+            params.set_band_solo(0, false);
+            eng.set_parameters(params);
+        }
+
+        for (i, sample) in in_block.iter_mut().enumerate() {
+            let t = (b * block + i) as f32 / sr;
+            *sample = 0.5 * (2.0 * std::f32::consts::PI * 1000.0 * t).sin();
+        }
+
+        assert!(eng.process(&[&in_block, &in_block], &mut [&mut out_l, &mut out_r]));
+        out_l_all.extend_from_slice(&out_l);
+        out_r_all.extend_from_slice(&out_r);
+    }
+
+    let max_step_l = out_l_all
+        .windows(2)
+        .map(|w| (w[1] - w[0]).abs())
+        .fold(0.0_f32, f32::max);
+    let max_step_r = out_r_all
+        .windows(2)
+        .map(|w| (w[1] - w[0]).abs())
+        .fold(0.0_f32, f32::max);
+
+    assert!(
+        max_step_l <= 0.20 && max_step_r <= 0.20,
+        "solo toggle produced discontinuity: max_step_l={max_step_l}, max_step_r={max_step_r}"
+    );
+}
