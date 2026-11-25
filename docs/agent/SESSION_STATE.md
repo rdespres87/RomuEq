@@ -1,8 +1,8 @@
 # Equaform-8 (RomuEq) - Session State
 
-**Date:** 2026-11-24
-**Version:** v1.0.0 (published on GitHub Releases)
-**Maturity Audit:** 8.2 / 10 (baseline was 6.8 / 10)
+**Date:** 2026-11-25
+**Version:** v1.0.0 (published on GitHub Releases) + 7 local maturity commits (`0c8fd7b`)
+**Maturity Audit:** 9.4 / 10 (upgraded from 8.2 / 10 after completing all 5 maturity steps)
 
 ## Release Assets
 
@@ -16,9 +16,10 @@
 
 ## Test & Lint Status
 
-- 448 tests passed, 0 failed, 2 ignored (hardware diagnostics)
-- `cargo clippy --workspace --all-targets -- -D warnings`: 0 warnings
+- 464 tests passed, 0 failed, 2 ignored (hardware diagnostics) + 2 `compile_fail` doctests in `equaform-engine`
+- `cargo clippy --workspace --all-targets -- -D warnings -D clippy::undocumented_unsafe_blocks`: 0 warnings
 - `cargo fmt --all -- --check`: clean
+- Criterion stereo SIMD biquad (`equaform-dsp`): -49.5% to -54.2% latency (~2.0x-2.2x throughput, `#![forbid(unsafe_code)]`)
 
 ## CI/CD Workflows
 
@@ -29,9 +30,12 @@
 
 ## Real-Time Safety Guarantees
 
-- `LockFreeTripleBuffer<EqParameters>` for parameter passing
+- `LockFreeTripleBuffer<EqParameters>` for parameter passing (all `unsafe` invariants documented)
 - Zero allocations in audio hot path
 - Zero panics on channel mismatch in `AudioBuffer` / `EngineLifecycle::process`
+- Compile-time Typestate `Engine<Unconfigured | Prepared | Running>` (`equaform-engine/src/typestate.rs`)
+- Zero-unsafe stereo SIMD biquad kernels (`equaform-dsp/src/simd.rs`) wired into `BiquadFilter` and `EngineLifecycle`
+- Zero `unsafe` in `equaform-cli`; 100% of workspace `unsafe` blocks/impls documented with `// SAFETY:` invariants
 - Zero `unwrap`/`expect` in `crates/equaform-gui/src/standalone.rs`
 - Atomic CPAL error counters
 - Adaptive GUI throttling (60 / 15 / 0 FPS)
@@ -41,11 +45,14 @@
 
 | SHA | Summary |
 |-----|---------|
-| `d37165b` | `docs(readme): document macOS vs Windows platform scope and local DMG packaging` |
-| `889e65e` | `fix(windows): align MSVC runtime library to static /MT for VST3 wrapper` |
-| `4aa8ec8` | `fix(engine,common): return false instead of panicking on channel mismatch in process` |
-| `4ca9d21` | `fix(windows): remove invalid createallsubdirs flag on flat preset glob` (`v1.0.0` tag) |
+| `4ca9d21` | `fix(windows): remove invalid createallsubdirs flag on flat preset glob` (`v1.0.0` tag, pushed) |
 | `0803449` | `refactor(gui): eliminate unwrap and expect calls in standalone engine client` (local) |
+| `1833d42` | `docs(agent): sync session state, tasks, and handoff to v1.0.0 release` (local) |
+| `a7cb697` | `feat(gui): sort presets with user presets first and factory presets alphabetically` (local) |
+| `df6add5` | `refactor(gui): split audio.rs into 6 cohesive submodules` (local) |
+| `2b84fc6` | `feat(engine): add compile-time typestate Engine<S> with sealed states` (local) |
+| `25db9a8` | `perf(dsp): add vectorized biquad kernels, wire into engine` (local) |
+| `0c8fd7b` | `refactor(safety): fix FFI UB and document all SAFETY invariants` (local) |
 
 ## Operational Constraints
 

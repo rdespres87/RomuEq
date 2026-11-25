@@ -105,7 +105,13 @@
   - [x] Eliminate real-time audio hot-path `panic!()` on channel mismatch in `AudioBuffer` and `EngineLifecycle::process` (`4aa8ec8`)
   - [x] Eliminate all 5 `unwrap()`/`expect()` calls in `crates/equaform-gui/src/standalone.rs` (`0803449`)
   - [x] Synchronize `docs/agent/{SESSION_STATE,TASKS,HANDOFF}.md` to `v1.0.0` state
-- [ ] P2 Maturity Roadmap (8.2 -> 9.5/10):
-  - [ ] Modularize oversized files (`audio.rs`, `state.rs`, `parameter.rs`, `equaform-plugin/src/lib.rs`, `standalone.rs`)
-  - [ ] Audit and document `// SAFETY:` invariants across `unsafe` blocks
-  - [ ] Evaluate Typestate `Engine<State>`, SIMD biquad vectorization, and DSP Pro features (Mid/Side, Band Solo, Linear-phase EQ)
+- [x] P2 Maturity Roadmap (8.2 -> 9.4/10):
+  - [x] Sort presets with user presets first and factory presets alphabetically (`a7cb697`)
+  - [x] Modularize `crates/equaform-gui/src/audio.rs` (1,701 L) into 6 cohesive submodules (`df6add5`)
+  - [x] Implement compile-time Typestate `Engine<Unconfigured | Prepared | Running>` with sealed states and `compile_fail` doctests (`2b84fc6`)
+  - [x] Implement zero-unsafe stereo SIMD biquad kernels (`StereoLane`) wired into `BiquadFilter` and `EngineLifecycle`, validated via Criterion (-49.5% to -54.2% latency, `25db9a8`)
+  - [x] Exhaustive `// SAFETY:` audit across all workspace `unsafe` blocks/impls, eliminate CLI `unsafe`, fix CoreAudio NUL-termination & CLAP `ostream`/`istream` null-guard UB risks (`0c8fd7b`, 0 warnings under `clippy::undocumented_unsafe_blocks`)
+- [ ] Optional Next Milestone (v1.1.0 Candidates):
+  - [ ] Modularize remaining >1000 LOC files (`state.rs`, `parameter.rs`, `equaform-plugin/src/lib.rs`, `standalone.rs`)
+  - [ ] DSP Pro features (Mid/Side processing, Band Solo, Linear-phase EQ mode)
+  - [ ] Push local maturity commits to `origin/main` when ready for CI/v1.1.0 release
