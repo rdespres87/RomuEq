@@ -467,6 +467,8 @@ pub use i18n::{Language, Translations};
 pub mod preset_manager;
 pub use preset_manager::{NamedPreset, PresetManager, PresetManagerError};
 
+pub mod ab_compare;
+pub use ab_compare::{AbCompareState, AbSlot};
 pub mod presets_io;
 pub mod workspace_ui;
 pub use presets_io::*;

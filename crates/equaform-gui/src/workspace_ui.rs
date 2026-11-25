@@ -6,6 +6,7 @@
 
 use equaform_common::{BandParameters, MAX_BANDS, ParamId};
 
+use crate::ab_compare::{AbCompareState, AbSlot};
 use crate::i18n::{Language, Translations};
 use crate::preset_manager::PresetManager;
 use crate::presets_io::{is_factory_preset, partition_and_sort_presets};
@@ -71,6 +72,8 @@ pub struct WorkspaceUiState {
     pub language: Language,
     /// Dirty-flag cache for the interactive EQ frequency response curves.
     pub curve_cache: EqCurveCache,
+    /// A/B comparison slot state (persisted across UI frames, shared by Standalone & DAW plugins).
+    pub ab_compare: AbCompareState,
 }
 
 /// Context parameters required to render the Equaform workspace UI.
@@ -143,6 +146,62 @@ pub fn render_workspace(
             .clicked()
         {
             batch.push(ParamId(1), if is_bypassed { 0.0 } else { 1.0 });
+        }
+
+        ui.separator();
+
+        // Compact A/B compare toggle + copy active to inactive slot
+        state.ab_compare.ensure_initialized(snapshot);
+        let active_slot = state.ab_compare.active();
+        let a_active = active_slot == AbSlot::A;
+        let b_active = active_slot == AbSlot::B;
+
+        let a_btn = egui::Button::new(egui::RichText::new("A").strong().color(if a_active {
+            egui::Color32::from_rgb(16, 20, 26)
+        } else {
+            egui::Color32::from_rgb(175, 180, 190)
+        }))
+        .fill(if a_active {
+            egui::Color32::from_rgb(0, 205, 255)
+        } else {
+            egui::Color32::from_rgb(42, 46, 54)
+        })
+        .min_size(egui::vec2(22.0, 18.0));
+        if ui.add(a_btn).on_hover_text("Compare Slot A").clicked() {
+            state.ab_compare.switch_to(AbSlot::A, snapshot, &mut batch);
+        }
+
+        let b_btn = egui::Button::new(egui::RichText::new("B").strong().color(if b_active {
+            egui::Color32::from_rgb(16, 20, 26)
+        } else {
+            egui::Color32::from_rgb(175, 180, 190)
+        }))
+        .fill(if b_active {
+            egui::Color32::from_rgb(255, 165, 50)
+        } else {
+            egui::Color32::from_rgb(42, 46, 54)
+        })
+        .min_size(egui::vec2(22.0, 18.0));
+        if ui.add(b_btn).on_hover_text("Compare Slot B").clicked() {
+            state.ab_compare.switch_to(AbSlot::B, snapshot, &mut batch);
+        }
+
+        if ui
+            .add(
+                egui::Button::new(
+                    egui::RichText::new(active_slot.copy_label())
+                        .small()
+                        .color(egui::Color32::from_rgb(195, 200, 210)),
+                )
+                .min_size(egui::vec2(34.0, 18.0)),
+            )
+            .on_hover_text(format!(
+                "Copy current EQ settings ({})",
+                active_slot.copy_label()
+            ))
+            .clicked()
+        {
+            state.ab_compare.copy_active_to_other(snapshot);
         }
 
         ui.separator();
