@@ -170,6 +170,32 @@ pub fn atomic_write(path: impl AsRef<Path>, data: &[u8]) -> std::io::Result<()> 
     Ok(())
 }
 
+/// Upper bound for text files read through `read_to_string_bounded` (16 MiB).
+pub const MAX_TEXT_FILE_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Reads a UTF-8 text file into a `String`, enforcing a byte-level size cap.
+///
+/// The read is TOCTOU-safe: the file is opened once and bounded with
+/// `std::io::Read::take`, rejecting any file exceeding `max_bytes`.
+pub fn read_to_string_bounded(path: impl AsRef<Path>, max_bytes: u64) -> std::io::Result<String> {
+    use std::io::Read;
+
+    let file = std::fs::File::open(path)?;
+    let mut limited = file.take(max_bytes.saturating_add(1));
+    let mut bytes = Vec::new();
+    limited.read_to_end(&mut bytes)?;
+
+    if bytes.len() as u64 > max_bytes {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("file exceeds maximum allowed size of {max_bytes} bytes"),
+        ));
+    }
+
+    String::from_utf8(bytes)
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))
+}
+
 // ===========================================================================
 // Bounds-checked binary cursor
 // ===========================================================================
@@ -1338,5 +1364,29 @@ mod tests {
         for json in bad_jsons {
             assert!(Preset::from_json(json).is_err());
         }
+    }
+
+    #[test]
+    fn test_read_to_string_bounded_enforces_limit_and_utf8()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = std::env::temp_dir().join(format!("equaform_bounded_{}", std::process::id()));
+        std::fs::create_dir_all(&dir)?;
+
+        let exact_path = dir.join("exact.txt");
+        atomic_write(&exact_path, b"abcd")?;
+        assert_eq!(read_to_string_bounded(&exact_path, 4)?, "abcd");
+
+        let over_path = dir.join("over.txt");
+        atomic_write(&over_path, b"abcde")?;
+        let over_err = read_to_string_bounded(&over_path, 4).unwrap_err();
+        assert_eq!(over_err.kind(), std::io::ErrorKind::InvalidData);
+
+        let utf8_path = dir.join("invalid_utf8.txt");
+        atomic_write(&utf8_path, &[0xFF, 0xFE, 0xFD])?;
+        let utf8_err = read_to_string_bounded(&utf8_path, 16).unwrap_err();
+        assert_eq!(utf8_err.kind(), std::io::ErrorKind::InvalidData);
+
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
     }
 }

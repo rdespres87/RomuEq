@@ -161,8 +161,11 @@ impl PresetManager {
 
     /// Import a preset from a JSON file on disk, validating all parameters.
     pub fn import_from_json_file(&mut self, path: &str) -> Result<NamedPreset, PresetManagerError> {
-        let json = std::fs::read_to_string(path)
-            .map_err(|e| PresetManagerError::IoError(format!("read '{path}': {e}")))?;
+        let json = equaform_common::state::read_to_string_bounded(
+            path,
+            equaform_common::state::MAX_TEXT_FILE_BYTES,
+        )
+        .map_err(|e| PresetManagerError::IoError(format!("read '{path}': {e}")))?;
 
         let mut preset = Preset::from_json(&json)?;
         // Strip read-only telemetry parameter ID 6 (auto-gain compensation readout) if present

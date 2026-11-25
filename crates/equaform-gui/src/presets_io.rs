@@ -101,10 +101,13 @@ pub fn save_last_active_preset_name(name: &str) {
 /// Loads the last active preset name from `~/.romueq/last_preset.txt`.
 pub fn load_last_active_preset_name() -> Option<String> {
     let path = user_config_dir().join("last_preset.txt");
-    std::fs::read_to_string(path)
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+    equaform_common::state::read_to_string_bounded(
+        path,
+        equaform_common::state::MAX_TEXT_FILE_BYTES,
+    )
+    .ok()
+    .map(|s| s.trim().to_string())
+    .filter(|s| !s.is_empty())
 }
 
 /// Standard factory preset names (including localized aliases).

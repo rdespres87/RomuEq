@@ -535,10 +535,13 @@ fn save_selected_output_device(dev: &str) {
 
 fn load_saved_output_device() -> Option<String> {
     let path = user_config_dir().join("last_output_device.txt");
-    std::fs::read_to_string(path)
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+    equaform_common::state::read_to_string_bounded(
+        path,
+        equaform_common::state::MAX_TEXT_FILE_BYTES,
+    )
+    .ok()
+    .map(|s| s.trim().to_string())
+    .filter(|s| !s.is_empty())
 }
 
 fn save_complete_app_state(client: &EngineClient) {

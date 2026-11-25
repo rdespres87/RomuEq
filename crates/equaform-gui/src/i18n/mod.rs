@@ -70,10 +70,13 @@ impl Language {
 
     /// Load a language preference from the given file path, defaulting to English.
     pub fn load_from_path(path: &Path) -> Self {
-        std::fs::read_to_string(path)
-            .ok()
-            .and_then(|content| Self::from_code(&content))
-            .unwrap_or_default()
+        equaform_common::state::read_to_string_bounded(
+            path,
+            equaform_common::state::MAX_TEXT_FILE_BYTES,
+        )
+        .ok()
+        .and_then(|content| Self::from_code(&content))
+        .unwrap_or_default()
     }
 
     /// Save the language preference atomically to the given file path, creating parent directories if needed.
