@@ -18,12 +18,14 @@ use std::ffi::{CStr, c_char};
 #[allow(dead_code)]
 pub struct EquaformGui(RawExtension<PluginExtensionSide, clap_plugin_gui>);
 
+// SAFETY: `CLAP_EXT_GUI` matches `clap_plugin_gui` on the plugin side.
 unsafe impl Extension for EquaformGui {
     const IDENTIFIERS: &[&CStr] = &[CLAP_EXT_GUI];
     type ExtensionSide = PluginExtensionSide;
 
     #[inline]
     unsafe fn from_raw(raw: RawExtension<Self::ExtensionSide>) -> Self {
+        // SAFETY: Caller guarantees `raw` points to a valid `clap_plugin_gui` struct.
         Self(unsafe { raw.cast() })
     }
 }
@@ -38,6 +40,7 @@ pub trait EquaformGuiImplementation {
     fn hide_ui(&mut self) -> bool;
 }
 
+// SAFETY: `IMPLEMENTATION` provides a static `clap_plugin_gui` vtable matching the CLAP ABI.
 unsafe impl<P: Plugin> ExtensionImplementation<P> for EquaformGui
 where
     for<'a> P::MainThread<'a>: EquaformGuiImplementation,
@@ -70,6 +73,7 @@ unsafe extern "C" fn is_api_supported(
     if api.is_null() || is_floating {
         return false;
     }
+    // SAFETY: `api` is non-null and guaranteed NUL-terminated by the CLAP host.
     unsafe {
         let req = CStr::from_ptr(api);
         #[cfg(target_os = "macos")]
@@ -95,6 +99,7 @@ unsafe extern "C" fn get_preferred_api(
     if api.is_null() || is_floating.is_null() {
         return false;
     }
+    // SAFETY: `api` and `is_floating` were checked non-null and are writable host out-pointers.
     unsafe {
         #[cfg(target_os = "macos")]
         {
@@ -121,6 +126,7 @@ unsafe extern "C" fn create<P: Plugin>(
 where
     for<'a> P::MainThread<'a>: EquaformGuiImplementation,
 {
+    // SAFETY: `plugin` is a valid `clap_plugin` instance owned by the CLAP host on the main thread.
     unsafe {
         PluginWrapper::<P>::handle(plugin, |p| {
             if p.main_thread().as_mut().create_ui(is_floating) {
@@ -139,6 +145,7 @@ unsafe extern "C" fn destroy<P: Plugin>(plugin: *const clap_plugin)
 where
     for<'a> P::MainThread<'a>: EquaformGuiImplementation,
 {
+    // SAFETY: `plugin` is a valid `clap_plugin` instance owned by the CLAP host on the main thread.
     unsafe {
         let _ = PluginWrapper::<P>::handle(plugin, |p| {
             p.main_thread().as_mut().destroy_ui();
@@ -159,6 +166,7 @@ unsafe extern "C" fn get_size(
     if width.is_null() || height.is_null() {
         return false;
     }
+    // SAFETY: `width` and `height` were checked non-null and are writable host out-pointers.
     unsafe {
         *width = 1180;
         *height = 485;
@@ -177,6 +185,7 @@ unsafe extern "C" fn get_resize_hints(
     if hints.is_null() {
         return false;
     }
+    // SAFETY: `hints` was checked non-null and points to a valid writable `clap_gui_resize_hints`.
     unsafe {
         let h = &mut *hints;
         h.can_resize_horizontally = false;
@@ -196,6 +205,7 @@ unsafe extern "C" fn adjust_size(
     if width.is_null() || height.is_null() {
         return false;
     }
+    // SAFETY: `width` and `height` were checked non-null and are writable host out-pointers.
     unsafe {
         *width = 1180;
         *height = 485;
@@ -214,6 +224,7 @@ unsafe extern "C" fn set_parent<P: Plugin>(
 where
     for<'a> P::MainThread<'a>: EquaformGuiImplementation,
 {
+    // SAFETY: `plugin` and `window` are valid CLAP host pointers on the main thread.
     unsafe {
         PluginWrapper::<P>::handle(plugin, |p| {
             if p.main_thread().as_mut().set_parent(window) {
@@ -241,6 +252,7 @@ unsafe extern "C" fn show<P: Plugin>(plugin: *const clap_plugin) -> bool
 where
     for<'a> P::MainThread<'a>: EquaformGuiImplementation,
 {
+    // SAFETY: `plugin` is a valid `clap_plugin` instance owned by the CLAP host on the main thread.
     unsafe {
         PluginWrapper::<P>::handle(plugin, |p| {
             if p.main_thread().as_mut().show_ui() {
@@ -259,6 +271,7 @@ unsafe extern "C" fn hide<P: Plugin>(plugin: *const clap_plugin) -> bool
 where
     for<'a> P::MainThread<'a>: EquaformGuiImplementation,
 {
+    // SAFETY: `plugin` is a valid `clap_plugin` instance owned by the CLAP host on the main thread.
     unsafe {
         PluginWrapper::<P>::handle(plugin, |p| {
             if p.main_thread().as_mut().hide_ui() {

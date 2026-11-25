@@ -47,7 +47,9 @@ fn get_device_name(device_id: u32) -> Option<String> {
         m_element: 0,
     };
     let mut buf = [0 as c_char; 256];
-    let mut size = buf.len() as u32;
+    let mut size = (buf.len() - 1) as u32;
+    // SAFETY: `addr` and `size` are valid stack locals, and `buf` is a writable 256-byte
+    // buffer with `size <= 255` so the trailing byte remains NUL.
     let status = unsafe {
         AudioObjectGetPropertyData(
             device_id,
@@ -59,6 +61,8 @@ fn get_device_name(device_id: u32) -> Option<String> {
         )
     };
     if status == 0 {
+        buf[buf.len() - 1] = 0;
+        // SAFETY: `buf` is initialized and guaranteed NUL-terminated at `buf[255]`.
         let cstr = unsafe { CStr::from_ptr(buf.as_ptr()) };
         cstr.to_str().ok().map(|s| s.trim().to_string())
     } else {
@@ -73,6 +77,7 @@ fn list_devices() -> Vec<(u32, String)> {
         m_element: 0,
     };
     let mut size: u32 = 0;
+    // SAFETY: `addr` and `size` are valid stack pointers; qualifier is null with size 0.
     let status = unsafe {
         AudioObjectGetPropertyDataSize(SYSTEM_OBJECT, &addr, 0, std::ptr::null(), &mut size)
     };
@@ -81,6 +86,7 @@ fn list_devices() -> Vec<(u32, String)> {
     }
     let count = size as usize / std::mem::size_of::<u32>();
     let mut ids = vec![0u32; count];
+    // SAFETY: `ids` has `count * size_of::<u32>()` bytes allocated, matching `size`.
     let status = unsafe {
         AudioObjectGetPropertyData(
             SYSTEM_OBJECT,
@@ -107,6 +113,7 @@ pub fn get_device_sample_rate(device_id: u32) -> Option<f64> {
     };
     let mut sr: f64 = 0.0;
     let mut size = std::mem::size_of::<f64>() as u32;
+    // SAFETY: `sr` is a valid aligned `f64` out-pointer matching `size == size_of::<f64>()`.
     let status = unsafe {
         AudioObjectGetPropertyData(
             device_id,
@@ -140,6 +147,7 @@ pub fn get_default_output_sample_rate() -> Option<f64> {
     };
     let mut dev_id: u32 = 0;
     let mut size = std::mem::size_of::<u32>() as u32;
+    // SAFETY: `dev_id` is a valid aligned `u32` out-pointer matching `size == size_of::<u32>()`.
     let status = unsafe {
         AudioObjectGetPropertyData(
             SYSTEM_OBJECT,
@@ -172,6 +180,7 @@ pub fn sync_virtual_input_rate(target_sr: f64) {
         if l.contains("equaform") || l == "romueq" {
             if let Some(cur) = get_device_sample_rate(id) {
                 if (cur - target_sr).abs() > 1.0 {
+                    // SAFETY: `target_sr` is a valid aligned `f64` pointer matching `size`.
                     let _ = unsafe {
                         AudioObjectSetPropertyData(
                             id,
@@ -213,6 +222,7 @@ pub fn restore_macos_default_output(target_name: &str) {
             m_element: 0,
         };
         let size = std::mem::size_of::<u32>() as u32;
+        // SAFETY: `dev_id` is a valid aligned `u32` pointer matching `size == size_of::<u32>()`.
         let _ = unsafe {
             AudioObjectSetPropertyData(
                 SYSTEM_OBJECT,

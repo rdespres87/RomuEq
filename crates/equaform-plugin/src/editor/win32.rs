@@ -37,6 +37,8 @@ mod windows {
 
     fn ensure_wndclass_registered() {
         static ONCE: std::sync::Once = std::sync::Once::new();
+        // SAFETY: Called once via `std::sync::Once`; `CLASS_NAME` is static NUL-terminated UTF-16
+        // and `win32_wndproc` is a valid `extern "system"` window procedure.
         ONCE.call_once(|| unsafe {
             let h_instance = GetModuleHandleW(ptr::null());
             let wndclass = WNDCLASSEXW {
@@ -77,6 +79,8 @@ mod windows {
             let raw_window = RawWindowHandle::Win32(Win32WindowHandle::new(non_zero_hwnd));
             let raw_display = RawDisplayHandle::Windows(WindowsDisplayHandle::new());
 
+            // SAFETY: `hwnd` is a valid Win32 child window owned by `Win32Editor`, which destroys
+            // it and clears `GWLP_USERDATA` in `destroy()` before dropping `Win32EditorRuntime`.
             let wgpu = unsafe {
                 WgpuSurfaceHost::new(
                     wgpu::Backends::PRIMARY,
@@ -108,11 +112,13 @@ mod windows {
         }
 
         fn update_dpi(&mut self) {
+            // SAFETY: `self.hwnd` is a live Win32 window handle owned by `Win32Editor`.
             let dpi = unsafe { GetDpiForWindow(self.hwnd) };
             let new_scale = if dpi > 0 { dpi as f32 / 96.0 } else { 1.0 };
             self.state.egui_ctx.set_pixels_per_point(new_scale);
             let new_width = (EDITOR_WIDTH as f32 * new_scale).round() as u32;
             let new_height = (EDITOR_HEIGHT as f32 * new_scale).round() as u32;
+            // SAFETY: `self.hwnd` is a valid Win32 window handle; `SWP_NOMOVE | SWP_NOZORDER` ignores position/insert-after.
             unsafe {
                 SetWindowPos(
                     self.hwnd,
@@ -128,6 +134,7 @@ mod windows {
         }
 
         fn update_modifiers(&mut self) {
+            // SAFETY: `GetKeyState` is a stateless Win32 query on virtual key codes.
             unsafe {
                 let ctrl = (GetKeyState(VK_CONTROL as i32) as u16 & 0x8000) != 0;
                 let shift = (GetKeyState(VK_SHIFT as i32) as u16 & 0x8000) != 0;
@@ -153,6 +160,7 @@ mod windows {
             self.update_modifiers();
             if !self.mouse_in_window {
                 self.mouse_in_window = true;
+                // SAFETY: `tme` is a properly sized `TRACKMOUSEEVENT` referencing live `self.hwnd`.
                 unsafe {
                     let mut tme = TRACKMOUSEEVENT {
                         cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
@@ -252,14 +260,20 @@ mod windows {
         wparam: WPARAM,
         lparam: LPARAM,
     ) -> LRESULT {
+        // SAFETY: `hwnd` is the window receiving this Win32 message; `GWLP_USERDATA` holds either 0
+        // or the live `Box<Win32EditorRuntime>` pointer stored by `Win32Editor::set_parent`.
         let ptr = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Win32EditorRuntime };
         if ptr.is_null() {
+            // SAFETY: Standard Win32 default message dispatch for valid `(hwnd, msg, wparam, lparam)`.
             return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
         }
+        // SAFETY: `ptr` is non-null, points to `Win32Editor::runtime` which is exclusively accessed
+        // on the UI thread, and is cleared to 0 in `WM_DESTROY` before the box is dropped.
         let runtime = unsafe { &mut *ptr };
 
         match msg {
             WM_PAINT => {
+                // SAFETY: `ps` is a POD `PAINTSTRUCT` initialized by `BeginPaint` and paired with `EndPaint`.
                 unsafe {
                     let mut ps = std::mem::zeroed();
                     BeginPaint(hwnd, &mut ps);
@@ -269,9 +283,12 @@ mod windows {
                 0
             }
             WM_TIMER => {
+                // SAFETY: `hwnd` is a valid Win32 window handle; `root_hwnd` is checked non-null before `IsIconic`.
                 let root_hwnd = unsafe { GetAncestor(hwnd, GA_ROOT) };
+                // SAFETY: `hwnd` is a valid Win32 window handle.
                 let is_visible = unsafe { IsWindowVisible(hwnd) != 0 };
                 let is_iconic = if !root_hwnd.is_null() {
+                    // SAFETY: `root_hwnd` was checked non-null above.
                     unsafe { IsIconic(root_hwnd) != 0 }
                 } else {
                     false
@@ -282,6 +299,7 @@ mod windows {
                     return 0; // 0 FPS
                 }
 
+                // SAFETY: `GetForegroundWindow` takes no arguments and returns a handle or null.
                 let fg_hwnd = unsafe { GetForegroundWindow() };
                 let is_focused = fg_hwnd == root_hwnd || fg_hwnd == hwnd;
                 let is_active =
@@ -316,6 +334,7 @@ mod windows {
                 0
             }
             WM_LBUTTONDOWN => {
+                // SAFETY: `hwnd` is a valid Win32 window handle on the UI thread.
                 unsafe {
                     SetFocus(hwnd);
                     SetCapture(hwnd);
@@ -324,6 +343,7 @@ mod windows {
                 0
             }
             WM_LBUTTONUP => {
+                // SAFETY: Releases mouse capture acquired on `WM_LBUTTONDOWN` on the UI thread.
                 unsafe {
                     ReleaseCapture();
                 }
@@ -331,6 +351,7 @@ mod windows {
                 0
             }
             WM_RBUTTONDOWN => {
+                // SAFETY: `hwnd` is a valid Win32 window handle on the UI thread.
                 unsafe {
                     SetFocus(hwnd);
                     SetCapture(hwnd);
@@ -339,6 +360,7 @@ mod windows {
                 0
             }
             WM_RBUTTONUP => {
+                // SAFETY: Releases mouse capture acquired on `WM_RBUTTONDOWN` on the UI thread.
                 unsafe {
                     ReleaseCapture();
                 }
@@ -373,12 +395,15 @@ mod windows {
                 0
             }
             WM_DESTROY => {
+                // SAFETY: `hwnd` is being destroyed on the UI thread; stopping the timer and clearing
+                // `GWLP_USERDATA` prevents any subsequent message from dereferencing `runtime`.
                 unsafe {
                     KillTimer(hwnd, TIMER_ID);
                     SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
                 }
                 0
             }
+            // SAFETY: Standard Win32 default message dispatch for unhandled messages.
             _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
         }
     }
@@ -417,6 +442,8 @@ mod windows {
             if window.is_null() || !self.created {
                 return false;
             }
+            // SAFETY: Caller guarantees `window` is a valid CLAP host `clap_window` pointer;
+            // `api` and `parent_hwnd` are checked non-null before Win32 child window creation.
             unsafe {
                 let api = (*window).api;
                 if api.is_null() {
@@ -482,6 +509,7 @@ mod windows {
 
         fn show(&mut self) -> bool {
             if !self.child_hwnd.is_null() {
+                // SAFETY: `self.child_hwnd` is a live child window owned by `self`.
                 unsafe { ShowWindow(self.child_hwnd, SW_SHOW) };
                 true
             } else {
@@ -491,6 +519,7 @@ mod windows {
 
         fn hide(&mut self) -> bool {
             if !self.child_hwnd.is_null() {
+                // SAFETY: `self.child_hwnd` is a live child window owned by `self`.
                 unsafe { ShowWindow(self.child_hwnd, SW_HIDE) };
                 true
             } else {
@@ -500,6 +529,8 @@ mod windows {
 
         fn destroy(&mut self) {
             if !self.child_hwnd.is_null() {
+                // SAFETY: `self.child_hwnd` is a live child window owned by `self`; `DestroyWindow`
+                // triggers `WM_DESTROY` which clears `GWLP_USERDATA` before `self.runtime` is dropped.
                 unsafe {
                     KillTimer(self.child_hwnd, TIMER_ID);
                     DestroyWindow(self.child_hwnd);

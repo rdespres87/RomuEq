@@ -52,7 +52,8 @@ pub mod macos_impl {
         let fd = SIGNAL_PIPE_WRITE_FD.load(Ordering::Relaxed);
         if fd >= 0 {
             let byte = (sig & 0xFF) as u8;
-            // POSIX guarantees `write` on a pipe fd is async-signal-safe.
+            // SAFETY: POSIX guarantees `write` on a valid pipe fd is async-signal-safe,
+            // and `&byte` points to a 1-byte stack local.
             unsafe {
                 let _ = write(fd, &byte as *const u8, 1);
             }
@@ -60,6 +61,8 @@ pub mod macos_impl {
     }
 
     fn register_posix_signal_handlers() {
+        // SAFETY: `handle_termination_signal` is an `extern "C"` function that performs
+        // only async-signal-safe atomic load and POSIX `write`.
         unsafe {
             let _ = signal(SIGINT, handle_termination_signal);
             let _ = signal(SIGTERM, handle_termination_signal);
@@ -72,6 +75,7 @@ pub mod macos_impl {
     pub fn install_signal_handlers() {
         SIGNAL_HANDLER_INIT.call_once(|| {
             let mut fds = [-1i32; 2];
+            // SAFETY: `fds` is a valid writable 2-element `i32` array matching POSIX `pipe(int[2])`.
             if unsafe { pipe(fds.as_mut_ptr()) } == 0 {
                 let read_fd = fds[0];
                 let write_fd = fds[1];
@@ -81,8 +85,11 @@ pub mod macos_impl {
                     .spawn(move || {
                         loop {
                             let mut byte = 0u8;
+                            // SAFETY: `read_fd` is an open pipe descriptor owned by this thread
+                            // and `&mut byte` is a valid 1-byte writable stack buffer.
                             let n = unsafe { read(read_fd, &mut byte as *mut u8, 1) };
                             if n > 0 {
+                                // SAFETY: `read_fd` is owned exclusively by this thread and closed once.
                                 unsafe {
                                     let _ = close(read_fd);
                                 }
@@ -99,6 +106,7 @@ pub mod macos_impl {
                                 std::process::exit(code);
                             }
                             if n == 0 {
+                                // SAFETY: `read_fd` is owned exclusively by this thread and closed once.
                                 unsafe {
                                     let _ = close(read_fd);
                                 }
@@ -157,6 +165,7 @@ pub mod macos_impl {
         let mut device_id: u32 = 0;
         let mut size = std::mem::size_of::<u32>() as u32;
 
+        // SAFETY: `device_id` is a valid aligned `u32` out-pointer matching `size == size_of::<u32>()`.
         let status = unsafe {
             AudioObjectGetPropertyData(
                 SYSTEM_OBJECT,
@@ -178,6 +187,7 @@ pub mod macos_impl {
     /// Set the macOS system default output device ID.
     pub fn set_default_output_device(device_id: u32) -> Result<(), String> {
         let size = std::mem::size_of::<u32>() as u32;
+        // SAFETY: `device_id` is a valid aligned `u32` pointer matching `size == size_of::<u32>()`.
         let status = unsafe {
             AudioObjectSetPropertyData(
                 SYSTEM_OBJECT,
@@ -207,8 +217,10 @@ pub mod macos_impl {
         };
 
         let mut name_buffer = [0 as c_char; 256];
-        let mut size = name_buffer.len() as u32;
+        let mut size = (name_buffer.len() - 1) as u32;
 
+        // SAFETY: `address` and `size` are valid stack locals; `name_buffer` is writable
+        // with `size <= 255` so the final byte remains NUL.
         let status = unsafe {
             AudioObjectGetPropertyData(
                 device_id,
@@ -221,6 +233,8 @@ pub mod macos_impl {
         };
 
         if status == 0 {
+            name_buffer[name_buffer.len() - 1] = 0;
+            // SAFETY: `name_buffer` is initialized and guaranteed NUL-terminated at index 255.
             let cstr = unsafe { CStr::from_ptr(name_buffer.as_ptr()) };
             cstr.to_str().ok().map(|s| s.trim().to_string())
         } else {
@@ -231,6 +245,7 @@ pub mod macos_impl {
     /// List all audio devices available in the system as (id, name).
     pub fn list_audio_devices() -> Vec<(u32, String)> {
         let mut size: u32 = 0;
+        // SAFETY: `PROPERTY_DEVICES` and `size` are valid pointers; qualifier is null with size 0.
         let status = unsafe {
             AudioObjectGetPropertyDataSize(
                 SYSTEM_OBJECT,
@@ -248,6 +263,7 @@ pub mod macos_impl {
         let count = size as usize / std::mem::size_of::<u32>();
         let mut device_ids = vec![0u32; count];
 
+        // SAFETY: `device_ids` has `count * size_of::<u32>()` bytes allocated, matching `size`.
         let status = unsafe {
             AudioObjectGetPropertyData(
                 SYSTEM_OBJECT,
@@ -288,6 +304,7 @@ pub mod macos_impl {
             mElement: 0,
         };
         let mut size: u32 = 0;
+        // SAFETY: `addr` and `size` are valid stack pointers; qualifier is null with size 0.
         let status = unsafe {
             AudioObjectGetPropertyDataSize(device_id, &addr, 0, std::ptr::null(), &mut size)
         };
@@ -344,6 +361,7 @@ pub mod macos_impl {
             mElement: 0,
         };
         let size = std::mem::size_of::<f64>() as u32;
+        // SAFETY: `sample_rate` is a valid aligned `f64` pointer matching `size == size_of::<f64>()`.
         let status = unsafe {
             AudioObjectSetPropertyData(
                 device_id,
@@ -370,6 +388,7 @@ pub mod macos_impl {
         };
         let mut sr: f64 = 0.0;
         let mut size = std::mem::size_of::<f64>() as u32;
+        // SAFETY: `sr` is a valid aligned `f64` out-pointer matching `size == size_of::<f64>()`.
         let status = unsafe {
             AudioObjectGetPropertyData(
                 device_id,
@@ -500,6 +519,8 @@ pub mod macos_impl {
                 routing_active: false,
             };
 
+            // SAFETY: `restore_on_process_exit` is an `extern "C"` function with no parameters
+            // that safely restores CoreAudio output on normal process exit.
             unsafe {
                 let _ = atexit(restore_on_process_exit);
             }
@@ -692,6 +713,7 @@ mod tests {
                 };
                 let mut sr: f64 = 0.0;
                 let mut size = std::mem::size_of::<f64>() as u32;
+                // SAFETY: `sr` is a valid aligned `f64` out-pointer matching `size == size_of::<f64>()`.
                 let status = unsafe {
                     AudioObjectGetPropertyData(
                         *id,

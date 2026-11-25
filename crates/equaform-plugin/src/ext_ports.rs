@@ -17,16 +17,19 @@ use std::ffi::{CStr, c_char};
 #[allow(dead_code)]
 pub struct EquaformAudioPorts(RawExtension<PluginExtensionSide, clap_plugin_audio_ports>);
 
+// SAFETY: `CLAP_EXT_AUDIO_PORTS` matches `clap_plugin_audio_ports` on the plugin side.
 unsafe impl Extension for EquaformAudioPorts {
     const IDENTIFIERS: &[&CStr] = &[CLAP_EXT_AUDIO_PORTS];
     type ExtensionSide = PluginExtensionSide;
 
     #[inline]
     unsafe fn from_raw(raw: RawExtension<Self::ExtensionSide>) -> Self {
+        // SAFETY: Caller guarantees `raw` points to a valid `clap_plugin_audio_ports` struct.
         Self(unsafe { raw.cast() })
     }
 }
 
+// SAFETY: `IMPLEMENTATION` provides a static `clap_plugin_audio_ports` vtable matching the CLAP ABI.
 unsafe impl<P: Plugin> ExtensionImplementation<P> for EquaformAudioPorts {
     const IMPLEMENTATION: RawExtensionImplementation =
         RawExtensionImplementation::new(&clap_plugin_audio_ports {
@@ -49,6 +52,7 @@ unsafe extern "C" fn get(
         return false;
     }
 
+    // SAFETY: `info` was checked non-null above and is a valid writable pointer provided by the CLAP host.
     unsafe {
         let inf = &mut *info;
         inf.id = if is_input { 0 } else { 1 };

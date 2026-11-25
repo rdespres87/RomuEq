@@ -165,15 +165,8 @@ pub fn process_file(
             .collect();
 
         let mut block_output = vec![0.0; channels * block_size];
-
-        let mut block_output_slices: Vec<&mut [f32]> = (0..channels)
-            .map(|ch| {
-                let start = ch * block_size;
-                let ptr = unsafe { block_output.as_mut_ptr().add(start) };
-                // Safety: ptr is valid for `block_size` elements; block_output outlives the slices
-                unsafe { std::slice::from_raw_parts_mut(ptr, block_size) }
-            })
-            .collect();
+        let mut block_output_slices: Vec<&mut [f32]> =
+            block_output.chunks_exact_mut(block_size).collect();
 
         let success = engine.process(&input_slices, &mut block_output_slices);
         if !success {

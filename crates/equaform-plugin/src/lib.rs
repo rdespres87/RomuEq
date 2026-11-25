@@ -354,6 +354,7 @@ impl EquaformParamsImplementation for EquaformShared {
         if out.is_null() {
             return;
         }
+        // SAFETY: Caller guarantees `out` is a valid `clap_output_events` pointer from the CLAP host.
         unsafe {
             let Some(try_push) = (*out).try_push else {
                 return;
@@ -457,6 +458,8 @@ impl<'a> EquaformMainThread<'a> {
         if let Some(host) = &self.host {
             let raw = host.as_raw();
             if let Some(get_ext) = raw.get_extension {
+                // SAFETY: `raw` is a valid `clap_host` handle; `CLAP_EXT_PARAMS` is NUL-terminated;
+                // `ptr` is checked non-null before dereferencing its `rescan` callback.
                 unsafe {
                     let ptr = get_ext(raw, CLAP_EXT_PARAMS.as_ptr()) as *const clap_host_params;
                     if !ptr.is_null() {
@@ -485,6 +488,7 @@ impl EquaformParamsImplementation for EquaformMainThread<'_> {
         let shared_wrapper = EquaformShared {
             inner: Arc::clone(&self.shared),
         };
+        // SAFETY: Caller guarantees `out` is a valid `clap_output_events` pointer from the CLAP host.
         unsafe { shared_wrapper.flush_pending_shared(out) };
     }
 }
@@ -499,6 +503,7 @@ impl EquaformGuiImplementation for EquaformMainThread<'_> {
     }
 
     unsafe fn set_parent(&mut self, window: *const clap_window) -> bool {
+        // SAFETY: Caller guarantees `window` is a valid `clap_window` pointer from the CLAP host.
         unsafe { self.editor.set_parent(window) }
     }
 
@@ -982,19 +987,21 @@ impl DefaultPluginFactory for EquaformPlugin {
 }
 
 // ---------------------------------------------------------------------------
-// CLAP State extension (versioned envelope per ADR-006)
+// CLAP State extension (versioned JSON envelope)
 // ---------------------------------------------------------------------------
 
 #[derive(Copy, Clone)]
 #[allow(dead_code)]
 pub struct EquaformState(RawExtension<PluginExtensionSide, clap_plugin_state>);
 
+// SAFETY: `CLAP_EXT_STATE` matches `clap_plugin_state` on the plugin side.
 unsafe impl Extension for EquaformState {
     const IDENTIFIERS: &[&CStr] = &[CLAP_EXT_STATE];
     type ExtensionSide = PluginExtensionSide;
 
     #[inline]
     unsafe fn from_raw(raw: RawExtension<Self::ExtensionSide>) -> Self {
+        // SAFETY: Caller guarantees `raw` points to a valid `clap_plugin_state` struct.
         Self(unsafe { raw.cast() })
     }
 }
@@ -1004,6 +1011,7 @@ pub trait EquaformStateImplementation {
     fn load(&mut self, load: &mut InputStream) -> Result<(), PluginError>;
 }
 
+// SAFETY: `IMPLEMENTATION` provides a static `clap_plugin_state` vtable matching the CLAP ABI.
 unsafe impl<P: Plugin> ExtensionImplementation<P> for EquaformState
 where
     for<'a> P::MainThread<'a>: EquaformStateImplementation,
@@ -1022,6 +1030,10 @@ unsafe extern "C" fn save<P: Plugin>(
 where
     for<'a> P::MainThread<'a>: EquaformStateImplementation,
 {
+    if ostream.is_null() {
+        return false;
+    }
+    // SAFETY: `plugin` and non-null `ostream` are valid CLAP host pointers on the main thread.
     unsafe {
         PluginWrapper::<P>::handle(plugin, |p| {
             let output = OutputStream::from_raw_mut(&mut *(ostream as *mut _));
@@ -1039,6 +1051,10 @@ unsafe extern "C" fn load<P: Plugin>(
 where
     for<'a> P::MainThread<'a>: EquaformStateImplementation,
 {
+    if istream.is_null() {
+        return false;
+    }
+    // SAFETY: `plugin` and non-null `istream` are valid CLAP host pointers on the main thread.
     unsafe {
         PluginWrapper::<P>::handle(plugin, |p| {
             let input = InputStream::from_raw_mut(&mut *(istream as *mut _));

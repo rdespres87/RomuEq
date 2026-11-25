@@ -1,7 +1,7 @@
 //! Wait-free, zero-allocation Lock-Free Triple Buffer.
 //!
-//! Conforming to ADR-007, this module provides a bounded, single-producer single-consumer
-//! triple buffer designed for real-time audio parameter exchange.
+//! Provides a bounded, single-producer single-consumer triple buffer designed
+//! for real-time audio parameter exchange.
 //!
 //! - Producer (GUI thread): Wait-free $O(1)$ write via atomic swap.
 //! - Consumer (Audio thread): Wait-free $O(1)$ read via atomic CAS.
@@ -26,7 +26,11 @@ struct TripleBufferShared<T> {
     state: AtomicU8,
 }
 
+// SAFETY: `TripleBufferShared<T>` grants mutually exclusive slot ownership via atomic state
+// transitions so no two threads ever concurrently access the same `UnsafeCell<T>` slot.
 unsafe impl<T: Send> Send for TripleBufferShared<T> {}
+// SAFETY: Shared references only touch `state: AtomicU8` or disjoint slots owned exclusively
+// by the single producer or single consumer, with `AcqRel`/`Acquire` synchronization.
 unsafe impl<T: Send> Sync for TripleBufferShared<T> {}
 
 /// Producer handle for the lock-free triple buffer (typically owned by the GUI thread).
@@ -35,6 +39,8 @@ pub struct TripleBufferProducer<T> {
     producer_idx: usize,
 }
 
+// SAFETY: `TripleBufferProducer<T>` is the sole writer to its exclusive `producer_idx` slot
+// and transfers `T: Send` values to the consumer via atomic release semantics.
 unsafe impl<T: Send> Send for TripleBufferProducer<T> {}
 
 /// Consumer handle for the lock-free triple buffer (typically owned by the audio callback thread).
@@ -43,6 +49,8 @@ pub struct TripleBufferConsumer<T> {
     consumer_idx: usize,
 }
 
+// SAFETY: `TripleBufferConsumer<T>` is the sole reader of its exclusive `consumer_idx` slot
+// and acquires published `T: Send` values via atomic acquire semantics.
 unsafe impl<T: Send> Send for TripleBufferConsumer<T> {}
 
 /// Creates a new single-producer single-consumer lock-free triple buffer initialized with `initial`.
@@ -79,6 +87,8 @@ impl<T: Copy> TripleBufferProducer<T> {
     #[inline]
     pub fn publish(&mut self, value: T) {
         // 1. Write value into exclusive producer slot
+        // SAFETY: `self.producer_idx` is in `0..3` and exclusively owned by this single producer
+        // until the subsequent `AcqRel` swap publishes it.
         unsafe {
             *self.shared.slots[self.producer_idx].get() = value;
         }
@@ -118,6 +128,8 @@ impl<T: Copy> TripleBufferConsumer<T> {
             ) {
                 Ok(_) => {
                     self.consumer_idx = shared_idx;
+                    // SAFETY: The `AcqRel` CAS transferred exclusive ownership of `shared_idx`
+                    // (in `0..3`) to this single consumer and synchronized with the producer's write.
                     let val = unsafe { *self.shared.slots[self.consumer_idx].get() };
                     return Some(val);
                 }
@@ -131,6 +143,8 @@ impl<T: Copy> TripleBufferConsumer<T> {
     /// Read the current value residing in the consumer slot without polling for updates.
     #[inline]
     pub fn current_copy(&self) -> T {
+        // SAFETY: `self.consumer_idx` (in `0..3`) is exclusively owned by this consumer
+        // and never written by the producer while held here.
         unsafe { *self.shared.slots[self.consumer_idx].get() }
     }
 }

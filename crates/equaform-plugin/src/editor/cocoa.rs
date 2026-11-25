@@ -199,6 +199,8 @@ mod macos {
                             }
                             "v" => {
                                 let pb = NSPasteboard::generalPasteboard();
+                                // SAFETY: `NSPasteboardTypeString` is a static Cocoa extern symbol
+                                // and `pb` is a valid main-thread `NSPasteboard` instance.
                                 let pasted = unsafe {
                                     pb.stringForType(NSPasteboardTypeString)
                                         .map(|s| s.to_string())
@@ -272,6 +274,8 @@ mod macos {
             );
             let this = mtm.alloc::<Self>();
             let this = this.set_ivars(ViewIvars { runtime });
+            // SAFETY: `this` is freshly allocated on the main thread with initialized ivars;
+            // `initWithFrame:` is the designated `NSView` initializer.
             let view: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: rect] };
             view.setWantsLayer(true);
             parent.addSubview(&view);
@@ -284,6 +288,8 @@ mod macos {
                 | NSTrackingAreaOptions::ActiveAlways
                 | NSTrackingAreaOptions::InVisibleRect;
             let rect = self.bounds();
+            // SAFETY: `self` is a live main-thread `NSView` and `NSTrackingArea::alloc()` returns
+            // a freshly allocated uninitialized instance for `initWithRect:options:owner:userInfo:`.
             let area = unsafe {
                 NSTrackingArea::initWithRect_options_owner_userInfo(
                     NSTrackingArea::alloc(),
@@ -397,6 +403,8 @@ mod macos {
             let raw_window = RawWindowHandle::AppKit(AppKitWindowHandle::new(ns_view_ptr));
             let raw_display = RawDisplayHandle::AppKit(AppKitDisplayHandle::new());
 
+            // SAFETY: `view` is retained by `CocoaEditor` and `teardown_view` drops `EditorRuntime`
+            // (and its `WgpuSurfaceHost`) before removing or releasing `view`.
             let wgpu = unsafe {
                 WgpuSurfaceHost::new(
                     wgpu::Backends::METAL,
@@ -511,6 +519,7 @@ mod macos {
             // Tear down any previous view/timer if re-parented
             self.teardown_view();
 
+            // SAFETY: `parent_nsview` was checked non-null and is a host-owned `NSView*` valid on the main thread.
             let parent_view: &NSView = unsafe { &*(parent_nsview as *const NSView) };
 
             self.alive.store(true, Ordering::Release);
@@ -565,8 +574,11 @@ mod macos {
                 }
             });
 
+            // SAFETY: Called on the main thread (`mtm` verified above); `block` captures only weak/atomic handles.
             let timer =
                 unsafe { NSTimer::timerWithTimeInterval_repeats_block(1.0 / 60.0, true, &block) };
+            // SAFETY: `NSRunLoopCommonModes` is a static Cocoa constant and `timer` is retained by `self.timer`
+            // and invalidated in `teardown_view` before drop.
             unsafe {
                 let run_loop = NSRunLoop::currentRunLoop();
                 run_loop.addTimer_forMode(&timer, NSRunLoopCommonModes);
@@ -629,6 +641,8 @@ mod macos {
             if window.is_null() {
                 return false;
             }
+            // SAFETY: Caller guarantees `window` is a valid CLAP host `clap_window` pointer;
+            // `api` is checked non-null and compared to `CLAP_WINDOW_API_COCOA` before reading `specific.cocoa`.
             unsafe {
                 let api = (*window).api;
                 if api.is_null() {

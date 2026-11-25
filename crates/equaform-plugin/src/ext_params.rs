@@ -23,12 +23,14 @@ use crate::params_map::{PARAM_COUNT, get_param_meta};
 #[allow(dead_code)]
 pub struct EquaformParams(RawExtension<PluginExtensionSide, clap_plugin_params>);
 
+// SAFETY: `CLAP_EXT_PARAMS` matches `clap_plugin_params` on the plugin side.
 unsafe impl Extension for EquaformParams {
     const IDENTIFIERS: &[&CStr] = &[CLAP_EXT_PARAMS];
     type ExtensionSide = PluginExtensionSide;
 
     #[inline]
     unsafe fn from_raw(raw: RawExtension<Self::ExtensionSide>) -> Self {
+        // SAFETY: Caller guarantees `raw` points to a valid `clap_plugin_params` struct.
         Self(unsafe { raw.cast() })
     }
 }
@@ -41,6 +43,7 @@ pub trait EquaformParamsImplementation {
     unsafe fn flush_pending_shared(&self, out: *const clap_output_events);
 }
 
+// SAFETY: `IMPLEMENTATION` provides a static `clap_plugin_params` vtable matching the CLAP ABI.
 unsafe impl<P: Plugin> ExtensionImplementation<P> for EquaformParams
 where
     for<'a> P::MainThread<'a>: EquaformParamsImplementation,
@@ -73,6 +76,7 @@ unsafe extern "C" fn get_info(
         return false;
     };
 
+    // SAFETY: `param_info` was checked non-null and is a writable pointer from the CLAP host.
     unsafe {
         let info = &mut *param_info;
         info.id = meta.id;
@@ -111,6 +115,7 @@ where
     if out_value.is_null() {
         return false;
     }
+    // SAFETY: `plugin` is a valid host-owned `clap_plugin` and `out_value` is a non-null writable `f64`.
     unsafe {
         PluginWrapper::<P>::handle(plugin, |p| {
             let mt = p.main_thread().as_ref();
@@ -189,6 +194,7 @@ unsafe extern "C" fn value_to_text(
 
     let bytes = text.as_bytes();
     let len = bytes.len().min(out_buffer_capacity as usize - 1);
+    // SAFETY: `out_buffer` is non-null with capacity >= `len + 1` bytes provided by the CLAP host.
     unsafe {
         for (i, &b) in bytes.iter().enumerate().take(len) {
             *out_buffer.add(i) = b as c_char;
@@ -208,6 +214,7 @@ unsafe extern "C" fn text_to_value(
     if param_value_text.is_null() || out_value.is_null() {
         return false;
     }
+    // SAFETY: `param_value_text` is a non-null NUL-terminated host string and `out_value` is writable.
     unsafe {
         let cstr = CStr::from_ptr(param_value_text);
         let Ok(s) = cstr.to_str() else {
@@ -296,6 +303,7 @@ unsafe extern "C" fn flush<P: Plugin>(
     for<'a> P::MainThread<'a>: EquaformParamsImplementation,
     for<'a> P::Shared<'a>: EquaformParamsImplementation,
 {
+    // SAFETY: `plugin`, `in_`, and `out` (when non-null) are valid CLAP host pointers for this flush call.
     unsafe {
         let _ = PluginWrapper::<P>::handle(plugin, |p| {
             let shared = p.shared();

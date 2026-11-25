@@ -145,6 +145,8 @@ impl WgpuSurfaceHost {
             ..Default::default()
         });
 
+        // SAFETY: Caller guarantees `raw_display_handle` and `raw_window_handle` remain valid
+        // for the entire lifetime of the returned `WgpuSurfaceHost`.
         let surface = unsafe {
             instance
                 .create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
