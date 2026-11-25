@@ -80,6 +80,10 @@ pub fn eq_to_param_snapshot(eq: &EqParameters, auto_gain_comp_db: f32) -> ParamS
         param_id: ParamId(global::AUTO_GAIN_COMPENSATION_DB),
         value: auto_gain_comp_db,
     });
+    vals.push(ParamValue {
+        param_id: ParamId(global::AUTO_GAIN_MODE),
+        value: eq.global.auto_gain_mode.to_raw() as f32,
+    });
 
     for (i, b) in eq.bands.iter().enumerate().take(MAX_BANDS) {
         let base = 100 + (i as u32) * 100;
@@ -530,7 +534,7 @@ impl SharedEditorState {
     ) -> egui::FullOutput {
         let eq = self.shared.read_eq_parameters();
         let auto_gain_comp_db = if eq.global.auto_gain {
-            equaform_engine::calculate_auto_gain_compensation_db(&eq.bands, sample_rate)
+            equaform_engine::calculate_auto_gain_for_params(&eq, sample_rate)
         } else {
             0.0
         };

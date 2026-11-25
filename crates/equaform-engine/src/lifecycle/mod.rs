@@ -282,7 +282,7 @@ mod processor;
 #[cfg(test)]
 mod tests;
 
-pub use auto_gain::calculate_auto_gain_compensation_db;
+pub use auto_gain::{calculate_auto_gain_compensation_db, calculate_auto_gain_for_params};
 
 impl EngineLifecycle {
     /// Create a new engine lifecycle in the `Created` state.
@@ -378,12 +378,10 @@ impl EngineLifecycle {
         self.update_auto_gain_db();
     }
 
-    /// Recompute perceptual RMS power loudness-weighted auto-gain compensation in dB.
+    /// Recompute auto-gain compensation in dB for the active parameters and mode.
     fn update_auto_gain_db(&mut self) {
-        self.coeff_cache.auto_gain_db = calculate_auto_gain_compensation_db(
-            &self.eq_params.bands,
-            self.topology.sample_rate as f32,
-        );
+        self.coeff_cache.auto_gain_db =
+            calculate_auto_gain_for_params(&self.eq_params, self.topology.sample_rate as f32);
     }
 
     /// Return the active auto-gain compensation in dB.

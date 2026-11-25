@@ -1153,7 +1153,7 @@ mod tests {
 
     #[test]
     fn test_all_59_params_round_trip_mapping() {
-        assert_eq!(PARAM_COUNT, 59);
+        assert_eq!(PARAM_COUNT, 60);
         let shared = EquaformSharedInner::new();
 
         for idx in 0..PARAM_COUNT {

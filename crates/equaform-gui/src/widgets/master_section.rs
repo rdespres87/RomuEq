@@ -60,5 +60,30 @@ pub fn render_master_section_localized(
         {
             batch.push(ParamId(3), if auto_gain { 1.0 } else { 0.0 });
         }
+
+        // Auto-gain mode selector (Perceptual loudness vs Anti-Clip headroom protection).
+        if auto_gain {
+            let mode_val = snapshot
+                .get(ParamId(equaform_common::global::AUTO_GAIN_MODE))
+                .unwrap_or(0.0);
+            let is_safe = mode_val >= 0.5;
+
+            if ui
+                .selectable_label(!is_safe, t.auto_gain_mode_perceptual)
+                .on_hover_text(t.tooltip_auto_gain_perceptual)
+                .clicked()
+                && is_safe
+            {
+                batch.push(ParamId(equaform_common::global::AUTO_GAIN_MODE), 0.0);
+            }
+            if ui
+                .selectable_label(is_safe, t.auto_gain_mode_safe)
+                .on_hover_text(t.tooltip_auto_gain_safe)
+                .clicked()
+                && !is_safe
+            {
+                batch.push(ParamId(equaform_common::global::AUTO_GAIN_MODE), 1.0);
+            }
+        }
     });
 }

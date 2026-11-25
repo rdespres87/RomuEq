@@ -43,6 +43,7 @@ pub mod global {
     pub const PROCESSING_MODE: u32 = 4;
     pub const STEREO_MODE: u32 = 5;
     pub const AUTO_GAIN_COMPENSATION_DB: u32 = 6;
+    pub const AUTO_GAIN_MODE: u32 = 7;
 }
 
 /// Band parameter ID offsets (relative to band base).
@@ -256,6 +257,17 @@ pub fn parameter_info(id: u32) -> Option<ParameterInfo> {
             range: ParameterRange {
                 min: 0.0,
                 max: 0.0,
+                default: 0.0,
+            },
+            unit: "",
+        }),
+        7 => Some(ParameterInfo {
+            id: 7,
+            name: "global.auto_gain_mode",
+            param_type: ParameterType::Enum { count: 2 },
+            range: ParameterRange {
+                min: 0.0,
+                max: 1.0,
                 default: 0.0,
             },
             unit: "",
@@ -775,6 +787,36 @@ impl Default for BandParameters {
 // GlobalParameters
 // ===========================================================================
 
+/// Auto-gain compensation strategy.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize,
+)]
+pub enum AutoGainMode {
+    /// Matches perceived loudness across bypass (ideal for DAW mixing/mastering).
+    #[default]
+    Perceptual = 0,
+    /// Caps output gain so EQ boosts never push peaks above 0 dBFS relative to input.
+    HeadroomSafe = 1,
+}
+
+impl AutoGainMode {
+    /// Convert to its stable serialized integer value.
+    #[inline]
+    pub const fn to_raw(self) -> u32 {
+        self as u32
+    }
+
+    /// Parse from a serialized integer value.
+    #[inline]
+    pub const fn from_raw(raw: u32) -> Option<Self> {
+        match raw {
+            0 => Some(Self::Perceptual),
+            1 => Some(Self::HeadroomSafe),
+            _ => None,
+        }
+    }
+}
+
 /// Global EQ parameters.
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct GlobalParameters {
@@ -784,6 +826,9 @@ pub struct GlobalParameters {
     pub output_gain_db: f32,
     /// Enable auto-gain compensation.
     pub auto_gain: bool,
+    /// Auto-gain compensation mode (perceptual loudness vs anti-clip headroom protection).
+    #[serde(default)]
+    pub auto_gain_mode: AutoGainMode,
     /// Processing mode.
     pub processing_mode: ProcessingMode,
     /// Stereo mode.
@@ -802,6 +847,7 @@ impl Default for GlobalParameters {
             bypass: false,
             output_gain_db: 0.0,
             auto_gain: false,
+            auto_gain_mode: AutoGainMode::Perceptual,
             processing_mode: ProcessingMode::MinimumPhase,
             stereo_mode: StereoMode::Stereo,
             solo_mask: 0,

@@ -155,6 +155,12 @@ unsafe extern "C" fn value_to_text(
         } else {
             "Off".to_string()
         }
+    } else if param_id == 7 {
+        if value >= 0.5 {
+            "Anti-Clip".to_string()
+        } else {
+            "Perceptual".to_string()
+        }
     } else if param_id == 2 || (param_id >= 100 && param_id % 100 == 3) {
         format!("{value:+.1} dB")
     } else if param_id >= 100 && param_id % 100 == 0 {

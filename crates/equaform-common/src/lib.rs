@@ -27,6 +27,7 @@ pub use audio_buffer::LifecycleState as CommonLifecycleState;
 pub use audio_buffer::MAX_BLOCK_SIZE;
 pub use audio_buffer::MAX_CHANNELS;
 pub use audio_ring::{AudioRingConsumer, AudioRingProducer, create_audio_ring_buffer};
+pub use parameter::AutoGainMode;
 pub use parameter::BandParameters;
 pub use parameter::BandRouting;
 pub use parameter::EqParameters;
@@ -561,6 +562,7 @@ mod tests {
                 bypass: false,
                 output_gain_db: 0.0,
                 auto_gain: false,
+                auto_gain_mode: AutoGainMode::Perceptual,
                 processing_mode: ProcessingMode::MinimumPhase,
                 stereo_mode: StereoMode::Stereo,
                 solo_mask: 0,

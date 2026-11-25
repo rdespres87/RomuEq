@@ -748,6 +748,10 @@ impl EngineClient {
                 param_id: ParamId(equaform_common::global::AUTO_GAIN_COMPENSATION_DB),
                 value: eng.auto_gain_compensation_db(),
             });
+            values.push(ParamValue {
+                param_id: ParamId(equaform_common::global::AUTO_GAIN_MODE),
+                value: params.global.auto_gain_mode.to_raw() as f32,
+            });
 
             // Band parameters
             for band_idx in 0..equaform_common::MAX_BANDS {
@@ -809,6 +813,12 @@ impl EngineClient {
                 }
                 5 => {
                     params.global.stereo_mode = equaform_common::StereoMode::Stereo;
+                }
+                7 => {
+                    let raw = cmd.value.round().clamp(0.0, 1.0) as u32;
+                    if let Some(mode) = equaform_common::AutoGainMode::from_raw(raw) {
+                        params.global.auto_gain_mode = mode;
+                    }
                 }
                 _ => {}
             }
@@ -1025,6 +1035,7 @@ impl GuiClient for EngineClient {
             let mut params = *eng.eq_parameters();
             let keep_bypass = params.global.bypass;
             let keep_auto_gain = params.global.auto_gain;
+            let keep_auto_gain_mode = params.global.auto_gain_mode;
             for (id, value) in preset.preset.parameter_values.iter() {
                 let pid = ParamId(id);
                 Self::apply_command_to_params(
@@ -1038,6 +1049,7 @@ impl GuiClient for EngineClient {
             // Preserve global Bypass and Auto Gain state when switching presets.
             params.global.bypass = keep_bypass;
             params.global.auto_gain = keep_auto_gain;
+            params.global.auto_gain_mode = keep_auto_gain_mode;
             eng.set_parameters(params);
         }
 
@@ -1079,6 +1091,7 @@ impl GuiClient for EngineClient {
             let mut params = *eng.eq_parameters();
             let keep_bypass = params.global.bypass;
             let keep_auto_gain = params.global.auto_gain;
+            let keep_auto_gain_mode = params.global.auto_gain_mode;
             for (id, value) in named.preset.parameter_values.iter() {
                 let pid = ParamId(id);
                 Self::apply_command_to_params(
@@ -1091,6 +1104,7 @@ impl GuiClient for EngineClient {
             }
             params.global.bypass = keep_bypass;
             params.global.auto_gain = keep_auto_gain;
+            params.global.auto_gain_mode = keep_auto_gain_mode;
             eng.set_parameters(params);
         }
 

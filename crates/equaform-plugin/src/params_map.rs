@@ -13,10 +13,12 @@
 
 use clap_sys::ext::params::*;
 use clap_sys::id::clap_id;
-use equaform_common::{BandRouting, EqParameters, FilterType, GlobalParameters, MAX_BANDS, Slope};
+use equaform_common::{
+    AutoGainMode, BandRouting, EqParameters, FilterType, GlobalParameters, MAX_BANDS, Slope,
+};
 
-/// Total count of exposed automatable parameters (3 global + 8 * 7 band params = 59).
-pub const PARAM_COUNT: u32 = 3 + (MAX_BANDS as u32 * 7);
+/// Total count of exposed automatable parameters (4 global + 8 * 7 band params = 60).
+pub const PARAM_COUNT: u32 = 4 + (MAX_BANDS as u32 * 7);
 pub const PARAM_COUNT_USIZE: usize = PARAM_COUNT as usize;
 
 #[derive(Clone, Copy, Debug)]
@@ -37,15 +39,16 @@ pub const fn param_id_to_slot(id: clap_id) -> Option<usize> {
         1 => Some(0),
         2 => Some(1),
         3 => Some(2),
+        7 => Some(3),
         100..=899 => {
             let offset = id - 100;
             let band = offset / 100;
             let field = offset % 100;
             if (band as usize) < MAX_BANDS {
                 if field < 6 {
-                    Some(3 + (band as usize) * 7 + (field as usize))
+                    Some(4 + (band as usize) * 7 + (field as usize))
                 } else if field == 7 {
-                    Some(3 + (band as usize) * 7 + 6)
+                    Some(4 + (band as usize) * 7 + 6)
                 } else {
                     None
                 }
@@ -64,8 +67,9 @@ pub const fn slot_to_param_id(slot: usize) -> clap_id {
         0 => 1,
         1 => 2,
         2 => 3,
+        3 => 7,
         s if s < PARAM_COUNT_USIZE => {
-            let rem = s - 3;
+            let rem = s - 4;
             let band = rem / 7;
             let field_slot = rem % 7;
             let field_id = if field_slot == 6 { 7 } else { field_slot };
@@ -89,6 +93,7 @@ pub fn get_param_from_eq(eq: &EqParameters, id: clap_id) -> Option<f64> {
         1 => Some(if eq.global.bypass { 1.0 } else { 0.0 }),
         2 => Some(eq.global.output_gain_db as f64),
         3 => Some(if eq.global.auto_gain { 1.0 } else { 0.0 }),
+        7 => Some(eq.global.auto_gain_mode.to_raw() as f64),
         100..=899 => {
             let offset = id - 100;
             let band_idx = (offset / 100) as usize;
@@ -127,6 +132,15 @@ pub fn apply_param_to_eq(eq: &mut EqParameters, id: clap_id, val: f64) -> bool {
         3 => {
             eq.global.auto_gain = val >= 0.5;
             true
+        }
+        7 => {
+            let raw = val.round().clamp(0.0, 1.0) as u32;
+            if let Some(mode) = AutoGainMode::from_raw(raw) {
+                eq.global.auto_gain_mode = mode;
+                true
+            } else {
+                false
+            }
         }
         100..=899 => {
             let offset = id - 100;
@@ -198,6 +212,7 @@ pub fn normalize_param_value(id: clap_id, val: f64) -> f32 {
                 0.0
             }
         }
+        7 => val.round().clamp(0.0, 1.0) as f32,
         2 => (val as f32).clamp(-24.0, 24.0),
         100..=899 => match (id - 100) % 100 {
             0 => {
@@ -253,8 +268,19 @@ pub fn get_param_meta(index: u32) -> Option<ParamMeta> {
             flags: CLAP_PARAM_IS_STEPPED | CLAP_PARAM_IS_AUTOMATABLE,
         });
     }
+    if index == 3 {
+        return Some(ParamMeta {
+            id: 7,
+            name: "Auto Gain Mode",
+            module: "Master",
+            min_value: 0.0,
+            max_value: 1.0,
+            default_value: AutoGainMode::Perceptual.to_raw() as f64,
+            flags: CLAP_PARAM_IS_STEPPED | CLAP_PARAM_IS_ENUM | CLAP_PARAM_IS_AUTOMATABLE,
+        });
+    }
 
-    let band_param_idx = index - 3;
+    let band_param_idx = index - 4;
     let band_idx = (band_param_idx / 7) as usize;
     let field_idx = band_param_idx % 7;
 
@@ -419,8 +445,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_all_59_param_metadata_english() {
-        assert_eq!(PARAM_COUNT, 59);
+    fn test_all_60_param_metadata_english() {
+        assert_eq!(PARAM_COUNT, 60);
         let mut eq = default_eq_parameters();
         for idx in 0..PARAM_COUNT {
             let meta = get_param_meta(idx)
