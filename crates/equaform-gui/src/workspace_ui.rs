@@ -167,7 +167,11 @@ pub fn render_workspace(
             egui::Color32::from_rgb(42, 46, 54)
         })
         .min_size(egui::vec2(22.0, 18.0));
-        if ui.add(a_btn).on_hover_text("Compare Slot A").clicked() {
+        if ui
+            .add(a_btn)
+            .on_hover_text(t.tooltip_compare_slot_a)
+            .clicked()
+        {
             state.ab_compare.switch_to(AbSlot::A, snapshot, &mut batch);
         }
 
@@ -182,7 +186,11 @@ pub fn render_workspace(
             egui::Color32::from_rgb(42, 46, 54)
         })
         .min_size(egui::vec2(22.0, 18.0));
-        if ui.add(b_btn).on_hover_text("Compare Slot B").clicked() {
+        if ui
+            .add(b_btn)
+            .on_hover_text(t.tooltip_compare_slot_b)
+            .clicked()
+        {
             state.ab_compare.switch_to(AbSlot::B, snapshot, &mut batch);
         }
 
@@ -196,7 +204,8 @@ pub fn render_workspace(
                 .min_size(egui::vec2(34.0, 18.0)),
             )
             .on_hover_text(format!(
-                "Copy current EQ settings ({})",
+                "{} ({})",
+                t.tooltip_copy_ab_settings,
                 active_slot.copy_label()
             ))
             .clicked()

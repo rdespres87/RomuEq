@@ -87,7 +87,7 @@ pub fn render_band(ui: &mut egui::Ui, ctx: BandRenderContext<'_>, batch: &mut Gu
                     .min_size(egui::vec2(18.0, 16.0));
                 if ui
                     .add(solo_btn)
-                    .on_hover_text("Solo band audition (monitor only)")
+                    .on_hover_text(t.tooltip_band_solo)
                     .clicked()
                 {
                     batch.push(params.solo(), if solo { 0.0 } else { 1.0 });
@@ -251,8 +251,10 @@ pub fn render_band(ui: &mut egui::Ui, ctx: BandRenderContext<'_>, batch: &mut Gu
                 if ui
                     .add(routing_btn)
                     .on_hover_text(format!(
-                        "Channel routing: {} (click to cycle ST / L / R / M / S)",
-                        routing.display_name()
+                        "{}: {} ({})",
+                        t.tooltip_channel_routing_prefix,
+                        routing.display_name(),
+                        t.tooltip_channel_routing_hint
                     ))
                     .clicked()
                 {

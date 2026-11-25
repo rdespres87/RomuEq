@@ -140,6 +140,12 @@ pub struct Translations {
     pub tooltip_reset_gain: &'static str,
     pub tooltip_center_freq: &'static str,
     pub tooltip_q_factor: &'static str,
+    pub tooltip_compare_slot_a: &'static str,
+    pub tooltip_compare_slot_b: &'static str,
+    pub tooltip_copy_ab_settings: &'static str,
+    pub tooltip_band_solo: &'static str,
+    pub tooltip_channel_routing_prefix: &'static str,
+    pub tooltip_channel_routing_hint: &'static str,
     pub system_default_output: &'static str,
     pub status_eq_active: &'static str,
     pub status_eq_bypassed: &'static str,
@@ -213,6 +219,12 @@ mod tests {
                 t.tooltip_reset_gain,
                 t.tooltip_center_freq,
                 t.tooltip_q_factor,
+                t.tooltip_compare_slot_a,
+                t.tooltip_compare_slot_b,
+                t.tooltip_copy_ab_settings,
+                t.tooltip_band_solo,
+                t.tooltip_channel_routing_prefix,
+                t.tooltip_channel_routing_hint,
                 t.system_default_output,
                 t.status_eq_active,
                 t.status_eq_bypassed,
@@ -237,6 +249,26 @@ mod tests {
             for ft in t.filter_types {
                 assert!(!ft.trim().is_empty(), "Empty filter type for {lang:?}");
             }
+        }
+    }
+
+    #[test]
+    fn test_new_tooltips_are_localized_outside_english() {
+        let en = Translations::for_language(Language::English);
+        for lang in [Language::French, Language::German, Language::Spanish] {
+            let t = Translations::for_language(lang);
+            assert_ne!(t.tooltip_compare_slot_a, en.tooltip_compare_slot_a);
+            assert_ne!(t.tooltip_compare_slot_b, en.tooltip_compare_slot_b);
+            assert_ne!(t.tooltip_copy_ab_settings, en.tooltip_copy_ab_settings);
+            assert_ne!(t.tooltip_band_solo, en.tooltip_band_solo);
+            assert_ne!(
+                t.tooltip_channel_routing_prefix,
+                en.tooltip_channel_routing_prefix
+            );
+            assert_ne!(
+                t.tooltip_channel_routing_hint,
+                en.tooltip_channel_routing_hint
+            );
         }
     }
 
