@@ -547,7 +547,7 @@ fn load_saved_output_device() -> Option<String> {
 fn save_complete_app_state(client: &EngineClient) {
     let mut state = equaform_common::state::ProjectState::new();
     for pv in client.encode_snapshot() {
-        if pv.param_id.0 == 6 {
+        if equaform_common::parameter::parameter_info(pv.param_id.0).is_none() {
             continue;
         }
         state.set(pv.param_id.0, pv.value);
@@ -1000,8 +1000,8 @@ impl GuiClient for EngineClient {
 
         let mut preset = Preset::new(name);
         for pv in self.encode_snapshot().into_iter() {
-            // Skip read-only telemetry parameter ID 6 (auto-gain compensation readout)
-            if pv.param_id.0 == 6 {
+            // Skip read-only telemetry and monitor-only parameters not in the persisted contract.
+            if equaform_common::parameter::parameter_info(pv.param_id.0).is_none() {
                 continue;
             }
             preset.parameter_values.set(pv.param_id.0, pv.value);
@@ -1209,5 +1209,36 @@ mod tests {
         client.prepare(44_100.0, 256, 2);
         assert!(client.engine.is_some());
         assert_eq!(client.sample_rate, 44_100.0);
+    }
+
+    #[test]
+    fn test_standalone_create_preset_roundtrips_through_disk()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut client = EngineClient::new(egui::Context::default());
+        client.prepare(48_000.0, 256, 2);
+
+        let created = client.create_preset("HS7").map_err(std::io::Error::other)?;
+        assert_eq!(created, "HS7");
+
+        let tmp = std::env::temp_dir().join(format!(
+            "equaform_standalone_hs7_{}.req",
+            std::process::id()
+        ));
+        let path = tmp.to_str().ok_or("non-UTF8 temp path")?;
+        client
+            .save_preset_to_file("HS7", path)
+            .map_err(std::io::Error::other)?;
+
+        let mut fresh_manager = crate::preset_manager::PresetManager::new();
+        let loaded = fresh_manager.load_from_file(path)?;
+        assert_eq!(loaded.name, "HS7");
+        assert_eq!(loaded.preset.parameter_values.get(6), None);
+        for band_idx in 0..equaform_common::MAX_BANDS {
+            let solo_id = 100u32 + band_idx as u32 * 100 + 6;
+            assert_eq!(loaded.preset.parameter_values.get(solo_id), None);
+        }
+
+        let _ = std::fs::remove_file(&tmp);
+        Ok(())
     }
 }

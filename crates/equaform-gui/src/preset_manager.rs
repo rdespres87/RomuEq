@@ -75,6 +75,16 @@ impl Default for PresetManager {
     }
 }
 
+/// Strips non-persisted telemetry and monitor-only parameters (auto-gain readout
+/// and per-band solo flags) so presets remain valid across reload.
+fn strip_ephemeral_parameters(values: &mut equaform_common::state::ParameterValues) {
+    values.remove(6);
+    for band_idx in 0..equaform_common::MAX_BANDS {
+        let solo_id = 100u32 + band_idx as u32 * 100 + 6;
+        values.remove(solo_id);
+    }
+}
+
 impl PresetManager {
     /// Create a new empty preset manager.
     pub fn new() -> Self {
@@ -168,8 +178,7 @@ impl PresetManager {
         .map_err(|e| PresetManagerError::IoError(format!("read '{path}': {e}")))?;
 
         let mut preset = Preset::from_json(&json)?;
-        // Strip read-only telemetry parameter ID 6 (auto-gain compensation readout) if present
-        preset.parameter_values.remove(6);
+        strip_ephemeral_parameters(&mut preset.parameter_values);
         preset.parameter_values.validate()?;
 
         let name = preset.name.clone();
@@ -188,8 +197,7 @@ impl PresetManager {
             .map_err(|e| PresetManagerError::IoError(format!("read '{path}': {e}")))?;
 
         let mut preset = Preset::deserialize(&data)?;
-        // Strip read-only telemetry parameter ID 6 (auto-gain compensation readout) if present
-        preset.parameter_values.remove(6);
+        strip_ephemeral_parameters(&mut preset.parameter_values);
 
         // Validate the loaded preset
         preset.parameter_values.validate()?;
@@ -512,5 +520,38 @@ mod tests {
         assert_eq!(loaded.preset.parameter_values.get(103), Some(3.0));
 
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_load_from_file_strips_monitor_only_solo_ids() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let tmp =
+            std::env::temp_dir().join(format!("equaform_test_solo_{}.req", std::process::id()));
+        let path = tmp.to_str().ok_or("non-UTF8 temp path")?;
+
+        let mut preset = Preset::new("HS7");
+        preset.parameter_values.set(102, 1000.0);
+        preset.parameter_values.set(103, -2.5);
+        preset.parameter_values.set(6, 1.25);
+        for band_idx in 0..equaform_common::MAX_BANDS {
+            let solo_id = 100u32 + band_idx as u32 * 100 + 6;
+            preset.parameter_values.set(solo_id, 0.0);
+        }
+
+        let bytes = preset.serialize();
+        std::fs::write(&tmp, &bytes)?;
+
+        let mut manager = PresetManager::new();
+        let loaded = manager.load_from_file(path)?;
+        assert_eq!(loaded.name, "HS7");
+        assert_eq!(loaded.preset.parameter_values.get(102), Some(1000.0));
+        assert_eq!(loaded.preset.parameter_values.get(6), None);
+        for band_idx in 0..equaform_common::MAX_BANDS {
+            let solo_id = 100u32 + band_idx as u32 * 100 + 6;
+            assert_eq!(loaded.preset.parameter_values.get(solo_id), None);
+        }
+
+        let _ = std::fs::remove_file(&tmp);
+        Ok(())
     }
 }
