@@ -141,6 +141,94 @@ impl AnalysisFrame {
         }
     }
 
+    /// Compute an analysis frame from a planar (channel-major) audio buffer.
+    ///
+    /// Channel `ch` occupies `buffer[ch * channel_stride .. ch * channel_stride + block_size]`.
+    ///
+    /// **RT-safe:** zero allocations, bounds-checked slicing, no panics.
+    pub fn compute_planar(
+        buffer: &[f32],
+        channel_stride: usize,
+        channels: usize,
+        sample_rate: f64,
+        block_size: usize,
+        frame_number: u64,
+    ) -> Self {
+        if block_size == 0 || channels == 0 {
+            return Self {
+                block_size,
+                sample_rate,
+                rms: [0.0; ANALYSIS_MAX_CHANNELS],
+                peak: [0.0; ANALYSIS_MAX_CHANNELS],
+                zero_crossings: [0; ANALYSIS_MAX_CHANNELS],
+                frame_number,
+                dropped: false,
+            };
+        }
+
+        let decimation = if block_size > ANALYSIS_DECIMATION {
+            ANALYSIS_DECIMATION
+        } else {
+            1
+        };
+
+        let mut rms = [0.0_f32; ANALYSIS_MAX_CHANNELS];
+        let mut peak = [0.0_f32; ANALYSIS_MAX_CHANNELS];
+        let mut zero_crossings = [0_usize; ANALYSIS_MAX_CHANNELS];
+
+        let effective_channels = channels.min(ANALYSIS_MAX_CHANNELS);
+
+        for ch in 0..effective_channels {
+            let start = ch.saturating_mul(channel_stride);
+            let end = start.saturating_add(block_size);
+            let slice = buffer.get(start..end).unwrap_or(&[]);
+
+            let mut sum_sq: f32 = 0.0;
+            let mut max_abs: f32 = 0.0;
+            let mut prev_sign: i8 = 0;
+            let mut zc: usize = 0;
+            let mut count: usize = 0;
+
+            for &sample in slice.iter().step_by(decimation) {
+                let abs = sample.abs();
+                sum_sq += sample * sample;
+                if abs > max_abs {
+                    max_abs = abs;
+                }
+                let sign = if sample > 0.0 {
+                    1
+                } else if sample < 0.0 {
+                    -1
+                } else {
+                    0
+                };
+                if prev_sign != 0 && sign != 0 && sign != prev_sign {
+                    zc += 1;
+                }
+                if sign != 0 {
+                    prev_sign = sign;
+                }
+                count += 1;
+            }
+
+            if count > 0 {
+                rms[ch] = (sum_sq / count as f32).sqrt();
+            }
+            peak[ch] = max_abs;
+            zero_crossings[ch] = zc;
+        }
+
+        Self {
+            block_size,
+            sample_rate,
+            rms,
+            peak,
+            zero_crossings,
+            frame_number,
+            dropped: false,
+        }
+    }
+
     /// Return the number of active channels in this frame.
     pub fn active_channels(&self) -> usize {
         // Caller decides by checking which RMS/peak values are non-zero.
@@ -231,5 +319,50 @@ impl AnalysisBuffer {
 impl Default for AnalysisBuffer {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_compute_planar_respects_stride_and_isolates_channels() {
+        let channel_stride = 512;
+        let block_size = 64;
+        let channels = 2;
+        let mut buffer = vec![999.0_f32; channels * channel_stride];
+
+        buffer[..block_size].fill(0.5_f32);
+        buffer[channel_stride..channel_stride + block_size].fill(-0.25_f32);
+
+        let frame = AnalysisFrame::compute_planar(
+            &buffer,
+            channel_stride,
+            channels,
+            48_000.0,
+            block_size,
+            0,
+        );
+
+        assert!((frame.rms[0] - 0.5).abs() < 1e-6);
+        assert!((frame.peak[0] - 0.5).abs() < 1e-6);
+        assert!((frame.rms[1] - 0.25).abs() < 1e-6);
+        assert!((frame.peak[1] - 0.25).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_compute_planar_zero_block_size() {
+        let buffer = vec![1.0_f32; 1024];
+        let frame = AnalysisFrame::compute_planar(&buffer, 512, 2, 48_000.0, 0, 42);
+
+        assert_eq!(frame.block_size, 0);
+        assert_eq!(frame.frame_number, 42);
+        assert!(!frame.dropped);
+        for ch in 0..ANALYSIS_MAX_CHANNELS {
+            assert_eq!(frame.rms[ch], 0.0);
+            assert_eq!(frame.peak[ch], 0.0);
+            assert_eq!(frame.zero_crossings[ch], 0);
+        }
     }
 }
