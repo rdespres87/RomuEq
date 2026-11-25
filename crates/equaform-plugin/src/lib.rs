@@ -62,7 +62,7 @@ use params_map::{
 fn get_descriptor() -> PluginDescriptor {
     PluginDescriptor::new("com.equaform.audio.equalizer", "Equaform-8")
         .with_vendor("Equaform Audio")
-        .with_version("1.0.0")
+        .with_version("1.1.0")
         .with_description("High-Precision 8-Band Parametric Equalizer")
 }
 

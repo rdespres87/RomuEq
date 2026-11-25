@@ -1,8 +1,8 @@
 # Equaform-8 (RomuEq) - Session State
 
 **Date:** 2026-11-25
-**Version:** v1.0.0 (published on GitHub Releases) + 7 local maturity commits (`0c8fd7b`)
-**Maturity Audit:** 9.4 / 10 (upgraded from 8.2 / 10 after completing all 5 maturity steps)
+**Version:** v1.1.0 ("Pro Mixing", ready to tag) — `v1.0.0` live on GitHub Releases
+**Maturity Audit:** 9.4 / 10 (all 5 maturity steps + v1.1.0 Pro Mixing milestones complete)
 
 ## Release Assets
 
@@ -16,7 +16,7 @@
 
 ## Test & Lint Status
 
-- 464 tests passed, 0 failed, 2 ignored (hardware diagnostics) + 2 `compile_fail` doctests in `equaform-engine`
+- 481 tests passed, 0 failed, 2 ignored (hardware diagnostics) + 2 `compile_fail` doctests in `equaform-engine`
 - `cargo clippy --workspace --all-targets -- -D warnings -D clippy::undocumented_unsafe_blocks`: 0 warnings
 - `cargo fmt --all -- --check`: clean
 - Criterion stereo SIMD biquad (`equaform-dsp`): -49.5% to -54.2% latency (~2.0x-2.2x throughput, `#![forbid(unsafe_code)]`)
@@ -51,8 +51,12 @@
 | `a7cb697` | `feat(gui): sort presets with user presets first and factory presets alphabetically` (local) |
 | `df6add5` | `refactor(gui): split audio.rs into 6 cohesive submodules` (local) |
 | `2b84fc6` | `feat(engine): add compile-time typestate Engine<S> with sealed states` (local) |
-| `25db9a8` | `perf(dsp): add vectorized biquad kernels, wire into engine` (local) |
-| `0c8fd7b` | `refactor(safety): fix FFI UB and document all SAFETY invariants` (local) |
+| `25db9a8` | `perf(dsp): add vectorized biquad kernels, wire into engine` (pushed) |
+| `0c8fd7b` | `refactor(safety): fix FFI UB and document all SAFETY invariants` (pushed) |
+| `1591a38` | `docs(agent): sync session state, tasks, and handoff after maturity plan completion` (pushed) |
+| `7cf69a5` | `feat(audition): add monitor-only band solo across all crates` (local) |
+| `e4736c9` | `feat(routing): add Mid/Side and per-band stereo routing` (local) |
+| `c51e706` | `feat(ab-compare): add A/B slot toggle with dynamic copy` (local) |
 
 ## Operational Constraints
 
