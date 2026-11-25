@@ -99,10 +99,10 @@ auval -v aufx Eqf8 Eqfm
 ### Combined Distribution DMG (Plugins + Standalone)
 
 ```bash
-./scripts/package-distribution-plugins.sh 1.1.0
+./scripts/package-distribution-plugins.sh 1.1.1
 ```
 
-This generates `target/release/dist/Equaform-8-v1.1.0.dmg` (and its `.sha256` checksum) containing both the DAW plugins installer (`Equaform-8-Plugins-Installer.pkg` for `AUv2`, `VST3`, `CLAP`, and presets) and the standalone `Equaform-8.app` bundle.
+This generates `target/release/dist/Equaform-8-v1.1.1.dmg` (and its `.sha256` checksum) containing both the DAW plugins installer (`Equaform-8-Plugins-Installer.pkg` for `AUv2`, `VST3`, `CLAP`, and presets) and the standalone `Equaform-8.app` bundle.
 
 ## Real-Time Contract
 

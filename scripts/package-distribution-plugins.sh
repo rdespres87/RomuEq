@@ -8,7 +8,7 @@
 
 set -euo pipefail
 
-VERSION="${1:-${RELEASE_VERSION:-1.1.0}}"
+VERSION="${1:-${RELEASE_VERSION:-1.1.1}}"
 VERSION="${VERSION#v}"
 BUNDLE_IDENTIFIER_BASE="com.equaform.audio.equalizer"
 

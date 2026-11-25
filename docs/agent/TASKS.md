@@ -115,6 +115,14 @@
   - [x] Monitor-only Band Solo audition (`7cf69a5`: RBJ 0 dB-peak BPF/LP/HP, parallel multi-band summing, zero-alloc RT path, `AtomicU8` plugin sync, amber `S` button)
   - [x] Mid/Side & per-band stereo routing (`e4736c9`: `BandRouting` ST/L/R/M/S, orthonormal `FRAC_1_SQRT_2` L/R <-> M/S helpers, 59 DAW params, color-coded button beside Slope)
   - [x] A/B Compare (`c51e706`: `AbCompareState`, diff-only toggle `A | B` + dynamic `A->B / B->A` copy shared by Standalone and DAW plugins)
+- [x] v1.1.1 "Reliability & Polish" Release:
+  - [x] Stride-aware planar stereo analysis (`AnalysisFrame::compute_planar`) fixing L/R VU-metering (`f3b9275`, `207c550`)
+  - [x] Click-free equal-power Band Solo crossfade (`SoloTransitionState`) with pre-allocated buffer (`207c550`)
+  - [x] TOCTOU-safe 16 MiB bounded text file reads (`read_to_string_bounded`) across preset/state/i18n loaders (`c701fd2`)
+  - [x] Filter ephemeral Band Solo IDs (`106..=806`) on preset save and strip on load/import (`1738c7c`)
+  - [x] Localize all Band Solo, A/B Compare, and Mid/Side routing tooltips across EN/FR/DE/ES (`de304c4`)
+  - [x] Hoist `update_auto_gain_db()` and Mid/Side solo transforms out of inner loops + remove unused `query_automation` (`580d735`)
 - [ ] Optional Next Milestone (v1.2.0 Candidates):
+  - [ ] Undo/Redo stack (`UndoStack<EqParameters>`, `Cmd/Ctrl+Z`)
   - [ ] Linear-phase EQ mode (FIR partitioned convolution + DAW latency reporting)
-  - [ ] Modularize remaining >1000 LOC files (`state.rs`, `parameter.rs`, `equaform-plugin/src/lib.rs`, `standalone.rs`)
+  - [ ] Modularize remaining >1000 LOC files (`equaform-plugin/src/lib.rs`, `standalone.rs`) and replace `WgpuSurfaceHost::new` 8-arg signature with `WgpuSurfaceConfig`

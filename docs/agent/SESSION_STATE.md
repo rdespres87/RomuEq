@@ -1,13 +1,13 @@
 # Equaform-8 (RomuEq) - Session State
 
 **Date:** 2026-11-25
-**Version:** v1.1.0 ("Pro Mixing", ready to tag) — `v1.0.0` live on GitHub Releases
-**Maturity Audit:** 9.4 / 10 (all 5 maturity steps + v1.1.0 Pro Mixing milestones complete)
+**Version:** v1.1.1 ("Reliability & Polish", ready to tag) — `v1.1.0` live on GitHub Releases
+**Maturity Audit:** Post-v1.1.0 audit P0s + preset persistence + i18n + DSP loop hoists resolved
 
 ## Release Assets
 
-- `Equaform-8-v1.0.0.dmg` + `.dmg.sha256` (macOS Apple Silicon)
-- `Equaform-8-Plugins-Windows-v1.0.0.exe` + `.exe.sha256` (Windows x64)
+- `Equaform-8-v1.1.1.dmg` + `.dmg.sha256` (macOS Apple Silicon)
+- `Equaform-8-Plugins-Windows-v1.1.1.exe` + `.exe.sha256` (Windows x64)
 
 ## Platform Scope
 
@@ -16,9 +16,10 @@
 
 ## Test & Lint Status
 
-- 481 tests passed, 0 failed, 2 ignored (hardware diagnostics) + 2 `compile_fail` doctests in `equaform-engine`
+- 489 tests passed, 0 failed, 2 ignored (hardware diagnostics) + 2 `compile_fail` doctests in `equaform-engine`
 - `cargo clippy --workspace --all-targets -- -D warnings -D clippy::undocumented_unsafe_blocks`: 0 warnings
 - `cargo fmt --all -- --check`: clean
+- `cargo llvm-cov` core crates (`common`, `dsp`, `analysis`, `engine`): 91.57% lines / 92.30% regions (>= 90% CI gate)
 - Criterion stereo SIMD biquad (`equaform-dsp`): -49.5% to -54.2% latency (~2.0x-2.2x throughput, `#![forbid(unsafe_code)]`)
 
 ## CI/CD Workflows
@@ -56,7 +57,13 @@
 | `1591a38` | `docs(agent): sync session state, tasks, and handoff after maturity plan completion` (pushed) |
 | `7cf69a5` | `feat(audition): add monitor-only band solo across all crates` (local) |
 | `e4736c9` | `feat(routing): add Mid/Side and per-band stereo routing` (local) |
-| `c51e706` | `feat(ab-compare): add A/B slot toggle with dynamic copy` (local) |
+| `c51e706` | `feat(ab-compare): add A/B slot toggle with dynamic copy` (pushed, `v1.1.0`) |
+| `f3b9275` | `fix(analysis): add planar stride-aware AnalysisFrame::compute_planar` (local) |
+| `207c550` | `fix(engine): use planar analysis frame and click-free Band Solo crossfade` (local) |
+| `c701fd2` | `fix(common,gui): bound text file reads to 16 MiB against TOCTOU` (local) |
+| `1738c7c` | `fix(presets): filter ephemeral band solo IDs on save and strip them on load to prevent preset rejection` (local) |
+| `de304c4` | `fix(gui): localize Band Solo, A/B compare, and channel routing tooltips` (local) |
+| `580d735` | `perf(engine): hoist auto-gain update and Mid/Side solo transforms out of inner loops` (local) |
 
 ## Operational Constraints
 
