@@ -3,7 +3,7 @@
 use super::{CROSSFADE_MS, DELAY_SAMPLES_PER_STAGE, EngineLifecycle, LifecycleState};
 use equaform_analysis::AnalysisFrame;
 use equaform_common::automation::AutomationValueProvider;
-use equaform_common::{BandParameters, BandRouting, MAX_BANDS, ParamId};
+use equaform_common::{BandParameters, BandRouting, MAX_BANDS};
 use equaform_dsp::coefficients::{BiquadCoefficients, FilterSpecification};
 use equaform_dsp::{
     lr_to_ms_in_place, ms_to_lr_in_place, process_mono_in_place, process_stereo_planar_in_place,
@@ -15,20 +15,6 @@ impl EngineLifecycle {
         let ingestor = self.automation_ingestor.as_mut()?;
         let batch = ingestor.process_block(block_size as u32);
         Some(ingestor.value_provider(&batch))
-    }
-
-    /// Query the automation provider for a parameter value at a given sample.
-    #[allow(dead_code)]
-    fn query_automation(
-        &self,
-        provider: &Option<AutomationValueProvider>,
-        param_id: ParamId,
-        sample_in_block: usize,
-    ) -> Option<f32> {
-        provider.as_ref().and_then(|p| {
-            let sample = self.sample_offset as u32 + sample_in_block as u32;
-            p.value_at_sample(param_id, sample, None)
-        })
     }
 
     /// Process a single audio block.
@@ -112,6 +98,7 @@ impl EngineLifecycle {
         let freq_min: f32 = 20.0;
         let freq_max: f32 = sample_rate / 2.0;
 
+        let mut any_automated = false;
         for (band_idx, coeff_slot) in block_coeffs.iter_mut().enumerate() {
             let mut band_params = self.eq_params.bands[band_idx];
             if !band_params.enabled {
@@ -153,10 +140,12 @@ impl EngineLifecycle {
                 *coeff_slot = FilterSpecification::from_band(&band_params, sample_rate).compute();
                 self.eq_params.bands[band_idx] = band_params;
                 self.coeff_cache.coeffs[band_idx] = *coeff_slot;
-                if self.eq_params.global.auto_gain {
-                    self.update_auto_gain_db();
-                }
+                any_automated = true;
             }
+        }
+
+        if any_automated && self.eq_params.global.auto_gain {
+            self.update_auto_gain_db();
         }
     }
 
@@ -484,16 +473,76 @@ fn render_stereo_solo_audition(
     eq_params: &equaform_common::EqParameters,
     solo_delay_line: &mut [f32],
 ) {
+    const INV_SQRT_2: f32 = std::f32::consts::FRAC_1_SQRT_2;
+
     io.out_l.fill(0.0);
     io.out_r.fill(0.0);
 
+    // Pass 1: accumulate Mid/Side solo bands in M/S domain, then convert to L/R once.
+    let mut has_ms_solo = false;
     for (band_idx, coeffs) in solo_coeffs.iter().enumerate() {
         if (active_mask & (1 << band_idx)) == 0 {
             continue;
         }
         let routing = eq_params.band_routing(band_idx);
-        io.scratch_l.copy_from_slice(io.dry_l);
-        io.scratch_r.copy_from_slice(io.dry_r);
+        if !matches!(routing, BandRouting::Mid | BandRouting::Side) {
+            continue;
+        }
+        has_ms_solo = true;
+        let band_delay_offset = band_idx * 2 * DELAY_SAMPLES_PER_STAGE;
+        let (delay_l_slice, delay_r_slice) = solo_delay_line
+            [band_delay_offset..band_delay_offset + 2 * DELAY_SAMPLES_PER_STAGE]
+            .split_at_mut(DELAY_SAMPLES_PER_STAGE);
+        if let (Ok(delay_l), Ok(delay_r)) = (
+            <&mut [f32; 4]>::try_from(delay_l_slice),
+            <&mut [f32; 4]>::try_from(delay_r_slice),
+        ) {
+            match routing {
+                BandRouting::Mid => {
+                    for ((dst, &dl), &dr) in io
+                        .scratch_l
+                        .iter_mut()
+                        .zip(io.dry_l.iter())
+                        .zip(io.dry_r.iter())
+                    {
+                        *dst = (dl + dr) * INV_SQRT_2;
+                    }
+                    process_mono_in_place(io.scratch_l, coeffs, delay_l);
+                    for (dst, &src) in io.out_l.iter_mut().zip(io.scratch_l.iter()) {
+                        *dst += src;
+                    }
+                }
+                BandRouting::Side => {
+                    for ((dst, &dl), &dr) in io
+                        .scratch_r
+                        .iter_mut()
+                        .zip(io.dry_l.iter())
+                        .zip(io.dry_r.iter())
+                    {
+                        *dst = (dl - dr) * INV_SQRT_2;
+                    }
+                    process_mono_in_place(io.scratch_r, coeffs, delay_r);
+                    for (dst, &src) in io.out_r.iter_mut().zip(io.scratch_r.iter()) {
+                        *dst += src;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    if has_ms_solo {
+        ms_to_lr_in_place(io.out_l, io.out_r);
+    }
+
+    // Pass 2: accumulate Stereo / Left / Right solo bands directly in L/R domain.
+    for (band_idx, coeffs) in solo_coeffs.iter().enumerate() {
+        if (active_mask & (1 << band_idx)) == 0 {
+            continue;
+        }
+        let routing = eq_params.band_routing(band_idx);
+        if matches!(routing, BandRouting::Mid | BandRouting::Side) {
+            continue;
+        }
         let band_delay_offset = band_idx * 2 * DELAY_SAMPLES_PER_STAGE;
         let (delay_l_slice, delay_r_slice) = solo_delay_line
             [band_delay_offset..band_delay_offset + 2 * DELAY_SAMPLES_PER_STAGE]
@@ -504,6 +553,8 @@ fn render_stereo_solo_audition(
         ) {
             match routing {
                 BandRouting::Stereo => {
+                    io.scratch_l.copy_from_slice(io.dry_l);
+                    io.scratch_r.copy_from_slice(io.dry_r);
                     process_stereo_planar_in_place(
                         io.scratch_l,
                         io.scratch_r,
@@ -511,34 +562,29 @@ fn render_stereo_solo_audition(
                         delay_l,
                         delay_r,
                     );
+                    for (dst, &src) in io.out_l.iter_mut().zip(io.scratch_l.iter()) {
+                        *dst += src;
+                    }
+                    for (dst, &src) in io.out_r.iter_mut().zip(io.scratch_r.iter()) {
+                        *dst += src;
+                    }
                 }
                 BandRouting::Left => {
+                    io.scratch_l.copy_from_slice(io.dry_l);
                     process_mono_in_place(io.scratch_l, coeffs, delay_l);
-                    io.scratch_r.fill(0.0);
+                    for (dst, &src) in io.out_l.iter_mut().zip(io.scratch_l.iter()) {
+                        *dst += src;
+                    }
                 }
                 BandRouting::Right => {
-                    io.scratch_l.fill(0.0);
+                    io.scratch_r.copy_from_slice(io.dry_r);
                     process_mono_in_place(io.scratch_r, coeffs, delay_r);
+                    for (dst, &src) in io.out_r.iter_mut().zip(io.scratch_r.iter()) {
+                        *dst += src;
+                    }
                 }
-                BandRouting::Mid => {
-                    lr_to_ms_in_place(io.scratch_l, io.scratch_r);
-                    process_mono_in_place(io.scratch_l, coeffs, delay_l);
-                    io.scratch_r.fill(0.0);
-                    ms_to_lr_in_place(io.scratch_l, io.scratch_r);
-                }
-                BandRouting::Side => {
-                    lr_to_ms_in_place(io.scratch_l, io.scratch_r);
-                    io.scratch_l.fill(0.0);
-                    process_mono_in_place(io.scratch_r, coeffs, delay_r);
-                    ms_to_lr_in_place(io.scratch_l, io.scratch_r);
-                }
+                BandRouting::Mid | BandRouting::Side => {}
             }
-        }
-        for (dst, &src) in io.out_l.iter_mut().zip(io.scratch_l.iter()) {
-            *dst += src;
-        }
-        for (dst, &src) in io.out_r.iter_mut().zip(io.scratch_r.iter()) {
-            *dst += src;
         }
     }
 }

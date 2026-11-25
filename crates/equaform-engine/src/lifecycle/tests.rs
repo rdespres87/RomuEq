@@ -1584,3 +1584,53 @@ fn test_solo_toggle_is_click_free() {
         "solo toggle produced discontinuity: max_step_l={max_step_l}, max_step_r={max_step_r}"
     );
 }
+
+#[test]
+fn test_solo_mixed_mid_side_and_left_superposition() {
+    let sr = 48_000.0;
+    let block = 256usize;
+    let in_l = solo_test_sine(500.0, sr, block);
+    let in_r = solo_test_sine(1500.0, sr, block);
+
+    let run_solo = |setup: fn(&mut EqParameters)| -> (Vec<f32>, Vec<f32>) {
+        let mut eng = Box::new(EngineLifecycle::new());
+        eng.prepare(f64::from(sr), block, 2);
+        let mut params = EqParameters::default();
+        params.bands[0].frequency_hz = 500.0;
+        params.bands[1].frequency_hz = 1500.0;
+        params.bands[2].frequency_hz = 1000.0;
+        params.set_band_routing(0, equaform_common::BandRouting::Mid);
+        params.set_band_routing(1, equaform_common::BandRouting::Side);
+        params.set_band_routing(2, equaform_common::BandRouting::Left);
+        setup(&mut params);
+        eng.set_parameters(params);
+        let mut out_l = vec![0.0_f32; block];
+        let mut out_r = vec![0.0_f32; block];
+        assert!(eng.process(&[&in_l, &in_r], &mut [&mut out_l, &mut out_r]));
+        (out_l, out_r)
+    };
+
+    let (mid_l, mid_r) = run_solo(|p| p.set_band_solo(0, true));
+    let (side_l, side_r) = run_solo(|p| p.set_band_solo(1, true));
+    let (left_l, left_r) = run_solo(|p| p.set_band_solo(2, true));
+    let (all_l, all_r) = run_solo(|p| {
+        p.set_band_solo(0, true);
+        p.set_band_solo(1, true);
+        p.set_band_solo(2, true);
+    });
+
+    for i in 0..block {
+        let exp_l = mid_l[i] + side_l[i] + left_l[i];
+        let exp_r = mid_r[i] + side_r[i] + left_r[i];
+        assert!(
+            (all_l[i] - exp_l).abs() < 1e-5,
+            "sample {i} L mismatch: got {}, expected {exp_l}",
+            all_l[i]
+        );
+        assert!(
+            (all_r[i] - exp_r).abs() < 1e-5,
+            "sample {i} R mismatch: got {}, expected {exp_r}",
+            all_r[i]
+        );
+    }
+}
