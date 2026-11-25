@@ -1152,8 +1152,8 @@ mod tests {
     use params_map::{PARAM_COUNT, get_param_meta};
 
     #[test]
-    fn test_all_51_params_round_trip_mapping() {
-        assert_eq!(PARAM_COUNT, 51);
+    fn test_all_59_params_round_trip_mapping() {
+        assert_eq!(PARAM_COUNT, 59);
         let shared = EquaformSharedInner::new();
 
         for idx in 0..PARAM_COUNT {

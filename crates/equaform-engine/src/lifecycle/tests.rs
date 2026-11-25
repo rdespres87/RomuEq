@@ -1452,3 +1452,81 @@ fn test_solo_clear_restores_normal_eq() {
     let restored_out = run_stereo_blocks(&mut engine, &sig, 256);
     assert!(solo_test_rms(&restored_out) > 0.95 * in_rms);
 }
+
+// ===========================================================================
+// Mid/Side & per-band stereo routing tests
+// ===========================================================================
+
+#[test]
+fn test_ms_side_band_does_not_affect_pure_mono() {
+    let mut eng = Box::new(EngineLifecycle::new());
+    eng.prepare(48000.0, 256, 2);
+    let mut params = EqParameters::default();
+    params.bands[0].frequency_hz = 1000.0;
+    params.bands[0].gain_db = 12.0;
+    params.set_band_routing(0, equaform_common::BandRouting::Side);
+    eng.set_parameters(params);
+
+    let sig = solo_test_sine(1000.0, 48000.0, 16 * 256);
+    let mut ol = vec![0.0f32; 256];
+    let mut or = vec![0.0f32; 256];
+    for chunk in sig.chunks_exact(256) {
+        assert!(eng.process(&[chunk, chunk], &mut [&mut ol, &mut or]));
+        for ((&l_out, &r_out), &in_s) in ol.iter().zip(or.iter()).zip(chunk.iter()) {
+            assert!((l_out - in_s).abs() < 1e-4);
+            assert!((r_out - in_s).abs() < 1e-4);
+        }
+    }
+}
+
+#[test]
+fn test_ms_mid_band_boosts_mono_and_leaves_antiphase_unmodified() {
+    let mut eng = Box::new(EngineLifecycle::new());
+    eng.prepare(48000.0, 256, 2);
+    let mut params = EqParameters::default();
+    params.bands[0].frequency_hz = 1000.0;
+    params.bands[0].gain_db = 12.0;
+    params.set_band_routing(0, equaform_common::BandRouting::Mid);
+    eng.set_parameters(params);
+
+    let sig = solo_test_sine(1000.0, 48000.0, 16 * 256);
+    let neg_sig: Vec<f32> = sig.iter().map(|&x| -x).collect();
+    let mut ol = vec![0.0f32; 256];
+    let mut or = vec![0.0f32; 256];
+
+    // Pure anti-phase (L = +s, R = -s): Mid == 0, output must match input.
+    for (c_l, c_r) in sig.chunks_exact(256).zip(neg_sig.chunks_exact(256)) {
+        assert!(eng.process(&[c_l, c_r], &mut [&mut ol, &mut or]));
+        for ((&l_out, &r_out), &in_s) in ol.iter().zip(or.iter()).zip(c_l.iter()) {
+            assert!((l_out - in_s).abs() < 1e-4);
+            assert!((r_out + in_s).abs() < 1e-4);
+        }
+    }
+
+    // Pure mono (L == R): Mid carries full energy, +12 dB boost yields > 3x RMS.
+    eng.reset();
+    let out_mono = run_stereo_blocks(&mut eng, &sig, 256);
+    assert!(solo_test_rms(&out_mono) > 3.0 * solo_test_rms(&sig[..256]));
+}
+
+#[test]
+fn test_left_only_band_isolates_right_channel() {
+    let mut eng = Box::new(EngineLifecycle::new());
+    eng.prepare(48000.0, 256, 2);
+    let mut params = EqParameters::default();
+    params.bands[0].frequency_hz = 1000.0;
+    params.bands[0].gain_db = 12.0;
+    params.set_band_routing(0, equaform_common::BandRouting::Left);
+    eng.set_parameters(params);
+
+    let sig = solo_test_sine(1000.0, 48000.0, 16 * 256);
+    let mut ol = vec![0.0f32; 256];
+    let mut or = vec![0.0f32; 256];
+    for chunk in sig.chunks_exact(256) {
+        assert!(eng.process(&[chunk, chunk], &mut [&mut ol, &mut or]));
+        for (&r_out, &in_s) in or.iter().zip(chunk.iter()) {
+            assert!((r_out - in_s).abs() < 1e-4);
+        }
+    }
+    assert!(solo_test_rms(&ol) > 3.0 * solo_test_rms(&sig[..256]));
+}

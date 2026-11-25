@@ -181,6 +181,37 @@ pub fn process_stereo_interleaved(
     delay_r[3] = y2.right();
 }
 
+/// Convert planar Left/Right buffers to orthonormal Mid/Side in-place.
+///
+/// Uses `FRAC_1_SQRT_2` scaling (`M = (L + R) / sqrt(2)`, `S = (L - R) / sqrt(2)`)
+/// so [`lr_to_ms_in_place`] followed by [`ms_to_lr_in_place`] is unity-gain exact.
+/// Processes `left.len().min(right.len())` samples without allocating or panicking.
+#[inline]
+pub fn lr_to_ms_in_place(left: &mut [f32], right: &mut [f32]) {
+    const INV_SQRT_2: f32 = std::f32::consts::FRAC_1_SQRT_2;
+    for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+        let lv = *l;
+        let rv = *r;
+        *l = (lv + rv) * INV_SQRT_2;
+        *r = (lv - rv) * INV_SQRT_2;
+    }
+}
+
+/// Convert planar orthonormal Mid/Side buffers back to Left/Right in-place.
+///
+/// Uses `FRAC_1_SQRT_2` scaling (`L = (M + S) / sqrt(2)`, `R = (M - S) / sqrt(2)`).
+/// Processes `mid.len().min(side.len())` samples without allocating or panicking.
+#[inline]
+pub fn ms_to_lr_in_place(mid: &mut [f32], side: &mut [f32]) {
+    const INV_SQRT_2: f32 = std::f32::consts::FRAC_1_SQRT_2;
+    for (m, s) in mid.iter_mut().zip(side.iter_mut()) {
+        let mv = *m;
+        let sv = *s;
+        *m = (mv + sv) * INV_SQRT_2;
+        *s = (mv - sv) * INV_SQRT_2;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -344,5 +375,47 @@ mod tests {
         process_stereo_planar_in_place(&mut l2, &mut r2, &c, &mut dl, &mut dr);
         assert_eq!(l2[1], 2.0);
         assert_eq!(l2[2], 3.0);
+    }
+
+    #[test]
+    fn test_lr_ms_roundtrip_unity_gain() {
+        let mut l = [1.0f32, -0.5, 0.3, 2.0];
+        let mut r = [0.7f32, 1.1, -0.2, -1.5];
+        let (orig_l, orig_r) = (l, r);
+        lr_to_ms_in_place(&mut l, &mut r);
+        ms_to_lr_in_place(&mut l, &mut r);
+        for (&got, &exp) in l.iter().zip(orig_l.iter()) {
+            assert!((got - exp).abs() < 1e-6);
+        }
+        for (&got, &exp) in r.iter().zip(orig_r.iter()) {
+            assert!((got - exp).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn test_lr_to_ms_mono_and_antiphase() {
+        let mut l = [1.0f32, -1.0];
+        let mut r = [1.0f32, 1.0];
+        lr_to_ms_in_place(&mut l, &mut r);
+        assert!((l[0] - std::f32::consts::SQRT_2).abs() < 1e-6);
+        assert!(r[0].abs() < 1e-6);
+        assert!(l[1].abs() < 1e-6);
+        assert!((r[1] + std::f32::consts::SQRT_2).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_lr_ms_empty_and_mismatched_safe() {
+        let mut l = [1.0f32, 2.0, 3.0];
+        let mut r = [4.0f32, 5.0];
+        lr_to_ms_in_place(&mut l, &mut r);
+        assert!((l[2] - 3.0).abs() < 1e-6);
+        let mut m = [1.0f32, 2.0, 3.0];
+        let mut s = [4.0f32, 5.0];
+        ms_to_lr_in_place(&mut m, &mut s);
+        assert!((m[2] - 3.0).abs() < 1e-6);
+        let mut e1: [f32; 0] = [];
+        let mut e2: [f32; 0] = [];
+        lr_to_ms_in_place(&mut e1, &mut e2);
+        ms_to_lr_in_place(&mut e1, &mut e2);
     }
 }

@@ -172,6 +172,9 @@ pub fn populate_factory_presets(preset_manager: &mut PresetManager) {
             preset
                 .parameter_values
                 .set(base + 5, band.slope.to_raw() as f32);
+            preset
+                .parameter_values
+                .set(base + 7, params.band_routing(band_idx).to_raw() as f32);
         }
 
         preset_manager.remove(name);

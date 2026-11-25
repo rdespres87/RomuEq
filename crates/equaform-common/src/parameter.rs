@@ -54,6 +54,7 @@ pub mod band {
     pub const Q: u32 = 4;
     pub const SLOPE: u32 = 5;
     pub const SOLO: u32 = 6;
+    pub const ROUTING: u32 = 7;
     pub const RESERVED_END: u32 = 99;
 }
 
@@ -404,6 +405,29 @@ fn band_parameter_info(id: u32) -> Option<ParameterInfo> {
             },
             unit: "dB/oct",
         }),
+        7 => {
+            static ROUTING_NAMES: [&str; 8] = [
+                "band[0].routing",
+                "band[1].routing",
+                "band[2].routing",
+                "band[3].routing",
+                "band[4].routing",
+                "band[5].routing",
+                "band[6].routing",
+                "band[7].routing",
+            ];
+            Some(ParameterInfo {
+                id,
+                name: ROUTING_NAMES[band_idx as usize],
+                param_type: ParameterType::Enum { count: 5 },
+                range: ParameterRange {
+                    min: 0.0,
+                    max: 4.0,
+                    default: 0.0,
+                },
+                unit: "",
+            })
+        }
         _ => None,
     }
 }
@@ -560,15 +584,97 @@ impl Slope {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum StereoMode {
     Stereo,
+    MidSide,
 }
 
 impl StereoMode {
-    pub const fn from_raw(_value: u32) -> Option<Self> {
-        Some(StereoMode::Stereo)
+    pub const fn from_raw(value: u32) -> Option<Self> {
+        match value {
+            0 => Some(StereoMode::Stereo),
+            1 => Some(StereoMode::MidSide),
+            _ => None,
+        }
     }
 
     pub const fn to_raw(self) -> u32 {
-        0
+        match self {
+            StereoMode::Stereo => 0,
+            StereoMode::MidSide => 1,
+        }
+    }
+}
+
+/// Per-band stereo channel routing placement.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum BandRouting {
+    /// Process both Left and Right channels identically.
+    #[default]
+    Stereo = 0,
+    /// Process Left channel only.
+    Left = 1,
+    /// Process Right channel only.
+    Right = 2,
+    /// Process Mid (sum) component only.
+    Mid = 3,
+    /// Process Side (difference) component only.
+    Side = 4,
+}
+
+impl BandRouting {
+    /// Try to create from a raw enum value (0–4).
+    pub const fn from_raw(value: u32) -> Option<Self> {
+        match value {
+            0 => Some(BandRouting::Stereo),
+            1 => Some(BandRouting::Left),
+            2 => Some(BandRouting::Right),
+            3 => Some(BandRouting::Mid),
+            4 => Some(BandRouting::Side),
+            _ => None,
+        }
+    }
+
+    /// Convert to raw enum value (0–4).
+    pub const fn to_raw(self) -> u32 {
+        match self {
+            BandRouting::Stereo => 0,
+            BandRouting::Left => 1,
+            BandRouting::Right => 2,
+            BandRouting::Mid => 3,
+            BandRouting::Side => 4,
+        }
+    }
+
+    /// Compact label for band strip UI buttons.
+    pub const fn short_label(self) -> &'static str {
+        match self {
+            BandRouting::Stereo => "ST",
+            BandRouting::Left => "L",
+            BandRouting::Right => "R",
+            BandRouting::Mid => "M",
+            BandRouting::Side => "S",
+        }
+    }
+
+    /// Human-readable English name for DAW parameter display.
+    pub const fn display_name(self) -> &'static str {
+        match self {
+            BandRouting::Stereo => "Stereo",
+            BandRouting::Left => "Left",
+            BandRouting::Right => "Right",
+            BandRouting::Mid => "Mid",
+            BandRouting::Side => "Side",
+        }
+    }
+
+    /// Cycle to the next routing placement (`Stereo -> Left -> Right -> Mid -> Side -> Stereo`).
+    pub const fn next(self) -> Self {
+        match self {
+            BandRouting::Stereo => BandRouting::Left,
+            BandRouting::Left => BandRouting::Right,
+            BandRouting::Right => BandRouting::Mid,
+            BandRouting::Mid => BandRouting::Side,
+            BandRouting::Side => BandRouting::Stereo,
+        }
     }
 }
 
@@ -685,6 +791,9 @@ pub struct GlobalParameters {
     /// Monitor-only bitmask of soloed bands (bit `i` = band `i`, excluded from persistence).
     #[serde(skip)]
     pub solo_mask: u8,
+    /// Per-band stereo routing placement (defaults to `Stereo` for backward compatibility).
+    #[serde(default)]
+    pub band_routing: [BandRouting; MAX_BANDS],
 }
 
 impl Default for GlobalParameters {
@@ -696,6 +805,7 @@ impl Default for GlobalParameters {
             processing_mode: ProcessingMode::MinimumPhase,
             stereo_mode: StereoMode::Stereo,
             solo_mask: 0,
+            band_routing: [BandRouting::Stereo; MAX_BANDS],
         }
     }
 }
@@ -743,6 +853,24 @@ impl EqParameters {
     #[inline]
     pub fn clear_solo(&mut self) {
         self.global.solo_mask = 0;
+    }
+
+    /// Returns the stereo routing placement for `band_idx` (defaults to `Stereo` if out of range).
+    #[inline]
+    pub const fn band_routing(&self, band_idx: usize) -> BandRouting {
+        if band_idx < MAX_BANDS {
+            self.global.band_routing[band_idx]
+        } else {
+            BandRouting::Stereo
+        }
+    }
+
+    /// Sets the stereo routing placement for `band_idx`.
+    #[inline]
+    pub fn set_band_routing(&mut self, band_idx: usize, routing: BandRouting) {
+        if band_idx < MAX_BANDS {
+            self.global.band_routing[band_idx] = routing;
+        }
     }
 }
 

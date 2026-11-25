@@ -3,9 +3,11 @@
 use super::{CROSSFADE_MS, DELAY_SAMPLES_PER_STAGE, EngineLifecycle, LifecycleState};
 use equaform_analysis::AnalysisFrame;
 use equaform_common::automation::AutomationValueProvider;
-use equaform_common::{BandParameters, MAX_BANDS, ParamId};
+use equaform_common::{BandParameters, BandRouting, MAX_BANDS, ParamId};
 use equaform_dsp::coefficients::{BiquadCoefficients, FilterSpecification};
-use equaform_dsp::{process_mono_in_place, process_stereo_planar_in_place};
+use equaform_dsp::{
+    lr_to_ms_in_place, ms_to_lr_in_place, process_mono_in_place, process_stereo_planar_in_place,
+};
 
 impl EngineLifecycle {
     /// Create an automation value provider for the current block.
@@ -228,6 +230,7 @@ impl EngineLifecycle {
                     if !self.eq_params.is_band_solo(band_idx) {
                         continue;
                     }
+                    let routing = self.eq_params.band_routing(band_idx);
                     scratch_l.copy_from_slice(dry_left);
                     scratch_r.copy_from_slice(dry_right);
                     let band_delay_offset = band_idx * 2 * DELAY_SAMPLES_PER_STAGE;
@@ -238,13 +241,37 @@ impl EngineLifecycle {
                         <&mut [f32; 4]>::try_from(delay_l_slice),
                         <&mut [f32; 4]>::try_from(delay_r_slice),
                     ) {
-                        process_stereo_planar_in_place(
-                            scratch_l,
-                            scratch_r,
-                            solo_coeffs,
-                            delay_l,
-                            delay_r,
-                        );
+                        match routing {
+                            BandRouting::Stereo => {
+                                process_stereo_planar_in_place(
+                                    scratch_l,
+                                    scratch_r,
+                                    solo_coeffs,
+                                    delay_l,
+                                    delay_r,
+                                );
+                            }
+                            BandRouting::Left => {
+                                process_mono_in_place(scratch_l, solo_coeffs, delay_l);
+                                scratch_r.fill(0.0);
+                            }
+                            BandRouting::Right => {
+                                scratch_l.fill(0.0);
+                                process_mono_in_place(scratch_r, solo_coeffs, delay_r);
+                            }
+                            BandRouting::Mid => {
+                                lr_to_ms_in_place(scratch_l, scratch_r);
+                                process_mono_in_place(scratch_l, solo_coeffs, delay_l);
+                                scratch_r.fill(0.0);
+                                ms_to_lr_in_place(scratch_l, scratch_r);
+                            }
+                            BandRouting::Side => {
+                                lr_to_ms_in_place(scratch_l, scratch_r);
+                                scratch_l.fill(0.0);
+                                process_mono_in_place(scratch_r, solo_coeffs, delay_r);
+                                ms_to_lr_in_place(scratch_l, scratch_r);
+                            }
+                        }
                     }
                     for (dst, &src) in left.iter_mut().zip(scratch_l.iter()) {
                         *dst += src;
@@ -254,8 +281,14 @@ impl EngineLifecycle {
                     }
                 }
             } else {
+                let mut has_ms_band = false;
                 for (band_idx, coeffs) in block_coeffs.iter().enumerate() {
                     if !self.eq_params.bands[band_idx].enabled {
+                        continue;
+                    }
+                    let routing = self.eq_params.band_routing(band_idx);
+                    if matches!(routing, BandRouting::Mid | BandRouting::Side) {
+                        has_ms_band = true;
                         continue;
                     }
                     let band_delay_offset = band_idx * 2 * DELAY_SAMPLES_PER_STAGE;
@@ -266,8 +299,53 @@ impl EngineLifecycle {
                         <&mut [f32; 4]>::try_from(delay_l_slice),
                         <&mut [f32; 4]>::try_from(delay_r_slice),
                     ) {
-                        process_stereo_planar_in_place(left, right, coeffs, delay_l, delay_r);
+                        match routing {
+                            BandRouting::Stereo => {
+                                process_stereo_planar_in_place(
+                                    left, right, coeffs, delay_l, delay_r,
+                                );
+                            }
+                            BandRouting::Left => {
+                                process_mono_in_place(left, coeffs, delay_l);
+                            }
+                            BandRouting::Right => {
+                                process_mono_in_place(right, coeffs, delay_r);
+                            }
+                            BandRouting::Mid | BandRouting::Side => {}
+                        }
                     }
+                }
+
+                if has_ms_band {
+                    lr_to_ms_in_place(left, right);
+                    for (band_idx, coeffs) in block_coeffs.iter().enumerate() {
+                        if !self.eq_params.bands[band_idx].enabled {
+                            continue;
+                        }
+                        let routing = self.eq_params.band_routing(band_idx);
+                        if !matches!(routing, BandRouting::Mid | BandRouting::Side) {
+                            continue;
+                        }
+                        let band_delay_offset = band_idx * 2 * DELAY_SAMPLES_PER_STAGE;
+                        let (delay_m_slice, delay_s_slice) = self.delay_line
+                            [band_delay_offset..band_delay_offset + 2 * DELAY_SAMPLES_PER_STAGE]
+                            .split_at_mut(DELAY_SAMPLES_PER_STAGE);
+                        if let (Ok(delay_m), Ok(delay_s)) = (
+                            <&mut [f32; 4]>::try_from(delay_m_slice),
+                            <&mut [f32; 4]>::try_from(delay_s_slice),
+                        ) {
+                            match routing {
+                                BandRouting::Mid => {
+                                    process_mono_in_place(left, coeffs, delay_m);
+                                }
+                                BandRouting::Side => {
+                                    process_mono_in_place(right, coeffs, delay_s);
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    ms_to_lr_in_place(left, right);
                 }
             }
 

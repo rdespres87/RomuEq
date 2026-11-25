@@ -782,6 +782,10 @@ impl EngineClient {
                         0.0
                     },
                 });
+                values.push(ParamValue {
+                    param_id: ParamId(base + equaform_common::band::ROUTING),
+                    value: params.band_routing(band_idx).to_raw() as f32,
+                });
             }
         }
 
@@ -821,6 +825,12 @@ impl EngineClient {
                 4 => band.q = cmd.value.clamp(0.1, 20.0),
                 5 => band.slope = Self::slope_from_f32(cmd.value),
                 6 => params.set_band_solo(band_idx, cmd.value > 0.5),
+                7 => {
+                    let raw = cmd.value.round().clamp(0.0, 4.0) as u32;
+                    if let Some(routing) = equaform_common::BandRouting::from_raw(raw) {
+                        params.set_band_routing(band_idx, routing);
+                    }
+                }
                 _ => {}
             }
         }

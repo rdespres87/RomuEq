@@ -92,29 +92,6 @@ pub fn render_band(ui: &mut egui::Ui, ctx: BandRenderContext<'_>, batch: &mut Gu
                 {
                     batch.push(params.solo(), if solo { 0.0 } else { 1.0 });
                 }
-                let solo_btn = egui::Button::new(
-                    egui::RichText::new("S")
-                        .small()
-                        .strong()
-                        .color(if solo {
-                            egui::Color32::from_rgb(20, 20, 24)
-                        } else {
-                            egui::Color32::from_rgb(175, 180, 190)
-                        }),
-                )
-                .fill(if solo {
-                    egui::Color32::from_rgb(245, 195, 50)
-                } else {
-                    egui::Color32::from_rgb(42, 46, 54)
-                })
-                .min_size(egui::vec2(18.0, 16.0));
-                if ui
-                    .add(solo_btn)
-                    .on_hover_text("Solo band audition (monitor only)")
-                    .clicked()
-                {
-                    batch.push(params.solo(), if solo { 0.0 } else { 1.0 });
-                }
             });
 
             // 2. Compact Filter type dropdown (enum, 0–4 matching FilterType::to_raw)
@@ -217,19 +194,71 @@ pub fn render_band(ui: &mut egui::Ui, ctx: BandRenderContext<'_>, batch: &mut Gu
                 batch.push(params.q(), q_val);
             }
 
-            // 6. Compact Slope dropdown (6/12/24/48 dB/oct)
+            // 6. Compact Slope dropdown + Stereo / Mid-Side routing button on one row
             let slope_val = snapshot.get(params.slope()).unwrap_or(1.0);
             let slopes = ["6 dB/o", "12 dB/o", "24 dB/o", "48 dB/o"];
             let sl_idx = (slope_val as usize).min(slopes.len() - 1);
             let mut sl_idx = sl_idx;
 
-            egui::ComboBox::from_id_salt(format!("slope_{band_index}"))
-                .width(col_w)
-                .selected_text(slopes[sl_idx])
-                .show_index(ui, &mut sl_idx, slopes.len(), |idx| slopes[idx].to_string());
-            if sl_idx as f32 != slope_val {
-                batch.push(params.slope(), sl_idx as f32);
-            }
+            let routing_raw = snapshot
+                .get(params.routing())
+                .unwrap_or(0.0)
+                .round()
+                .clamp(0.0, 4.0) as u32;
+            let routing = equaform_common::BandRouting::from_raw(routing_raw).unwrap_or_default();
+            let (routing_fill, routing_text) = match routing {
+                equaform_common::BandRouting::Stereo => (
+                    egui::Color32::from_rgb(38, 42, 50),
+                    egui::Color32::from_rgb(175, 180, 190),
+                ),
+                equaform_common::BandRouting::Left => (
+                    egui::Color32::from_rgb(40, 85, 145),
+                    egui::Color32::from_rgb(235, 242, 255),
+                ),
+                equaform_common::BandRouting::Right => (
+                    egui::Color32::from_rgb(145, 85, 35),
+                    egui::Color32::from_rgb(255, 242, 230),
+                ),
+                equaform_common::BandRouting::Mid => (
+                    egui::Color32::from_rgb(30, 130, 150),
+                    egui::Color32::from_rgb(235, 252, 255),
+                ),
+                equaform_common::BandRouting::Side => (
+                    egui::Color32::from_rgb(140, 50, 145),
+                    egui::Color32::from_rgb(255, 235, 255),
+                ),
+            };
+
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 3.0;
+                let slope_w = (col_w - 28.0).max(46.0);
+                egui::ComboBox::from_id_salt(format!("slope_{band_index}"))
+                    .width(slope_w)
+                    .selected_text(slopes[sl_idx])
+                    .show_index(ui, &mut sl_idx, slopes.len(), |idx| slopes[idx].to_string());
+                if sl_idx as f32 != slope_val {
+                    batch.push(params.slope(), sl_idx as f32);
+                }
+
+                let routing_btn = egui::Button::new(
+                    egui::RichText::new(routing.short_label())
+                        .small()
+                        .strong()
+                        .color(routing_text),
+                )
+                .fill(routing_fill)
+                .min_size(egui::vec2(24.0, 18.0));
+                if ui
+                    .add(routing_btn)
+                    .on_hover_text(format!(
+                        "Channel routing: {} (click to cycle ST / L / R / M / S)",
+                        routing.display_name()
+                    ))
+                    .clicked()
+                {
+                    batch.push(params.routing(), routing.next().to_raw() as f32);
+                }
+            });
         });
     });
 }

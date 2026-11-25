@@ -13,10 +13,10 @@
 
 use clap_sys::ext::params::*;
 use clap_sys::id::clap_id;
-use equaform_common::{EqParameters, FilterType, GlobalParameters, MAX_BANDS, Slope};
+use equaform_common::{BandRouting, EqParameters, FilterType, GlobalParameters, MAX_BANDS, Slope};
 
-/// Total count of exposed automatable parameters (3 global + 8 * 6 band params = 51).
-pub const PARAM_COUNT: u32 = 3 + (MAX_BANDS as u32 * 6);
+/// Total count of exposed automatable parameters (3 global + 8 * 7 band params = 59).
+pub const PARAM_COUNT: u32 = 3 + (MAX_BANDS as u32 * 7);
 pub const PARAM_COUNT_USIZE: usize = PARAM_COUNT as usize;
 
 #[derive(Clone, Copy, Debug)]
@@ -41,8 +41,14 @@ pub const fn param_id_to_slot(id: clap_id) -> Option<usize> {
             let offset = id - 100;
             let band = offset / 100;
             let field = offset % 100;
-            if (band as usize) < MAX_BANDS && field < 6 {
-                Some(3 + (band as usize) * 6 + (field as usize))
+            if (band as usize) < MAX_BANDS {
+                if field < 6 {
+                    Some(3 + (band as usize) * 7 + (field as usize))
+                } else if field == 7 {
+                    Some(3 + (band as usize) * 7 + 6)
+                } else {
+                    None
+                }
             } else {
                 None
             }
@@ -60,9 +66,10 @@ pub const fn slot_to_param_id(slot: usize) -> clap_id {
         2 => 3,
         s if s < PARAM_COUNT_USIZE => {
             let rem = s - 3;
-            let band = rem / 6;
-            let field = rem % 6;
-            100 + (band as clap_id) * 100 + (field as clap_id)
+            let band = rem / 7;
+            let field_slot = rem % 7;
+            let field_id = if field_slot == 6 { 7 } else { field_slot };
+            100 + (band as clap_id) * 100 + (field_id as clap_id)
         }
         _ => 0,
     }
@@ -97,6 +104,7 @@ pub fn get_param_from_eq(eq: &EqParameters, id: clap_id) -> Option<f64> {
                 3 => Some(b.gain_db as f64),
                 4 => Some(b.q as f64),
                 5 => Some(b.slope.to_raw() as f64),
+                7 => Some(eq.band_routing(band_idx).to_raw() as f64),
                 _ => None,
             }
         }
@@ -163,6 +171,15 @@ pub fn apply_param_to_eq(eq: &mut EqParameters, id: clap_id, val: f64) -> bool {
                         false
                     }
                 }
+                7 => {
+                    let raw = val.round().clamp(0.0, 4.0) as u32;
+                    if let Some(r) = BandRouting::from_raw(raw) {
+                        eq.set_band_routing(band_idx, r);
+                        true
+                    } else {
+                        false
+                    }
+                }
                 _ => false,
             }
         }
@@ -195,6 +212,7 @@ pub fn normalize_param_value(id: clap_id, val: f64) -> f32 {
             3 => (val as f32).clamp(-24.0, 24.0),
             4 => (val as f32).clamp(0.1, 20.0),
             5 => val.round().clamp(0.0, 3.0) as f32,
+            7 => val.round().clamp(0.0, 4.0) as f32,
             _ => val as f32,
         },
         _ => val as f32,
@@ -237,8 +255,8 @@ pub fn get_param_meta(index: u32) -> Option<ParamMeta> {
     }
 
     let band_param_idx = index - 3;
-    let band_idx = (band_param_idx / 6) as usize;
-    let field_idx = band_param_idx % 6;
+    let band_idx = (band_param_idx / 7) as usize;
+    let field_idx = band_param_idx % 7;
 
     if band_idx >= MAX_BANDS {
         return None;
@@ -374,6 +392,24 @@ pub fn get_param_meta(index: u32) -> Option<ParamMeta> {
             default_value: Slope::Db12.to_raw() as f64,
             flags: CLAP_PARAM_IS_STEPPED | CLAP_PARAM_IS_ENUM | CLAP_PARAM_IS_AUTOMATABLE,
         }),
+        6 => Some(ParamMeta {
+            id: base_id + 7,
+            name: match band_idx {
+                0 => "Band 1 Routing",
+                1 => "Band 2 Routing",
+                2 => "Band 3 Routing",
+                3 => "Band 4 Routing",
+                4 => "Band 5 Routing",
+                5 => "Band 6 Routing",
+                6 => "Band 7 Routing",
+                _ => "Band 8 Routing",
+            },
+            module: "Bands",
+            min_value: 0.0,
+            max_value: 4.0,
+            default_value: BandRouting::Stereo.to_raw() as f64,
+            flags: CLAP_PARAM_IS_STEPPED | CLAP_PARAM_IS_ENUM | CLAP_PARAM_IS_AUTOMATABLE,
+        }),
         _ => None,
     }
 }
@@ -383,8 +419,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_all_51_param_metadata_english() {
-        assert_eq!(PARAM_COUNT, 51);
+    fn test_all_59_param_metadata_english() {
+        assert_eq!(PARAM_COUNT, 59);
         let mut eq = default_eq_parameters();
         for idx in 0..PARAM_COUNT {
             let meta = get_param_meta(idx)

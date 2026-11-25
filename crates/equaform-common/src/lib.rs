@@ -28,6 +28,7 @@ pub use audio_buffer::MAX_BLOCK_SIZE;
 pub use audio_buffer::MAX_CHANNELS;
 pub use audio_ring::{AudioRingConsumer, AudioRingProducer, create_audio_ring_buffer};
 pub use parameter::BandParameters;
+pub use parameter::BandRouting;
 pub use parameter::EqParameters;
 pub use parameter::FilterType;
 pub use parameter::GlobalParameters;
@@ -563,6 +564,7 @@ mod tests {
                 processing_mode: ProcessingMode::MinimumPhase,
                 stereo_mode: StereoMode::Stereo,
                 solo_mask: 0,
+                band_routing: [BandRouting::Stereo; MAX_BANDS],
             },
             bands: [BandParameters {
                 enabled: false,

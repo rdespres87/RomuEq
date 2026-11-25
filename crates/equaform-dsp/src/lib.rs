@@ -38,4 +38,7 @@ pub use coefficients::{
 };
 pub use filter::{BiquadFilter, BiquadState};
 pub use frequency_response::{ResponsePoint, biquad_response_at_frequency, compute_response};
-pub use simd::{process_mono_in_place, process_stereo_interleaved, process_stereo_planar_in_place};
+pub use simd::{
+    lr_to_ms_in_place, ms_to_lr_in_place, process_mono_in_place, process_stereo_interleaved,
+    process_stereo_planar_in_place,
+};

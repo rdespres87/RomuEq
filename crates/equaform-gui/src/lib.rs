@@ -243,6 +243,11 @@ impl BandParams {
         self.param_id(band::SOLO)
     }
 
+    /// Returns the per-band stereo routing parameter ID.
+    pub fn routing(&self) -> ParamId {
+        self.param_id(band::ROUTING)
+    }
+
     /// Returns the human-readable band label.
     pub fn label(&self) -> String {
         format!("Band {}", self.band_index + 1)

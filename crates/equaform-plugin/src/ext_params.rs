@@ -188,6 +188,11 @@ unsafe extern "C" fn value_to_text(
             Some(Slope::Db24) => "24 dB/o".to_string(),
             None => "12 dB/o".to_string(),
         }
+    } else if param_id >= 100 && param_id % 100 == 7 {
+        equaform_common::BandRouting::from_raw(value.round().clamp(0.0, 4.0) as u32)
+            .unwrap_or_default()
+            .display_name()
+            .to_string()
     } else {
         format!("{value:.2}")
     };
@@ -266,6 +271,20 @@ unsafe extern "C" fn text_to_value(
                 "12 db/o" | "12 db/oct" | "12" => Some(Slope::Db12.to_raw() as f64),
                 "18 db/o" | "18 db/oct" | "18" => Some(Slope::Db18.to_raw() as f64),
                 "24 db/o" | "24 db/oct" | "24" => Some(Slope::Db24.to_raw() as f64),
+                _ => None,
+            };
+            if let Some(v) = parsed {
+                *out_value = v;
+                return true;
+            }
+        }
+        if param_id >= 100 && param_id % 100 == 7 {
+            let parsed = match lower.as_str() {
+                "stereo" | "st" => Some(equaform_common::BandRouting::Stereo.to_raw() as f64),
+                "left" | "l" => Some(equaform_common::BandRouting::Left.to_raw() as f64),
+                "right" | "r" => Some(equaform_common::BandRouting::Right.to_raw() as f64),
+                "mid" | "m" => Some(equaform_common::BandRouting::Mid.to_raw() as f64),
+                "side" | "s" => Some(equaform_common::BandRouting::Side.to_raw() as f64),
                 _ => None,
             };
             if let Some(v) = parsed {
