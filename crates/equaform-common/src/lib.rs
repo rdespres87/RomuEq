@@ -562,6 +562,7 @@ mod tests {
                 auto_gain: false,
                 processing_mode: ProcessingMode::MinimumPhase,
                 stereo_mode: StereoMode::Stereo,
+                solo_mask: 0,
             },
             bands: [BandParameters {
                 enabled: false,

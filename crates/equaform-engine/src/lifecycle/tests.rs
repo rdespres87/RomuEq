@@ -1335,3 +1335,120 @@ fn test_rapid_bypass_toggles_mid_crossfade_no_glitch() {
         "Rapid mid-crossfade bypass toggle caused a step discontinuity: max_delta={max_delta}"
     );
 }
+
+// ===========================================================================
+// Band Solo audition tests
+// ===========================================================================
+
+fn solo_test_sine(freq_hz: f32, sr: f32, len: usize) -> Vec<f32> {
+    (0..len)
+        .map(|i| (2.0 * std::f32::consts::PI * freq_hz * i as f32 / sr).sin())
+        .collect()
+}
+
+fn solo_test_rms(samples: &[f32]) -> f32 {
+    let mean_sq = samples.iter().map(|&s| s * s).sum::<f32>() / samples.len().max(1) as f32;
+    mean_sq.sqrt()
+}
+
+fn run_stereo_blocks(engine: &mut EngineLifecycle, signal: &[f32], block_size: usize) -> Vec<f32> {
+    let mut last_block = vec![0.0f32; block_size];
+    let mut out_r = vec![0.0f32; block_size];
+    for chunk in signal.chunks_exact(block_size) {
+        assert!(engine.process(&[chunk, chunk], &mut [&mut last_block, &mut out_r]));
+    }
+    last_block
+}
+
+#[test]
+fn test_band_solo_isolates_center_frequency() {
+    let mut params = EqParameters::default();
+    params.bands[0].frequency_hz = 1000.0;
+    params.bands[0].q = 2.0;
+    params.set_band_solo(0, true);
+
+    let sig_1k = solo_test_sine(1000.0, 48000.0, 256 * 16);
+    let sig_100 = solo_test_sine(100.0, 48000.0, 256 * 16);
+
+    let mut engine = Box::new(EngineLifecycle::new());
+    engine.prepare(48000.0, 256, 2);
+    engine.set_parameters(params);
+    let out_1k = run_stereo_blocks(&mut engine, &sig_1k, 256);
+
+    engine.reset();
+    let out_100 = run_stereo_blocks(&mut engine, &sig_100, 256);
+
+    let in_rms = solo_test_rms(&sig_1k[..256]);
+    assert!(solo_test_rms(&out_1k) > 0.7 * in_rms);
+    assert!(solo_test_rms(&out_100) < 0.25 * in_rms);
+}
+
+#[test]
+fn test_multi_band_solo_sums_in_parallel() {
+    let mut params = EqParameters::default();
+    params.bands[0].frequency_hz = 200.0;
+    params.bands[0].q = 2.0;
+    params.bands[1].frequency_hz = 4000.0;
+    params.bands[1].q = 2.0;
+    params.set_band_solo(0, true);
+    params.set_band_solo(1, true);
+
+    let sig_200 = solo_test_sine(200.0, 48000.0, 256 * 16);
+    let sig_4k = solo_test_sine(4000.0, 48000.0, 256 * 16);
+
+    let mut engine = Box::new(EngineLifecycle::new());
+    engine.prepare(48000.0, 256, 2);
+    engine.set_parameters(params);
+    let out_200 = run_stereo_blocks(&mut engine, &sig_200, 256);
+
+    engine.reset();
+    let out_4k = run_stereo_blocks(&mut engine, &sig_4k, 256);
+
+    assert!(solo_test_rms(&out_200) > 0.6 * solo_test_rms(&sig_200[..256]));
+    assert!(solo_test_rms(&out_4k) > 0.6 * solo_test_rms(&sig_4k[..256]));
+}
+
+#[test]
+fn test_bypass_overrides_band_solo() {
+    let mut params = EqParameters::default();
+    params.bands[0].frequency_hz = 4000.0;
+    params.bands[0].q = 2.0;
+    params.set_band_solo(0, true);
+    params.global.bypass = true;
+
+    let sig = solo_test_sine(100.0, 48000.0, 256 * 16);
+    let mut engine = Box::new(EngineLifecycle::new());
+    engine.prepare(48000.0, 256, 2);
+    engine.set_parameters(params);
+    let out = run_stereo_blocks(&mut engine, &sig, 256);
+
+    let last_in = &sig[sig.len() - 256..];
+    for (&o, &i) in out.iter().zip(last_in.iter()) {
+        assert!(
+            (o - i).abs() < 1e-4,
+            "Bypass must pass dry signal unmodified"
+        );
+    }
+}
+
+#[test]
+fn test_solo_clear_restores_normal_eq() {
+    let mut params = EqParameters::default();
+    params.bands[0].frequency_hz = 4000.0;
+    params.bands[0].gain_db = 0.0;
+    params.bands[0].q = 2.0;
+    params.set_band_solo(0, true);
+
+    let sig = solo_test_sine(100.0, 48000.0, 256 * 16);
+    let mut engine = Box::new(EngineLifecycle::new());
+    engine.prepare(48000.0, 256, 2);
+    engine.set_parameters(params);
+    let solo_out = run_stereo_blocks(&mut engine, &sig, 256);
+    let in_rms = solo_test_rms(&sig[..256]);
+    assert!(solo_test_rms(&solo_out) < 0.25 * in_rms);
+
+    params.clear_solo();
+    engine.set_parameters(params);
+    let restored_out = run_stereo_blocks(&mut engine, &sig, 256);
+    assert!(solo_test_rms(&restored_out) > 0.95 * in_rms);
+}

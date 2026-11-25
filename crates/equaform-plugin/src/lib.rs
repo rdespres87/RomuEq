@@ -87,6 +87,7 @@ pub struct EquaformSharedInner {
     gesture_active: [AtomicBool; PARAM_COUNT_USIZE],
     gesture_end_pending: [AtomicBool; PARAM_COUNT_USIZE],
     version: AtomicU64,
+    solo_mask: std::sync::atomic::AtomicU8,
     peak_l_bits: AtomicU32,
     peak_r_bits: AtomicU32,
     auto_gain_db_bits: AtomicU32,
@@ -117,6 +118,7 @@ impl EquaformSharedInner {
             gesture_active,
             gesture_end_pending,
             version: AtomicU64::new(1),
+            solo_mask: std::sync::atomic::AtomicU8::new(0),
             peak_l_bits: AtomicU32::new(f32::NEG_INFINITY.to_bits()),
             peak_r_bits: AtomicU32::new(f32::NEG_INFINITY.to_bits()),
             auto_gain_db_bits: AtomicU32::new(0.0f32.to_bits()),
@@ -153,6 +155,20 @@ impl EquaformSharedInner {
     /// Updates a parameter from the UI and tracks touch/latch automation gestures.
     #[inline]
     pub fn set_param_from_ui(&self, id: clap_id, value: f64, pointer_down: bool) -> bool {
+        // Intercept monitor-only band solo (not exposed to DAW automation or presets).
+        if id >= 100 && (id - 100) % 100 == equaform_common::parameter::band::SOLO {
+            let band_idx = ((id - 100) / 100) as usize;
+            if band_idx < equaform_common::MAX_BANDS {
+                let bit = 1u8 << band_idx;
+                if value > 0.5 {
+                    self.solo_mask.fetch_or(bit, Ordering::AcqRel);
+                } else {
+                    self.solo_mask.fetch_and(!bit, Ordering::AcqRel);
+                }
+                self.version.fetch_add(1, Ordering::Release);
+            }
+            return false;
+        }
         let Some(slot) = param_id_to_slot(id) else {
             return false;
         };
@@ -195,6 +211,7 @@ impl EquaformSharedInner {
             let val = f32::from_bits(self.param_bits[slot].load(Ordering::Acquire)) as f64;
             let _ = apply_param_to_eq(&mut eq, id, val);
         }
+        eq.global.solo_mask = self.solo_mask.load(Ordering::Acquire);
         eq
     }
 
@@ -206,6 +223,7 @@ impl EquaformSharedInner {
             let norm = normalize_param_value(id, val);
             self.param_bits[slot].store(norm.to_bits(), Ordering::Release);
         }
+        self.solo_mask.store(eq.global.solo_mask, Ordering::Release);
         self.version.fetch_add(1, Ordering::Release);
     }
 

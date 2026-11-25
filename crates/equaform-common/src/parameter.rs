@@ -53,6 +53,7 @@ pub mod band {
     pub const GAIN_DB: u32 = 3;
     pub const Q: u32 = 4;
     pub const SLOPE: u32 = 5;
+    pub const SOLO: u32 = 6;
     pub const RESERVED_END: u32 = 99;
 }
 
@@ -681,6 +682,9 @@ pub struct GlobalParameters {
     pub processing_mode: ProcessingMode,
     /// Stereo mode.
     pub stereo_mode: StereoMode,
+    /// Monitor-only bitmask of soloed bands (bit `i` = band `i`, excluded from persistence).
+    #[serde(skip)]
+    pub solo_mask: u8,
 }
 
 impl Default for GlobalParameters {
@@ -691,6 +695,7 @@ impl Default for GlobalParameters {
             auto_gain: false,
             processing_mode: ProcessingMode::MinimumPhase,
             stereo_mode: StereoMode::Stereo,
+            solo_mask: 0,
         }
     }
 }
@@ -706,6 +711,39 @@ pub struct EqParameters {
     pub global: GlobalParameters,
     /// Per-band parameters (8 bands).
     pub bands: [BandParameters; MAX_BANDS],
+}
+
+impl EqParameters {
+    /// Returns `true` if the band at `band_idx` is currently soloed.
+    #[inline]
+    pub const fn is_band_solo(&self, band_idx: usize) -> bool {
+        band_idx < MAX_BANDS && (self.global.solo_mask & (1u8 << band_idx)) != 0
+    }
+
+    /// Sets or clears the monitor-only solo state for `band_idx`.
+    #[inline]
+    pub fn set_band_solo(&mut self, band_idx: usize, solo: bool) {
+        if band_idx < MAX_BANDS {
+            let bit = 1u8 << band_idx;
+            if solo {
+                self.global.solo_mask |= bit;
+            } else {
+                self.global.solo_mask &= !bit;
+            }
+        }
+    }
+
+    /// Returns `true` if at least one band is currently soloed.
+    #[inline]
+    pub const fn any_band_solo(&self) -> bool {
+        self.global.solo_mask != 0
+    }
+
+    /// Clears solo state across all bands.
+    #[inline]
+    pub fn clear_solo(&mut self) {
+        self.global.solo_mask = 0;
+    }
 }
 
 impl Default for EqParameters {

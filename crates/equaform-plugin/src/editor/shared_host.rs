@@ -107,6 +107,10 @@ pub fn eq_to_param_snapshot(eq: &EqParameters, auto_gain_comp_db: f32) -> ParamS
             param_id: ParamId(base + band::SLOPE),
             value: b.slope.to_raw() as f32,
         });
+        vals.push(ParamValue {
+            param_id: ParamId(base + band::SOLO),
+            value: if eq.is_band_solo(i) { 1.0 } else { 0.0 },
+        });
     }
 
     ParamSnapshot::new(vals)

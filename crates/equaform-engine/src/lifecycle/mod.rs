@@ -41,7 +41,9 @@ use crate::automation::AutomationIngestor;
 use equaform_analysis::AnalysisBuffer;
 use equaform_common::automation::{AutomationEvent, InterpolationMode};
 use equaform_common::{EqParameters, MAX_BANDS, MAX_BLOCK_SIZE, MAX_CHANNELS};
-use equaform_dsp::coefficients::{BiquadCoefficients, FilterSpecification};
+use equaform_dsp::coefficients::{
+    BiquadCoefficients, FilterSpecification, compute_solo_audition_coefficients,
+};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -151,6 +153,7 @@ impl BypassTransitionState {
 /// Pre-computed biquad coefficients and perceptual auto-gain cache.
 pub(super) struct CoefficientCache {
     pub(super) coeffs: [BiquadCoefficients; MAX_BANDS],
+    pub(super) solo_coeffs: [BiquadCoefficients; MAX_BANDS],
     pub(super) dirty: bool,
     pub(super) auto_gain_db: f32,
 }
@@ -159,6 +162,7 @@ impl CoefficientCache {
     pub(super) fn new() -> Self {
         Self {
             coeffs: [BiquadCoefficients::default(); MAX_BANDS],
+            solo_coeffs: [BiquadCoefficients::default(); MAX_BANDS],
             dirty: true,
             auto_gain_db: 0.0,
         }
@@ -205,6 +209,13 @@ pub struct EngineLifecycle {
     /// `band * channels * 4 + channel * 4 + slot`.
     /// Slot 0/1 = x[n-1]/x[n-2], slot 2/3 = y[n-1]/y[n-2].
     delay_line: [f32; DELAY_BUFFER_SIZE],
+    /// Pre-allocated delay-line state for Band Solo audition filters.
+    solo_delay_line: [f32; DELAY_BUFFER_SIZE],
+    /// Pre-allocated planar scratch buffer for parallel Band Solo audition summing
+    /// (heap-allocated once in `new()` to keep stack footprint small; zero allocations in `process()`).
+    solo_scratch: Box<[f32]>,
+    /// Tracks whether Band Solo was active on the previous block (for clean state reset).
+    solo_was_active: bool,
     /// Current EQ parameters.
     eq_params: EqParameters,
     /// Number of blocks processed since last reset.
@@ -242,6 +253,9 @@ impl EngineLifecycle {
             topology: AudioTopology::default(),
             buffer: [0.0; FLAT_BUFFER_SIZE],
             delay_line: [0.0; DELAY_BUFFER_SIZE],
+            solo_delay_line: [0.0; DELAY_BUFFER_SIZE],
+            solo_scratch: vec![0.0; FLAT_BUFFER_SIZE].into_boxed_slice(),
+            solo_was_active: false,
             eq_params: EqParameters::default(),
             blocks_processed: 0,
             sample_offset: 0,
@@ -295,6 +309,9 @@ impl EngineLifecycle {
         // Zero the entire flat buffer on prepare (reprepare clears stale data).
         self.buffer.fill(0.0);
         self.delay_line.fill(0.0);
+        self.solo_delay_line.fill(0.0);
+        self.solo_scratch.fill(0.0);
+        self.solo_was_active = false;
         self.bypass.reset();
 
         // Initialize the automation ingestor on prepare (not process) so it is
@@ -310,13 +327,10 @@ impl EngineLifecycle {
     /// Recompute cached biquad filter coefficients for all bands.
     fn recompute_all_coefficients(&mut self) {
         let sample_rate = self.topology.sample_rate as f32;
-        for (coeff_slot, band_params) in self
-            .coeff_cache
-            .coeffs
-            .iter_mut()
-            .zip(self.eq_params.bands.iter())
-        {
-            *coeff_slot = FilterSpecification::from_band(band_params, sample_rate).compute();
+        for (band_idx, band_params) in self.eq_params.bands.iter().enumerate() {
+            let spec = FilterSpecification::from_band(band_params, sample_rate);
+            self.coeff_cache.coeffs[band_idx] = spec.compute();
+            self.coeff_cache.solo_coeffs[band_idx] = compute_solo_audition_coefficients(spec);
         }
         self.coeff_cache.dirty = false;
 
@@ -388,6 +402,9 @@ impl EngineLifecycle {
         if self.state == LifecycleState::Ready {
             self.buffer.fill(0.0);
             self.delay_line.fill(0.0);
+            self.solo_delay_line.fill(0.0);
+            self.solo_scratch.fill(0.0);
+            self.solo_was_active = false;
             self.blocks_processed = 0;
             self.sample_offset = 0;
             if let Some(ref mut ingestor) = self.automation_ingestor {
@@ -409,6 +426,9 @@ impl EngineLifecycle {
         self.state = LifecycleState::Created;
         self.buffer.fill(0.0);
         self.delay_line.fill(0.0);
+        self.solo_delay_line.fill(0.0);
+        self.solo_scratch.fill(0.0);
+        self.solo_was_active = false;
         self.blocks_processed = 0;
         self.sample_offset = 0;
         self.automation_ingestor = None;

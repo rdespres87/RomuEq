@@ -284,6 +284,51 @@ fn compute_low_pass(freq: f32, q: f32, sample_rate: f32) -> BiquadCoefficients {
 }
 
 // ===========================================================================
+// Solo audition filter
+// ===========================================================================
+
+/// Compute constant-0 dB-peak audition filter coefficients for Band Solo.
+///
+/// - `Bell`: RBJ constant-0 dB-peak band-pass filter at `frequency_hz` and `q`.
+/// - `LowShelf` / `LowPass`: Butterworth low-pass at `frequency_hz`.
+/// - `HighShelf` / `HighPass`: Butterworth high-pass at `frequency_hz`.
+///
+/// # Panics
+///
+/// Panics if `spec.sample_rate <= 0.0` or `spec.frequency_hz <= 0.0`.
+pub fn compute_solo_audition_coefficients(spec: FilterSpecification) -> BiquadCoefficients {
+    assert!(spec.sample_rate > 0.0, "sample_rate must be positive");
+    assert!(spec.frequency_hz > 0.0, "frequency_hz must be positive");
+
+    let nyquist = spec.sample_rate * 0.5;
+    let freq = spec.frequency_hz.clamp(1.0, nyquist * 0.999);
+    let q = spec.q.clamp(0.1, 20.0);
+
+    match spec.filter_type {
+        equaform_common::FilterType::Bell => {
+            let omega = 2.0 * std::f32::consts::PI * freq / spec.sample_rate;
+            let sin_omega = omega.sin();
+            let cos_omega = omega.cos();
+            let alpha = sin_omega / (2.0 * q);
+            normalise(
+                alpha,
+                0.0,
+                -alpha,
+                1.0 + alpha,
+                -2.0 * cos_omega,
+                1.0 - alpha,
+            )
+        }
+        equaform_common::FilterType::LowShelf | equaform_common::FilterType::LowPass => {
+            compute_low_pass(freq, std::f32::consts::FRAC_1_SQRT_2, spec.sample_rate)
+        }
+        equaform_common::FilterType::HighShelf | equaform_common::FilterType::HighPass => {
+            compute_high_pass(freq, std::f32::consts::FRAC_1_SQRT_2, spec.sample_rate)
+        }
+    }
+}
+
+// ===========================================================================
 // Helpers
 // ===========================================================================
 
@@ -1025,6 +1070,96 @@ mod tests {
                 sr,
             );
             assert!(c.is_finite(), "Bell at sample_rate={sr} should be finite");
+        }
+    }
+
+    // ===========================================================================
+    // Solo audition coefficients
+    // ===========================================================================
+
+    fn magnitude_db(c: BiquadCoefficients, freq: f32, sr: f32) -> f32 {
+        let w = 2.0 * std::f32::consts::PI * freq / sr;
+        let cos_w = w.cos();
+        let sin_w = w.sin();
+        let cos_2w = (2.0 * w).cos();
+        let sin_2w = (2.0 * w).sin();
+        let num_re = c.b0 + c.b1 * cos_w + c.b2 * cos_2w;
+        let num_im = -(c.b1 * sin_w + c.b2 * sin_2w);
+        let den_re = 1.0 + c.a1 * cos_w + c.a2 * cos_2w;
+        let den_im = -(c.a1 * sin_w + c.a2 * sin_2w);
+        let num_mag = (num_re * num_re + num_im * num_im).sqrt();
+        let den_mag = (den_re * den_re + den_im * den_im).sqrt();
+        20.0 * (num_mag / den_mag).log10()
+    }
+
+    #[test]
+    fn test_solo_bell_is_unity_at_center_and_attenuates_edges() {
+        let spec = FilterSpecification {
+            filter_type: equaform_common::FilterType::Bell,
+            frequency_hz: 1000.0,
+            gain_db: 12.0,
+            q: 2.0,
+            slope: equaform_common::Slope::Db12,
+            sample_rate: 48000.0,
+        };
+        let c = compute_solo_audition_coefficients(spec);
+        assert!(c.is_finite());
+        assert!(magnitude_db(c, 1000.0, 48000.0).abs() < 0.05);
+        assert!(magnitude_db(c, 100.0, 48000.0) < -15.0);
+        assert!(magnitude_db(c, 10000.0, 48000.0) < -15.0);
+    }
+
+    #[test]
+    fn test_solo_low_and_high_pass_audition() {
+        let low = compute_solo_audition_coefficients(FilterSpecification {
+            filter_type: equaform_common::FilterType::LowShelf,
+            frequency_hz: 1000.0,
+            gain_db: 6.0,
+            q: 1.0,
+            slope: equaform_common::Slope::Db12,
+            sample_rate: 48000.0,
+        });
+        assert!(magnitude_db(low, 50.0, 48000.0).abs() < 0.1);
+        assert!(magnitude_db(low, 10000.0, 48000.0) < -15.0);
+
+        let high = compute_solo_audition_coefficients(FilterSpecification {
+            filter_type: equaform_common::FilterType::HighShelf,
+            frequency_hz: 1000.0,
+            gain_db: 6.0,
+            q: 1.0,
+            slope: equaform_common::Slope::Db12,
+            sample_rate: 48000.0,
+        });
+        assert!(magnitude_db(high, 50.0, 48000.0) < -15.0);
+        assert!(magnitude_db(high, 10000.0, 48000.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_solo_coefficients_finite_at_extremes() {
+        let types = [
+            equaform_common::FilterType::Bell,
+            equaform_common::FilterType::LowShelf,
+            equaform_common::FilterType::HighShelf,
+            equaform_common::FilterType::LowPass,
+            equaform_common::FilterType::HighPass,
+        ];
+        for ft in types {
+            for freq in [20.0, 20000.0] {
+                for q in [0.1, 20.0] {
+                    let c = compute_solo_audition_coefficients(FilterSpecification {
+                        filter_type: ft,
+                        frequency_hz: freq,
+                        gain_db: 0.0,
+                        q,
+                        slope: equaform_common::Slope::Db12,
+                        sample_rate: 48000.0,
+                    });
+                    assert!(
+                        c.is_finite(),
+                        "Non-finite solo coeff for {ft:?} {freq}Hz Q={q}"
+                    );
+                }
+            }
         }
     }
 }

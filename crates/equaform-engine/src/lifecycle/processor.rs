@@ -181,7 +181,13 @@ impl EngineLifecycle {
             self.apply_block_automation(block_size, sample_rate, provider, &mut block_coeffs);
         }
 
-        let auto_comp_db = if self.eq_params.global.auto_gain {
+        let solo_active = self.eq_params.any_band_solo();
+        if !solo_active && self.solo_was_active {
+            self.solo_delay_line.fill(0.0);
+        }
+        self.solo_was_active = solo_active;
+
+        let auto_comp_db = if self.eq_params.global.auto_gain && !solo_active {
             self.coeff_cache.auto_gain_db
         } else {
             0.0
@@ -211,19 +217,57 @@ impl EngineLifecycle {
             dry_left.copy_from_slice(left);
             dry_right.copy_from_slice(right);
 
-            for (band_idx, coeffs) in block_coeffs.iter().enumerate() {
-                if !self.eq_params.bands[band_idx].enabled {
-                    continue;
+            if solo_active {
+                left.fill(0.0);
+                right.fill(0.0);
+                let (scratch_l_buf, scratch_r_buf) = self.solo_scratch.split_at_mut(max_block);
+                let scratch_l = &mut scratch_l_buf[..block_size];
+                let scratch_r = &mut scratch_r_buf[..block_size];
+
+                for (band_idx, solo_coeffs) in self.coeff_cache.solo_coeffs.iter().enumerate() {
+                    if !self.eq_params.is_band_solo(band_idx) {
+                        continue;
+                    }
+                    scratch_l.copy_from_slice(dry_left);
+                    scratch_r.copy_from_slice(dry_right);
+                    let band_delay_offset = band_idx * 2 * DELAY_SAMPLES_PER_STAGE;
+                    let (delay_l_slice, delay_r_slice) = self.solo_delay_line
+                        [band_delay_offset..band_delay_offset + 2 * DELAY_SAMPLES_PER_STAGE]
+                        .split_at_mut(DELAY_SAMPLES_PER_STAGE);
+                    if let (Ok(delay_l), Ok(delay_r)) = (
+                        <&mut [f32; 4]>::try_from(delay_l_slice),
+                        <&mut [f32; 4]>::try_from(delay_r_slice),
+                    ) {
+                        process_stereo_planar_in_place(
+                            scratch_l,
+                            scratch_r,
+                            solo_coeffs,
+                            delay_l,
+                            delay_r,
+                        );
+                    }
+                    for (dst, &src) in left.iter_mut().zip(scratch_l.iter()) {
+                        *dst += src;
+                    }
+                    for (dst, &src) in right.iter_mut().zip(scratch_r.iter()) {
+                        *dst += src;
+                    }
                 }
-                let band_delay_offset = band_idx * 2 * DELAY_SAMPLES_PER_STAGE;
-                let (delay_l_slice, delay_r_slice) = self.delay_line
-                    [band_delay_offset..band_delay_offset + 2 * DELAY_SAMPLES_PER_STAGE]
-                    .split_at_mut(DELAY_SAMPLES_PER_STAGE);
-                if let (Ok(delay_l), Ok(delay_r)) = (
-                    <&mut [f32; 4]>::try_from(delay_l_slice),
-                    <&mut [f32; 4]>::try_from(delay_r_slice),
-                ) {
-                    process_stereo_planar_in_place(left, right, coeffs, delay_l, delay_r);
+            } else {
+                for (band_idx, coeffs) in block_coeffs.iter().enumerate() {
+                    if !self.eq_params.bands[band_idx].enabled {
+                        continue;
+                    }
+                    let band_delay_offset = band_idx * 2 * DELAY_SAMPLES_PER_STAGE;
+                    let (delay_l_slice, delay_r_slice) = self.delay_line
+                        [band_delay_offset..band_delay_offset + 2 * DELAY_SAMPLES_PER_STAGE]
+                        .split_at_mut(DELAY_SAMPLES_PER_STAGE);
+                    if let (Ok(delay_l), Ok(delay_r)) = (
+                        <&mut [f32; 4]>::try_from(delay_l_slice),
+                        <&mut [f32; 4]>::try_from(delay_r_slice),
+                    ) {
+                        process_stereo_planar_in_place(left, right, coeffs, delay_l, delay_r);
+                    }
                 }
             }
 
@@ -250,16 +294,39 @@ impl EngineLifecycle {
 
                 dry_samples.copy_from_slice(samples);
 
-                for (band_idx, coeffs) in block_coeffs.iter().enumerate() {
-                    if !self.eq_params.bands[band_idx].enabled {
-                        continue;
+                if solo_active {
+                    samples.fill(0.0);
+                    let scratch = &mut self.solo_scratch[buffer_offset..buffer_offset + block_size];
+                    for (band_idx, solo_coeffs) in self.coeff_cache.solo_coeffs.iter().enumerate() {
+                        if !self.eq_params.is_band_solo(band_idx) {
+                            continue;
+                        }
+                        scratch.copy_from_slice(dry_samples);
+                        let delay_offset =
+                            band_idx * self.topology.channels * DELAY_SAMPLES_PER_STAGE
+                                + ch_idx * DELAY_SAMPLES_PER_STAGE;
+                        let delay_slice = &mut self.solo_delay_line
+                            [delay_offset..delay_offset + DELAY_SAMPLES_PER_STAGE];
+                        if let Ok(delay) = <&mut [f32; 4]>::try_from(delay_slice) {
+                            process_mono_in_place(scratch, solo_coeffs, delay);
+                        }
+                        for (dst, &src) in samples.iter_mut().zip(scratch.iter()) {
+                            *dst += src;
+                        }
                     }
-                    let delay_offset = band_idx * self.topology.channels * DELAY_SAMPLES_PER_STAGE
-                        + ch_idx * DELAY_SAMPLES_PER_STAGE;
-                    let delay_slice =
-                        &mut self.delay_line[delay_offset..delay_offset + DELAY_SAMPLES_PER_STAGE];
-                    if let Ok(delay) = <&mut [f32; 4]>::try_from(delay_slice) {
-                        process_mono_in_place(samples, coeffs, delay);
+                } else {
+                    for (band_idx, coeffs) in block_coeffs.iter().enumerate() {
+                        if !self.eq_params.bands[band_idx].enabled {
+                            continue;
+                        }
+                        let delay_offset =
+                            band_idx * self.topology.channels * DELAY_SAMPLES_PER_STAGE
+                                + ch_idx * DELAY_SAMPLES_PER_STAGE;
+                        let delay_slice = &mut self.delay_line
+                            [delay_offset..delay_offset + DELAY_SAMPLES_PER_STAGE];
+                        if let Ok(delay) = <&mut [f32; 4]>::try_from(delay_slice) {
+                            process_mono_in_place(samples, coeffs, delay);
+                        }
                     }
                 }
 

@@ -774,6 +774,14 @@ impl EngineClient {
                     param_id: ParamId(base + 5),
                     value: Self::slope_to_f32(band.slope),
                 });
+                values.push(ParamValue {
+                    param_id: ParamId(base + equaform_common::band::SOLO),
+                    value: if params.is_band_solo(band_idx) {
+                        1.0
+                    } else {
+                        0.0
+                    },
+                });
             }
         }
 
@@ -812,6 +820,7 @@ impl EngineClient {
                 3 => band.gain_db = cmd.value.clamp(-24.0, 24.0),
                 4 => band.q = cmd.value.clamp(0.1, 20.0),
                 5 => band.slope = Self::slope_from_f32(cmd.value),
+                6 => params.set_band_solo(band_idx, cmd.value > 0.5),
                 _ => {}
             }
         }
