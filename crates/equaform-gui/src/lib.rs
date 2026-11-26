@@ -469,6 +469,8 @@ pub use preset_manager::{NamedPreset, PresetManager, PresetManagerError};
 
 pub mod ab_compare;
 pub use ab_compare::{AbCompareState, AbSlot};
+pub mod undo_stack;
+pub use undo_stack::{DEFAULT_MAX_UNDO_HISTORY, EqUndoController, UndoStack};
 pub mod presets_io;
 pub mod workspace_ui;
 pub use presets_io::*;

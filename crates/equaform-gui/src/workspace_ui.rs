@@ -6,10 +6,11 @@
 
 use equaform_common::{BandParameters, MAX_BANDS, ParamId};
 
-use crate::ab_compare::{AbCompareState, AbSlot};
+use crate::ab_compare::{AbCompareState, AbSlot, capture_eq_snapshot};
 use crate::i18n::{Language, Translations};
 use crate::preset_manager::PresetManager;
 use crate::presets_io::{is_factory_preset, partition_and_sort_presets};
+use crate::undo_stack::EqUndoController;
 use crate::{
     AnalysisSnapshot, BandControls, BandRenderContext, EqCurveCache, GuiCommandBatch,
     ParamSnapshot, PlotContext, render_band, render_interactive_frequency_response_plot,
@@ -74,6 +75,8 @@ pub struct WorkspaceUiState {
     pub curve_cache: EqCurveCache,
     /// A/B comparison slot state (persisted across UI frames, shared by Standalone & DAW plugins).
     pub ab_compare: AbCompareState,
+    /// Bounded undo/redo history controller (shared by Standalone & DAW plugins).
+    pub undo: EqUndoController,
 }
 
 /// Context parameters required to render the Equaform workspace UI.
@@ -110,6 +113,22 @@ pub fn render_workspace(
     let mut batch = GuiCommandBatch::new();
     let mut actions = Vec::new();
     let t = Translations::for_language(state.language);
+    let pre_frame_snapshot = capture_eq_snapshot(snapshot);
+
+    let mut undo_requested = false;
+    let mut redo_requested = false;
+    if !ui.ctx().wants_keyboard_input() {
+        ui.input_mut(|input| {
+            let cmd_shift = egui::Modifiers::COMMAND | egui::Modifiers::SHIFT;
+            if input.consume_key(cmd_shift, egui::Key::Z)
+                || input.consume_key(egui::Modifiers::COMMAND, egui::Key::Y)
+            {
+                redo_requested = true;
+            } else if input.consume_key(egui::Modifiers::COMMAND, egui::Key::Z) {
+                undo_requested = true;
+            }
+        });
+    }
 
     ui.spacing_mut().item_spacing.y = 4.0;
 
@@ -211,6 +230,32 @@ pub fn render_workspace(
             .clicked()
         {
             state.ab_compare.copy_active_to_other(snapshot);
+        }
+
+        ui.separator();
+
+        // Compact Undo / Redo buttons (synced with Cmd/Ctrl+Z and Cmd/Ctrl+Shift+Z)
+        if ui
+            .add_enabled(
+                state.undo.can_undo(),
+                egui::Button::new(egui::RichText::new("<-").strong())
+                    .min_size(egui::vec2(26.0, 18.0)),
+            )
+            .on_hover_text(t.tooltip_undo)
+            .clicked()
+        {
+            undo_requested = true;
+        }
+        if ui
+            .add_enabled(
+                state.undo.can_redo(),
+                egui::Button::new(egui::RichText::new("->").strong())
+                    .min_size(egui::vec2(26.0, 18.0)),
+            )
+            .on_hover_text(t.tooltip_redo)
+            .clicked()
+        {
+            redo_requested = true;
         }
 
         ui.separator();
@@ -438,6 +483,25 @@ pub fn render_workspace(
             );
         }
     });
+
+    let restored_from_history = if undo_requested {
+        state.undo.undo(snapshot, &mut batch)
+    } else if redo_requested {
+        state.undo.redo(snapshot, &mut batch)
+    } else {
+        false
+    };
+
+    if !restored_from_history {
+        let changed_this_frame = !batch.is_empty()
+            || actions
+                .iter()
+                .any(|action| matches!(action, WorkspaceAction::ApplyPreset(_)));
+        let pointer_down = ui.input(|i| i.pointer.any_down()) || state.dragged_band.is_some();
+        state
+            .undo
+            .observe_frame(pre_frame_snapshot, changed_this_frame, pointer_down);
+    }
 
     (batch, actions)
 }

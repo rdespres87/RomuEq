@@ -147,6 +147,8 @@ pub struct Translations {
     pub tooltip_compare_slot_a: &'static str,
     pub tooltip_compare_slot_b: &'static str,
     pub tooltip_copy_ab_settings: &'static str,
+    pub tooltip_undo: &'static str,
+    pub tooltip_redo: &'static str,
     pub tooltip_band_solo: &'static str,
     pub tooltip_channel_routing_prefix: &'static str,
     pub tooltip_channel_routing_hint: &'static str,
@@ -230,6 +232,8 @@ mod tests {
                 t.tooltip_compare_slot_a,
                 t.tooltip_compare_slot_b,
                 t.tooltip_copy_ab_settings,
+                t.tooltip_undo,
+                t.tooltip_redo,
                 t.tooltip_band_solo,
                 t.tooltip_channel_routing_prefix,
                 t.tooltip_channel_routing_hint,
@@ -268,6 +272,8 @@ mod tests {
             assert_ne!(t.tooltip_compare_slot_a, en.tooltip_compare_slot_a);
             assert_ne!(t.tooltip_compare_slot_b, en.tooltip_compare_slot_b);
             assert_ne!(t.tooltip_copy_ab_settings, en.tooltip_copy_ab_settings);
+            assert_ne!(t.tooltip_undo, en.tooltip_undo);
+            assert_ne!(t.tooltip_redo, en.tooltip_redo);
             assert_ne!(t.tooltip_band_solo, en.tooltip_band_solo);
             assert_ne!(
                 t.tooltip_channel_routing_prefix,

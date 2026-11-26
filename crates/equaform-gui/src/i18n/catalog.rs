@@ -4,8 +4,8 @@ use super::Translations;
 
 pub(super) const EN: Translations = Translations {
     window_title: "Equaform-8 — Parametric Equalizer",
-    bypass_on: "⏻ BYPASS",
-    bypass_off: "⏻ ACTIVE",
+    bypass_on: "• BYPASS",
+    bypass_off: "• ACTIVE",
     tooltip_enable_eq: "Click to enable EQ processing",
     tooltip_bypass_eq: "Click to bypass EQ (dry pass-through)",
     mute: "Mute",
@@ -59,6 +59,8 @@ pub(super) const EN: Translations = Translations {
     tooltip_compare_slot_a: "Compare Slot A",
     tooltip_compare_slot_b: "Compare Slot B",
     tooltip_copy_ab_settings: "Copy current EQ settings",
+    tooltip_undo: "Undo (Cmd/Ctrl+Z)",
+    tooltip_redo: "Redo (Cmd/Ctrl+Shift+Z)",
     tooltip_band_solo: "Solo band audition (monitor only)",
     tooltip_channel_routing_prefix: "Channel routing",
     tooltip_channel_routing_hint: "click to cycle ST / L / R / M / S",
@@ -79,8 +81,8 @@ pub(super) const EN: Translations = Translations {
 
 pub(super) const FR: Translations = Translations {
     window_title: "Equaform-8 — Égaliseur Paramétrique",
-    bypass_on: "⏻ BYPASS",
-    bypass_off: "⏻ ACTIF",
+    bypass_on: "• BYPASS",
+    bypass_off: "• ACTIF",
     tooltip_enable_eq: "Cliquer pour activer l'égaliseur",
     tooltip_bypass_eq: "Cliquer pour contourner l'égaliseur (signal sec)",
     mute: "Muet",
@@ -134,6 +136,8 @@ pub(super) const FR: Translations = Translations {
     tooltip_compare_slot_a: "Comparer le slot A",
     tooltip_compare_slot_b: "Comparer le slot B",
     tooltip_copy_ab_settings: "Copier les réglages EQ actuels",
+    tooltip_undo: "Annuler (Cmd/Ctrl+Z)",
+    tooltip_redo: "Rétablir (Cmd/Ctrl+Shift+Z)",
     tooltip_band_solo: "Écoute solo de la bande (moniteur uniquement)",
     tooltip_channel_routing_prefix: "Routage des canaux",
     tooltip_channel_routing_hint: "cliquer pour alterner ST / L / R / M / S",
@@ -154,8 +158,8 @@ pub(super) const FR: Translations = Translations {
 
 pub(super) const DE: Translations = Translations {
     window_title: "Equaform-8 — Parametrischer Equalizer",
-    bypass_on: "⏻ BYPASS",
-    bypass_off: "⏻ AKTIV",
+    bypass_on: "• BYPASS",
+    bypass_off: "• AKTIV",
     tooltip_enable_eq: "Klicken zum Aktivieren des EQs",
     tooltip_bypass_eq: "Klicken zum Umgehen des EQs (Dry-Signal)",
     mute: "Stumm",
@@ -202,6 +206,8 @@ pub(super) const DE: Translations = Translations {
     tooltip_compare_slot_a: "Slot A vergleichen",
     tooltip_compare_slot_b: "Slot B vergleichen",
     tooltip_copy_ab_settings: "Aktuelle EQ-Einstellungen kopieren",
+    tooltip_undo: "Rückgängig (Cmd/Ctrl+Z)",
+    tooltip_redo: "Wiederholen (Cmd/Ctrl+Shift+Z)",
     tooltip_band_solo: "Band-Solo (nur Monitor)",
     tooltip_channel_routing_prefix: "Kanalführung",
     tooltip_channel_routing_hint: "klicken zum Wechseln ST / L / R / M / S",
@@ -222,8 +228,8 @@ pub(super) const DE: Translations = Translations {
 
 pub(super) const ES: Translations = Translations {
     window_title: "Equaform-8 — Ecualizador Paramétrico",
-    bypass_on: "⏻ BYPASS",
-    bypass_off: "⏻ ACTIVO",
+    bypass_on: "• BYPASS",
+    bypass_off: "• ACTIVO",
     tooltip_enable_eq: "Clic para activar el ecualizador",
     tooltip_bypass_eq: "Clic para desactivar el EQ (señal seca)",
     mute: "Silenciar",
@@ -277,6 +283,8 @@ pub(super) const ES: Translations = Translations {
     tooltip_compare_slot_a: "Comparar slot A",
     tooltip_compare_slot_b: "Comparar slot B",
     tooltip_copy_ab_settings: "Copiar ajustes de EQ actuales",
+    tooltip_undo: "Deshacer (Cmd/Ctrl+Z)",
+    tooltip_redo: "Rehacer (Cmd/Ctrl+Shift+Z)",
     tooltip_band_solo: "Escucha solo de banda (solo monitor)",
     tooltip_channel_routing_prefix: "Enrutamiento de canales",
     tooltip_channel_routing_hint: "clic para alternar ST / L / R / M / S",

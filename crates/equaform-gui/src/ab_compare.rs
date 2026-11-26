@@ -23,8 +23,8 @@ impl AbSlot {
     /// Compact toolbar label for copying the active slot into the inactive slot.
     pub const fn copy_label(self) -> &'static str {
         match self {
-            Self::A => "A→B",
-            Self::B => "B→A",
+            Self::A => "A>B",
+            Self::B => "B>A",
         }
     }
 }
@@ -40,9 +40,14 @@ pub struct AbCompareState {
 /// Captures all persistent EQ parameters from `snapshot`, excluding monitor-only
 /// solo state and read-only auto-gain telemetry.
 pub fn capture_eq_snapshot(snapshot: &ParamSnapshot) -> Vec<(ParamId, f32)> {
-    let mut out = Vec::with_capacity(3 + MAX_BANDS * 7);
+    let mut out = Vec::with_capacity(4 + MAX_BANDS * 7);
 
-    for raw_id in [global::BYPASS, global::OUTPUT_GAIN_DB, global::AUTO_GAIN] {
+    for raw_id in [
+        global::BYPASS,
+        global::OUTPUT_GAIN_DB,
+        global::AUTO_GAIN,
+        global::AUTO_GAIN_MODE,
+    ] {
         let id = ParamId(raw_id);
         if let Some(val) = snapshot.get(id) {
             out.push((id, val));
@@ -170,7 +175,7 @@ mod tests {
         let state = AbCompareState::default();
         assert_eq!(state.active(), AbSlot::A);
         assert_eq!(state.active().other(), AbSlot::B);
-        assert_eq!(state.active().copy_label(), "A→B");
+        assert_eq!(state.active().copy_label(), "A>B");
     }
 
     #[test]
