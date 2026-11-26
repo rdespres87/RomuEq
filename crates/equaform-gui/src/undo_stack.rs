@@ -2,7 +2,7 @@
 
 use std::collections::VecDeque;
 
-use equaform_common::ParamId;
+use equaform_common::{ParamId, band, global};
 
 use crate::ab_compare::capture_eq_snapshot;
 use crate::{GuiCommandBatch, ParamSnapshot};
@@ -11,6 +11,30 @@ use crate::{GuiCommandBatch, ParamSnapshot};
 pub const DEFAULT_MAX_UNDO_HISTORY: usize = 64;
 
 const VALUE_EPSILON: f32 = 1e-5;
+const AUTO_GAIN_TELEMETRY_ID: u32 = 6;
+
+/// Returns `true` when `param_id` represents a tone-shaping EQ parameter that belongs
+/// in the undo/redo history, excluding monitoring and bypass toggles (`BYPASS`, `SOLO`,
+/// and read-only auto-gain telemetry).
+pub fn is_undoable_param(param_id: ParamId) -> bool {
+    let raw = param_id.0;
+    if raw == global::BYPASS || raw == AUTO_GAIN_TELEMETRY_ID {
+        return false;
+    }
+    if raw >= 100 && (raw % 100) == band::SOLO {
+        return false;
+    }
+    true
+}
+
+/// Captures only undoable tone-shaping EQ parameters from `snapshot`, excluding
+/// `BYPASS`, `SOLO`, and read-only telemetry.
+pub fn capture_undo_snapshot(snapshot: &ParamSnapshot) -> Vec<(ParamId, f32)> {
+    capture_eq_snapshot(snapshot)
+        .into_iter()
+        .filter(|&(id, _)| is_undoable_param(id))
+        .collect()
+}
 
 /// A generic bounded undo/redo history stack.
 #[derive(Clone, Debug)]
@@ -154,7 +178,7 @@ impl EqUndoController {
     /// Restores the previous EQ parameter snapshot, emitting only changed parameters into `batch`.
     pub fn undo(&mut self, snapshot: &ParamSnapshot, batch: &mut GuiCommandBatch) -> bool {
         self.gesture_baseline = None;
-        let current = capture_eq_snapshot(snapshot);
+        let current = capture_undo_snapshot(snapshot);
         if let Some(previous) = self.stack.undo(current) {
             emit_snapshot_diff(&previous, snapshot, batch);
             true
@@ -166,7 +190,7 @@ impl EqUndoController {
     /// Re-applies the next undone EQ parameter snapshot, emitting only changed parameters into `batch`.
     pub fn redo(&mut self, snapshot: &ParamSnapshot, batch: &mut GuiCommandBatch) -> bool {
         self.gesture_baseline = None;
-        let current = capture_eq_snapshot(snapshot);
+        let current = capture_undo_snapshot(snapshot);
         if let Some(next) = self.stack.redo(current) {
             emit_snapshot_diff(&next, snapshot, batch);
             true
@@ -337,5 +361,30 @@ mod tests {
         assert!(ctrl.redo(&s0, &mut redo_batch));
         assert_eq!(redo_batch.commands().len(), 1);
         assert!((redo_batch.commands()[0].value - (-3.5)).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_bypass_and_solo_are_excluded_from_undo_snapshot() {
+        assert!(!is_undoable_param(ParamId(global::BYPASS)));
+        assert!(!is_undoable_param(ParamId(AUTO_GAIN_TELEMETRY_ID)));
+        assert!(!is_undoable_param(ParamId(100 + band::SOLO)));
+        assert!(is_undoable_param(ParamId(global::OUTPUT_GAIN_DB)));
+        assert!(is_undoable_param(ParamId(global::AUTO_GAIN)));
+        assert!(is_undoable_param(ParamId(global::AUTO_GAIN_MODE)));
+        assert!(is_undoable_param(ParamId(100 + band::GAIN_DB)));
+
+        let snap = snapshot_with_gain(2.5);
+        let captured = capture_undo_snapshot(&snap);
+        assert!(
+            !captured
+                .iter()
+                .any(|&(id, _)| id == ParamId(global::BYPASS)),
+            "BYPASS must not be captured in undo snapshots"
+        );
+        assert!(
+            captured
+                .iter()
+                .any(|&(id, val)| id == ParamId(100 + band::GAIN_DB) && (val - 2.5).abs() < 1e-5)
+        );
     }
 }

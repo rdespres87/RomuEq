@@ -6,11 +6,11 @@
 
 use equaform_common::{BandParameters, MAX_BANDS, ParamId};
 
-use crate::ab_compare::{AbCompareState, AbSlot, capture_eq_snapshot};
+use crate::ab_compare::{AbCompareState, AbSlot};
 use crate::i18n::{Language, Translations};
 use crate::preset_manager::PresetManager;
 use crate::presets_io::{is_factory_preset, partition_and_sort_presets};
-use crate::undo_stack::EqUndoController;
+use crate::undo_stack::{EqUndoController, capture_undo_snapshot, is_undoable_param};
 use crate::{
     AnalysisSnapshot, BandControls, BandRenderContext, EqCurveCache, GuiCommandBatch,
     ParamSnapshot, PlotContext, render_band, render_interactive_frequency_response_plot,
@@ -113,7 +113,7 @@ pub fn render_workspace(
     let mut batch = GuiCommandBatch::new();
     let mut actions = Vec::new();
     let t = Translations::for_language(state.language);
-    let pre_frame_snapshot = capture_eq_snapshot(snapshot);
+    let pre_frame_snapshot = capture_undo_snapshot(snapshot);
 
     let mut undo_requested = false;
     let mut redo_requested = false;
@@ -493,7 +493,10 @@ pub fn render_workspace(
     };
 
     if !restored_from_history {
-        let changed_this_frame = !batch.is_empty()
+        let changed_this_frame = batch
+            .commands()
+            .iter()
+            .any(|cmd| is_undoable_param(cmd.param_id))
             || actions
                 .iter()
                 .any(|action| matches!(action, WorkspaceAction::ApplyPreset(_)));
