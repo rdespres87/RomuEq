@@ -9,6 +9,7 @@ pub mod ext_gui;
 pub mod ext_params;
 pub mod ext_ports;
 pub mod params_map;
+pub mod processor;
 pub mod ui_cocoa;
 
 use std::ffi::CStr;
@@ -16,17 +17,11 @@ use std::io::{Read, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
-use clack_common::events::Pckn;
-use clack_common::events::event_types::{
-    ParamGestureBeginEvent, ParamGestureEndEvent, ParamValueEvent,
-};
-use clack_common::events::spaces::CoreEventSpace;
 use clack_common::extensions::{
     Extension, ExtensionImplementation, PluginExtensionSide, RawExtension,
     RawExtensionImplementation,
 };
 use clack_common::stream::{InputStream, OutputStream};
-use clack_common::utils::{ClapId, Cookie};
 use clack_plugin::extensions::wrapper::PluginWrapper;
 use clack_plugin::prelude::*;
 use clap_sys::events::{
@@ -42,9 +37,8 @@ use clap_sys::plugin::clap_plugin;
 use clap_sys::stream::{clap_istream, clap_ostream};
 
 use equaform_common::{
-    AudioRingConsumer, AudioRingProducer, EqParameters, MAX_BLOCK_SIZE, create_audio_ring_buffer,
+    AudioRingConsumer, AudioRingProducer, EqParameters, create_audio_ring_buffer,
 };
-use equaform_engine::lifecycle::EngineLifecycle;
 
 use ext_gui::{EquaformGui, EquaformGuiImplementation};
 use ext_params::{EquaformParams, EquaformParamsImplementation};
@@ -53,6 +47,7 @@ use params_map::{
     PARAM_COUNT_USIZE, apply_param_to_eq, default_eq_parameters, get_param_from_eq,
     normalize_param_value, param_id_to_slot, slot_to_param_id,
 };
+pub use processor::EquaformAudioProcessor;
 
 // ---------------------------------------------------------------------------
 // Plugin descriptor & state envelope
@@ -538,431 +533,6 @@ impl EquaformGuiImplementation for EquaformMainThread<'_> {
 // Audio processor — lock-free real-time DSP
 // ---------------------------------------------------------------------------
 
-/// Real-time audio processor owning an isolated `EngineLifecycle` and
-/// pre-allocated planar scratch buffers. Zero allocations and zero locks
-/// in `process()`.
-pub struct EquaformAudioProcessor {
-    engine: Box<EngineLifecycle>,
-    shared: Arc<EquaformSharedInner>,
-    last_param_version: u64,
-    active_channels: usize,
-    input_scratch: [Box<[f32]>; 2],
-    output_scratch: [Box<[f32]>; 2],
-}
-
-impl Default for EquaformAudioProcessor {
-    fn default() -> Self {
-        Self::new(Arc::new(EquaformSharedInner::new()))
-    }
-}
-
-impl EquaformAudioProcessor {
-    /// Creates an audio processor bound to the given shared atomic state.
-    pub fn new(shared: Arc<EquaformSharedInner>) -> Self {
-        let mut engine = Box::new(EngineLifecycle::new());
-        let initial_eq = shared.read_eq_parameters();
-        engine.set_parameters(initial_eq);
-        let version = shared.version();
-
-        Self {
-            engine,
-            shared,
-            last_param_version: version,
-            active_channels: 2,
-            input_scratch: [
-                vec![0.0f32; MAX_BLOCK_SIZE].into_boxed_slice(),
-                vec![0.0f32; MAX_BLOCK_SIZE].into_boxed_slice(),
-            ],
-            output_scratch: [
-                vec![0.0f32; MAX_BLOCK_SIZE].into_boxed_slice(),
-                vec![0.0f32; MAX_BLOCK_SIZE].into_boxed_slice(),
-            ],
-        }
-    }
-
-    /// Prepares the internal DSP engine for a sample rate, max block size, and channel count.
-    pub fn prepare(&mut self, sample_rate: f64, max_block_size: usize, channels: usize) -> bool {
-        let ch = channels.clamp(1, 2);
-        let blk = max_block_size.clamp(1, MAX_BLOCK_SIZE);
-        self.active_channels = ch;
-        self.shared.set_sample_rate(sample_rate as f32);
-        self.engine.prepare(sample_rate, blk, ch)
-    }
-
-    #[inline]
-    fn sync_params_from_shared(&mut self) {
-        let current_version = self.shared.version();
-        if current_version != self.last_param_version {
-            let eq = self.shared.read_eq_parameters();
-            self.engine.set_parameters(eq);
-            self.last_param_version = current_version;
-        }
-    }
-
-    /// Processes planar audio slices using pre-allocated scratch buffers (RT-safe).
-    pub fn process_planar(&mut self, inputs: &[&[f32]], outputs: &mut [&mut [f32]]) -> bool {
-        self.sync_params_from_shared();
-
-        let num_ch = inputs.len().min(outputs.len()).min(2);
-        if num_ch == 0 {
-            return false;
-        }
-        let total_frames = inputs[0].len().min(outputs[0].len());
-        if total_frames == 0 {
-            return true;
-        }
-
-        let target_ch = self.active_channels.clamp(1, 2);
-        let mut offset = 0;
-        let mut max_l = 0.0f32;
-        let mut max_r = 0.0f32;
-
-        while offset < total_frames {
-            let chunk = (total_frames - offset).min(MAX_BLOCK_SIZE);
-
-            for (ch, in_ch) in inputs.iter().enumerate().take(num_ch) {
-                self.input_scratch[ch][..chunk].copy_from_slice(&in_ch[offset..offset + chunk]);
-            }
-            if num_ch == 1 && target_ch == 2 {
-                self.input_scratch[1][..chunk].copy_from_slice(&inputs[0][offset..offset + chunk]);
-            }
-
-            if !self.run_engine_chunk(chunk) {
-                return false;
-            }
-
-            for (ch, out_ch) in outputs.iter_mut().enumerate().take(num_ch) {
-                out_ch[offset..offset + chunk].copy_from_slice(&self.output_scratch[ch][..chunk]);
-            }
-
-            self.push_telemetry_chunk(chunk, target_ch, &mut max_l, &mut max_r);
-            offset += chunk;
-        }
-
-        self.shared.set_telemetry(
-            linear_to_dbfs(max_l),
-            linear_to_dbfs(max_r),
-            self.engine.auto_gain_compensation_db(),
-        );
-
-        true
-    }
-
-    #[inline]
-    fn run_engine_chunk(&mut self, frames: usize) -> bool {
-        let target_ch = self.active_channels.clamp(1, 2);
-        if target_ch == 1 {
-            let in_slices: [&[f32]; 1] = [&self.input_scratch[0][..frames]];
-            let mut out_slices: [&mut [f32]; 1] = {
-                let [c0, _] = &mut self.output_scratch;
-                [&mut c0[..frames]]
-            };
-            self.engine.process(&in_slices, &mut out_slices)
-        } else {
-            let in_slices: [&[f32]; 2] = [
-                &self.input_scratch[0][..frames],
-                &self.input_scratch[1][..frames],
-            ];
-            let mut out_slices: [&mut [f32]; 2] = {
-                let [c0, c1] = &mut self.output_scratch;
-                [&mut c0[..frames], &mut c1[..frames]]
-            };
-            self.engine.process(&in_slices, &mut out_slices)
-        }
-    }
-
-    #[inline]
-    fn push_telemetry_chunk(
-        &self,
-        frames: usize,
-        target_ch: usize,
-        max_l: &mut f32,
-        max_r: &mut f32,
-    ) {
-        let right_ch = if target_ch > 1 { 1 } else { 0 };
-        for i in 0..frames {
-            let l = self.output_scratch[0][i];
-            let r = self.output_scratch[right_ch][i];
-            *max_l = max_l.max(l.abs());
-            *max_r = max_r.max(r.abs());
-            let _ = self.shared.ring_producer.push(l, r);
-        }
-    }
-
-    fn emit_ui_events_to_host(&self, output: &mut OutputEvents) {
-        for slot in 0..PARAM_COUNT_USIZE {
-            if let Some(id) = self.shared.take_gesture_begin(slot) {
-                if let Some(clap_id) = ClapId::from_raw(id) {
-                    let ev = ParamGestureBeginEvent::new(0, clap_id);
-                    if output.try_push(ev).is_err() {
-                        self.shared.mark_gesture_begin(slot);
-                        continue;
-                    }
-                }
-            }
-
-            if let Some((id, val)) = self.shared.take_dirty_slot(slot) {
-                if let Some(clap_id) = ClapId::from_raw(id) {
-                    let ev =
-                        ParamValueEvent::new(0, clap_id, Pckn::match_all(), val, Cookie::empty());
-                    if output.try_push(ev).is_err() {
-                        self.shared.mark_dirty_slot(slot);
-                        continue;
-                    }
-                }
-            }
-
-            if let Some(id) = self.shared.take_gesture_end(slot) {
-                if let Some(clap_id) = ClapId::from_raw(id) {
-                    let ev = ParamGestureEndEvent::new(0, clap_id);
-                    if output.try_push(ev).is_err() {
-                        self.shared.mark_gesture_end(slot);
-                    }
-                }
-            }
-        }
-    }
-}
-
-#[inline]
-fn linear_to_dbfs(peak: f32) -> f32 {
-    if peak <= 1e-10 {
-        f32::NEG_INFINITY
-    } else {
-        20.0 * peak.log10()
-    }
-}
-
-impl<'a> PluginAudioProcessor<'a, EquaformShared, EquaformMainThread<'a>>
-    for EquaformAudioProcessor
-{
-    fn activate(
-        _host: HostAudioProcessorHandle<'a>,
-        _main_thread: &mut EquaformMainThread<'a>,
-        shared: &'a EquaformShared,
-        audio_config: PluginAudioConfiguration,
-    ) -> Result<Self, PluginError> {
-        let mut processor = Self::new(Arc::clone(shared.inner()));
-        let channels = 2;
-        if !processor.prepare(
-            audio_config.sample_rate,
-            audio_config.max_frames_count as usize,
-            channels,
-        ) {
-            return Err(PluginError::Message("Failed to prepare Equaform engine"));
-        }
-        Ok(processor)
-    }
-
-    fn process(
-        &mut self,
-        _process: Process,
-        mut audio: Audio,
-        events: Events,
-    ) -> Result<ProcessStatus, PluginError> {
-        // 1. Push any UI-initiated parameter changes + gestures to host automation output.
-        self.emit_ui_events_to_host(events.output);
-
-        // 2. Discover channel count and total block frame count from first audio port pair.
-        let mut total_frames = 0usize;
-        let mut ch_count = 0usize;
-        for mut port_pair in &mut audio {
-            let Some(channel_pairs) = port_pair.channels()?.into_f32() else {
-                continue;
-            };
-            for channel_pair in channel_pairs {
-                if ch_count >= 2 {
-                    break;
-                }
-                let ch_len = match channel_pair {
-                    ChannelPair::InPlace(buf) => buf.len(),
-                    ChannelPair::InputOutput(input, output) => input.len().min(output.len()),
-                    ChannelPair::InputOnly(buf) => buf.len(),
-                    ChannelPair::OutputOnly(buf) => buf.len(),
-                };
-                total_frames = if ch_count == 0 {
-                    ch_len
-                } else {
-                    total_frames.min(ch_len)
-                };
-                ch_count += 1;
-            }
-            if ch_count > 0 {
-                break;
-            }
-        }
-
-        let input_len = events.input.len();
-        let mut ev_idx = 0u32;
-
-        if ch_count == 0 || total_frames == 0 {
-            while ev_idx < input_len {
-                if let Some(ev) = events.input.get(ev_idx) {
-                    if let Some(CoreEventSpace::ParamValue(pv)) = ev.as_core_event() {
-                        if let Some(id) = pv.param_id() {
-                            self.shared.set_param_from_host(id.get(), pv.value());
-                        }
-                    }
-                }
-                ev_idx += 1;
-            }
-            self.sync_params_from_shared();
-            return Ok(ProcessStatus::Continue);
-        }
-
-        // 3. Process full block in sub-slices split on CLAP input event timestamps
-        //    and bounded by MAX_BLOCK_SIZE (handles arbitrarily large buffers + sample-accurate automation).
-        let target_ch = self.active_channels.clamp(1, 2);
-        let mut offset = 0usize;
-        let mut max_l = 0.0f32;
-        let mut max_r = 0.0f32;
-
-        while offset < total_frames {
-            // Apply all input events due at or before `offset`.
-            while ev_idx < input_len {
-                let Some(ev) = events.input.get(ev_idx) else {
-                    break;
-                };
-                if (ev.header().time() as usize) > offset {
-                    break;
-                }
-                if let Some(CoreEventSpace::ParamValue(pv)) = ev.as_core_event() {
-                    if let Some(id) = pv.param_id() {
-                        self.shared.set_param_from_host(id.get(), pv.value());
-                    }
-                }
-                ev_idx += 1;
-            }
-            self.sync_params_from_shared();
-
-            // Determine next slice boundary: either next event timestamp or MAX_BLOCK_SIZE chunk end.
-            let mut next_stop = (offset + MAX_BLOCK_SIZE).min(total_frames);
-            if ev_idx < input_len {
-                if let Some(ev) = events.input.get(ev_idx) {
-                    let ev_time = ev.header().time() as usize;
-                    if ev_time > offset && ev_time < next_stop {
-                        next_stop = ev_time;
-                    }
-                }
-            }
-
-            let slice_len = next_stop - offset;
-            if slice_len == 0 {
-                break;
-            }
-
-            // Copy inputs for [offset..next_stop] into pre-allocated scratch buffers.
-            let mut copy_ch = 0usize;
-            for mut port_pair in &mut audio {
-                let Some(channel_pairs) = port_pair.channels()?.into_f32() else {
-                    continue;
-                };
-                for channel_pair in channel_pairs {
-                    if copy_ch >= ch_count {
-                        break;
-                    }
-                    match channel_pair {
-                        ChannelPair::InPlace(buf) => {
-                            self.input_scratch[copy_ch][..slice_len]
-                                .copy_from_slice(&buf[offset..next_stop]);
-                        }
-                        ChannelPair::InputOutput(input, _) => {
-                            self.input_scratch[copy_ch][..slice_len]
-                                .copy_from_slice(&input[offset..next_stop]);
-                        }
-                        ChannelPair::InputOnly(buf) => {
-                            self.input_scratch[copy_ch][..slice_len]
-                                .copy_from_slice(&buf[offset..next_stop]);
-                        }
-                        ChannelPair::OutputOnly(_) => {
-                            self.input_scratch[copy_ch][..slice_len].fill(0.0);
-                        }
-                    }
-                    copy_ch += 1;
-                }
-                if copy_ch > 0 {
-                    break;
-                }
-            }
-
-            if ch_count == 1 && target_ch == 2 {
-                let (first, rest) = self.input_scratch.split_at_mut(1);
-                rest[0][..slice_len].copy_from_slice(&first[0][..slice_len]);
-            }
-
-            if !self.run_engine_chunk(slice_len) {
-                return Ok(ProcessStatus::Continue);
-            }
-
-            // Copy outputs back for [offset..next_stop].
-            let mut write_ch = 0usize;
-            for mut port_pair in &mut audio {
-                let Some(channel_pairs) = port_pair.channels()?.into_f32() else {
-                    continue;
-                };
-                for channel_pair in channel_pairs {
-                    if write_ch >= ch_count {
-                        break;
-                    }
-                    let out_slice = &self.output_scratch[write_ch][..slice_len];
-                    match channel_pair {
-                        ChannelPair::InPlace(buf) => {
-                            buf[offset..next_stop].copy_from_slice(out_slice);
-                        }
-                        ChannelPair::InputOutput(_, output) => {
-                            output[offset..next_stop].copy_from_slice(out_slice);
-                        }
-                        ChannelPair::InputOnly(_) => {}
-                        ChannelPair::OutputOnly(buf) => {
-                            buf[offset..next_stop].copy_from_slice(out_slice);
-                        }
-                    }
-                    write_ch += 1;
-                }
-                if write_ch > 0 {
-                    break;
-                }
-            }
-
-            self.push_telemetry_chunk(slice_len, target_ch, &mut max_l, &mut max_r);
-            offset = next_stop;
-        }
-
-        // Apply any trailing events stamped at >= total_frames.
-        while ev_idx < input_len {
-            if let Some(ev) = events.input.get(ev_idx) {
-                if let Some(CoreEventSpace::ParamValue(pv)) = ev.as_core_event() {
-                    if let Some(id) = pv.param_id() {
-                        self.shared.set_param_from_host(id.get(), pv.value());
-                    }
-                }
-            }
-            ev_idx += 1;
-        }
-        self.sync_params_from_shared();
-
-        self.shared.set_telemetry(
-            linear_to_dbfs(max_l),
-            linear_to_dbfs(max_r),
-            self.engine.auto_gain_compensation_db(),
-        );
-
-        Ok(ProcessStatus::Continue)
-    }
-
-    fn deactivate(self, _main_thread: &mut EquaformMainThread<'a>) {
-        let mut engine = self.engine;
-        engine.destroy();
-    }
-
-    fn start_processing(&mut self) -> Result<(), PluginError> {
-        self.engine.reset();
-        Ok(())
-    }
-
-    fn stop_processing(&mut self) {}
-}
-
 // ---------------------------------------------------------------------------
 // Plugin entry & extensions registration
 // ---------------------------------------------------------------------------
@@ -1148,6 +718,7 @@ clack_export_entry!(SinglePluginEntry::<EquaformPlugin>);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use equaform_common::MAX_BLOCK_SIZE;
     use equaform_common::{FilterType, Slope};
     use params_map::{PARAM_COUNT, get_param_meta};
 
