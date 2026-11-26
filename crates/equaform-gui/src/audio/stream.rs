@@ -352,7 +352,7 @@ impl AudioStream {
             1.0f32
         };
 
-        // Pre-allocate scratch buffers strictly to MAX_SCRATCH_FRAMES (ADR-007: zero allocation in callbacks)
+        // Pre-allocate scratch buffers strictly to MAX_SCRATCH_FRAMES (zero allocation in callbacks)
         let mut left_in = vec![0.0f32; MAX_SCRATCH_FRAMES];
         let mut right_in = vec![0.0f32; MAX_SCRATCH_FRAMES];
         let mut left_out = vec![0.0f32; MAX_SCRATCH_FRAMES];

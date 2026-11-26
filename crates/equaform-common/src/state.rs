@@ -1,6 +1,6 @@
 //! Versioned logical state and preset serialization for Equaform.
 //!
-//! Implements the state contract defined in ADR-006 and PARAMETER_STATE_CONTRACT.
+//! Implements the persistent state and preset serialization contract.
 //!
 //! # Schema
 //!

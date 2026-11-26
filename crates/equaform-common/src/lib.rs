@@ -43,13 +43,13 @@ pub use parameter::{band, global};
 pub use triple_buffer::{TripleBufferConsumer, TripleBufferProducer, create_triple_buffer};
 
 // ---------------------------------------------------------------------------
-// M2-T001/M5-T001: Bounded SPSC transport (exported for analysis handoff)
+// Bounded SPSC transport (exported for analysis handoff)
 // ---------------------------------------------------------------------------
 
 // OverflowPolicy and SpscRingBuffer are already pub in this module.
 
 // ---------------------------------------------------------------------------
-// M2-T001: Bounded SPSC parameter transport prototypes
+// Bounded SPSC parameter transport
 // ---------------------------------------------------------------------------
 
 use std::sync::atomic::{AtomicUsize, Ordering};

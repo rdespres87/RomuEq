@@ -155,7 +155,7 @@ impl AutomationBatch {
 
 /// A consumer-side view of the automation event stream.
 ///
-/// Events arrive via the bounded SPSC queue (from M2-T001) and are
+/// Events arrive via the bounded SPSC queue and are
 /// accumulated into batches per block. The consumer is responsible for
 /// producing `AutomationBatch` instances from raw events.
 #[derive(Debug)]

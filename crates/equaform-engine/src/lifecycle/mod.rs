@@ -408,7 +408,7 @@ impl EngineLifecycle {
         }
     }
 
-    /// M5-T001: Get a mutable reference to the analysis buffer for GUI thread consumption.
+    /// Get a mutable reference to the analysis buffer for GUI thread consumption.
     ///
     /// The GUI thread calls `consume_all()` on the returned buffer to drain
     /// analysis frames produced by the audio thread.

@@ -1,7 +1,7 @@
-//! Preset and state disk persistence for RomuEq.
+//! Preset and state disk persistence for Equaform.
 //!
-//! Stores user-created presets in `~/.romueq/presets/*.req`, the last active preset
-//! name in `~/.romueq/last_preset.txt`, and complete app state in `~/.romueq/app_state.bin`.
+//! Stores user-created presets in `~/.equaform/presets/*.req`, the last active preset
+//! name in `~/.equaform/last_preset.txt`, and complete app state in `~/.equaform/app_state.bin`.
 
 use crate::default_8_bands;
 use crate::preset_manager::PresetManager;
@@ -68,7 +68,7 @@ pub fn sanitize_preset_filename(name: &str) -> String {
     format!("{}.req", s.trim())
 }
 
-/// Saves a named preset from the preset manager to `~/.romueq/presets/<name>.req`.
+/// Saves a named preset from the preset manager to `~/.equaform/presets/<name>.req`.
 pub fn persist_preset_to_disk(
     preset_manager: &mut PresetManager,
     name: &str,
@@ -84,7 +84,7 @@ pub fn persist_preset_to_disk(
         .map_err(|e| e.to_string())
 }
 
-/// Removes a preset file `~/.romueq/presets/<name>.req` from disk.
+/// Removes a preset file `~/.equaform/presets/<name>.req` from disk.
 pub fn remove_preset_from_disk(name: &str) {
     let path = user_config_dir()
         .join("presets")
@@ -98,7 +98,7 @@ pub fn save_last_active_preset_name(name: &str) {
     let _ = equaform_common::state::atomic_write(path, name.as_bytes());
 }
 
-/// Loads the last active preset name from `~/.romueq/last_preset.txt`.
+/// Loads the last active preset name from `~/.equaform/last_preset.txt`.
 pub fn load_last_active_preset_name() -> Option<String> {
     let path = user_config_dir().join("last_preset.txt");
     equaform_common::state::read_to_string_bounded(

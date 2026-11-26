@@ -6,7 +6,7 @@
 //! The GUI must communicate with the engine via commands and queries — no direct
 //! DSP state access.
 //!
-//! ## Framework Decision (ADR-003)
+//! ## GUI Framework
 //!
 //! **egui** (with winit backend for standalone mode) is the selected GUI framework.
 //!

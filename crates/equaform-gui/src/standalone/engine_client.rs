@@ -544,10 +544,7 @@ impl GuiClient for EngineClient {
     }
 
     fn spectrum_data(&self) -> &[[f64; 2]] {
-        // Return a reference to the latest spectrum data.
-        // In Phase 6 (audio backend), this will be updated every sample block.
-        // For now, return an empty slice — the analysis_snapshot() already
-        // provides spectrum_data for the UI plot.
+        // Return an empty slice; `analysis_snapshot()` provides spectrum data for the UI plot.
         static EMPTY: &[[f64; 2]] = &[];
         EMPTY
     }

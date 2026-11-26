@@ -466,30 +466,42 @@ pub mod macos_impl {
     /// Install the native Equaform virtual audio driver via macOS administrator dialog.
     /// Cleans up legacy RomuEq.driver during installation.
     pub fn install_equaform_driver() -> Result<(), String> {
-        let tmp_path = "/tmp/EquaformDriver.pkg";
-        std::fs::write(tmp_path, EMBEDDED_EQUAFORM_DRIVER_PKG)
-            .map_err(|e| format!("Impossible d'écrire le paquet d'installation temporaire: {e}"))?;
+        let tmp_path =
+            std::env::temp_dir().join(format!("EquaformDriver-{}.pkg", std::process::id()));
+        equaform_common::state::atomic_write(&tmp_path, EMBEDDED_EQUAFORM_DRIVER_PKG)
+            .map_err(|e| format!("Failed to write temporary driver installer package: {e}"))?;
+        let tmp_path_str = tmp_path.to_string_lossy();
+        let escaped_pkg_path = tmp_path_str
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('\'', "'\\''");
 
         let script = format!(
-            "do shell script \"rm -rf /Library/Audio/Plug-Ins/HAL/RomuEq.driver /Library/Audio/Plug-Ins/HAL/Equaform.driver && installer -pkg {tmp_path} -target / && killall coreaudiod\" with administrator privileges with prompt \"Equaform-8 souhaite installer son pilote CoreAudio natif 'Equaform-8'.\""
+            "do shell script \"rm -rf /Library/Audio/Plug-Ins/HAL/RomuEq.driver /Library/Audio/Plug-Ins/HAL/Equaform.driver && installer -pkg '{escaped_pkg_path}' -target / && killall coreaudiod\" with administrator privileges with prompt \"Equaform-8 wants to install its native CoreAudio driver 'Equaform-8'.\""
         );
 
         let output = std::process::Command::new("osascript")
             .arg("-e")
             .arg(&script)
             .output()
-            .map_err(|e| format!("Erreur lors de l'appel système d'autorisation: {e}"))?;
+            .map_err(|e| format!("Failed to invoke macOS authorization dialog: {e}"))?;
 
-        let _ = std::fs::remove_file(tmp_path);
+        let _ = std::fs::remove_file(&tmp_path);
 
         if output.status.success() {
-            // Allow coreaudiod daemon 1.5 seconds to restart and register new devices
-            std::thread::sleep(std::time::Duration::from_millis(1500));
+            // Poll briefly until coreaudiod restarts and registers the virtual driver (up to 3s).
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            while std::time::Instant::now() < deadline {
+                if is_equaform_driver_available() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
             Ok(())
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr);
             Err(format!(
-                "Autorisation refusée ou installation échouée: {stderr}"
+                "Authorization denied or installation failed: {stderr}"
             ))
         }
     }

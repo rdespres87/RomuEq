@@ -11,7 +11,7 @@ pub use frame::SpectrumFrame;
 pub use processor::SpectrumProcessor;
 
 // =======================================================================
-// M5-T002: Spectrum / FFT pipeline (consumer-thread, no audio allocation)
+// Spectrum / FFT pipeline (consumer-thread, no audio allocation)
 // =======================================================================
 
 /// Window function types supported by the spectrum processor.
