@@ -128,5 +128,9 @@
   - [x] Bounded 64-step Undo/Redo stack (`Cmd/Ctrl+Z`, `Cmd/Ctrl+Shift+Z`/`Ctrl+Y`, gesture coalescing, Bypass/Solo excluded, 0 tofu glyphs: `88b40a7`, `fdcb42c`)
   - [x] Modularize >1,000 LOC files (`equaform-plugin/src/processor.rs`, `equaform-gui/src/standalone/engine_client.rs`, `fdd74bc`)
   - [x] P2 cleanup: remove all stale `ADR-*`/`Phase *`/`M*-T*` comments, update `~/.equaform` docstrings, atomic PID-scoped `.pkg` write with escaping & readiness polling (`3e9f3e0`)
-- [ ] Optional Next Milestone (v1.3.0 Candidates):
-  - [ ] Linear-phase FIR EQ mode (`Zero Latency | Linear Phase` UI selector + partitioned convolution + `CLAP_EXT_LATENCY` DAW PDC reporting)
+- [x] v1.3.0 "Linear-Phase FIR EQ" Release:
+  - [x] 3-mode `ProcessingMode` (`Zero Latency` 0 smp, `Linear Low` 2048 taps / 1024 smp, `Linear High` 4096 taps / 2048 smp) in `equaform-common`
+  - [x] Zero-alloc `#![forbid(unsafe_code)]` 2x2 Stereo/M-S FIR synthesis (Blackman-Harris) + UPOLS convolver (`B=256`, `FFT=512`, dual-bank crossfade) in `equaform-dsp`
+  - [x] `EngineLifecycle` integration with 10 ms mode crossfade and latency-aligned dry bypass (`DryDelayLine`) in `equaform-engine`
+  - [x] DAW parameter `ParamId(4)` (`Processing Mode`, 61 params) + `CLAP_EXT_LATENCY` PDC reporting (bridged to VST3/AUv2) in `equaform-plugin`
+  - [x] Master bar 3-mode selector, live latency tooltips, Standalone/Undo/A-B wiring, EN/FR/DE/ES i18n, and `README.md` signal-flow diagram

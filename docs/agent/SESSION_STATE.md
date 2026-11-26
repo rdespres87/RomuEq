@@ -1,13 +1,13 @@
 # Equaform-8 (RomuEq) - Session State
 
 **Date:** 2026-11-26
-**Version:** v1.2.0 ("Musical Control & Workflow", ready to tag) — `v1.1.1` live on GitHub Releases
+**Version:** v1.3.0 ("Linear-Phase FIR EQ", local) — `v1.1.1` live on GitHub Releases
 **Maturity Audit:** **9.4 / 10** (+0.9 vs 8.5/10 baseline; **0 P0s, 0 P1s**, 0 `allow(clippy::)`, 0 prod files > 1,000 LOC, 0 stale comments)
 
 ## Release Assets
 
-- `Equaform-8-v1.2.0.dmg` + `.dmg.sha256` (macOS Apple Silicon)
-- `Equaform-8-Plugins-Windows-v1.2.0.exe` + `.exe.sha256` (Windows x64)
+- `Equaform-8-v1.3.0.dmg` + `.dmg.sha256` (macOS Apple Silicon)
+- `Equaform-8-Plugins-Windows-v1.3.0.exe` + `.exe.sha256` (Windows x64)
 
 ## Platform Scope
 
@@ -16,11 +16,12 @@
 
 ## Test & Lint Status
 
-- **503 tests passed**, 0 failed, 2 ignored (hardware diagnostics) + 2 `compile_fail` doctests in `equaform-engine`
+- **530 tests passed**, 0 failed, 2 ignored (hardware diagnostics) + 2 `compile_fail` doctests in `equaform-engine`
 - `cargo clippy --workspace --all-targets -- -D warnings -D clippy::undocumented_unsafe_blocks`: 0 warnings
 - `cargo fmt --all -- --check`: clean
 - `cargo deny check`: PASS (`advisories ok, bans ok, licenses ok, sources ok`)
-- `cargo llvm-cov` core crates (`common`, `dsp`, `analysis`, `engine`): **91.30% lines / 92.41% regions** (>= 90% CI gate)
+- `cargo llvm-cov` core crates (`common`, `dsp`, `analysis`, `engine`): **91.72% lines / 92.83% regions** (>= 90% CI gate)
+- Apple `auval -v aufx Eqf8 Eqfm`: `AU VALIDATION SUCCEEDED` (61 DAW params + `CLAP_EXT_LATENCY` bridged to AUv2)
 - Criterion stereo SIMD biquad (`equaform-dsp`): -49.5% to -54.2% latency (~2.0x-2.2x throughput, `#![forbid(unsafe_code)]`)
 
 ## CI/CD Workflows

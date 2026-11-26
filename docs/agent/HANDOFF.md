@@ -11,6 +11,11 @@ Date: 2026-11-26 | Branch: `main` | Workspace: 9-crate Rust
   - Bounded 64-step Undo/Redo stack (`Cmd/Ctrl+Z`, `Cmd/Ctrl+Shift+Z`/`Ctrl+Y`, gesture coalescing, Bypass/Solo excluded) + tofu glyph fixes (`88b40a7`, `fdcb42c`)
   - Monolith splits: `equaform-plugin/src/processor.rs` & `equaform-gui/src/standalone/engine_client.rs` (100% prod files < 1,000 LOC, `fdd74bc`)
   - P2 cleanup: 0 stale comment refs, `~/.equaform` docstrings, atomic PID-scoped `.pkg` write with escaping & readiness polling (`3e9f3e0`)
+- `v1.3.0` ("Linear-Phase FIR EQ") is implemented and verified locally (`530` tests passed, `91.72%` core line coverage, `auval` PASS):
+  - 3-mode `ProcessingMode` (`Zero Latency` 0 smp, `Linear Low` 2048 taps / 1024 smp, `Linear High` 4096 taps / 2048 smp)
+  - Zero-alloc UPOLS stereo/M-S convolver (`equaform-dsp/src/linear_phase/`) + latency-aligned dry bypass & 10 ms mode crossfade (`equaform-engine`)
+  - 61 DAW params (`ParamId(4)` `Processing Mode`) + `CLAP_EXT_LATENCY` PDC reporting (`equaform-plugin`)
+  - Master bar 3-mode selector, live latency tooltips, Undo/Redo, A/B Compare, EN/FR/DE/ES i18n, and `README.md` diagram
 - Unstaged artifact `crates/equaform-standalone/resources/EquaformDriver.pkg` may appear after `cargo test`; keep unstaged.
 
 ## Verified Metrics
@@ -19,9 +24,10 @@ Date: 2026-11-26 | Branch: `main` | Workspace: 9-crate Rust
 |---|---|
 | `cargo fmt --all -- --check` | PASS |
 | `cargo clippy --workspace --all-targets -- -D warnings -D clippy::undocumented_unsafe_blocks` | 0 warnings |
-| `cargo test --workspace` | 503 passed, 0 failed, 2 ignored |
+| `cargo test --workspace` | 530 passed, 0 failed, 2 ignored |
 | `cargo deny check` | PASS (`advisories/bans/licenses/sources ok`) |
-| `cargo llvm-cov` (core crates) | 91.30% lines / 92.41% regions (>= 90% CI gate) |
+| `cargo llvm-cov` (core crates) | 91.72% lines / 92.83% regions (>= 90% CI gate) |
+| `auval -v aufx Eqf8 Eqfm` | `AU VALIDATION SUCCEEDED` |
 
 ## Operational Invariants
 

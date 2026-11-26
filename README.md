@@ -21,19 +21,47 @@ Real-time 8-band parametric equalizer written in Rust, available as **DAW plugin
 - **DAW Plugins (`CLAP`, `VST3`, `AUv2`)**
   - Native **CLAP** implementation in `crates/equaform-plugin` with embedded **macOS Cocoa (`NSView`) + Metal** and **Windows Win32 (`HWND`) + DirectX 12 / Vulkan** editors (`wgpu` / `egui-wgpu`, `1180×560`).
   - **VST3** (Ableton Live, Cubase, Reaper, Bitwig, FL Studio) on macOS & Windows, and **Audio Unit v2** (`aufx` / `Eqf8` / `Eqfm` for Logic Pro, GarageBand, MainStage) on macOS, generated via `clap-wrapper`.
-  - **60 automatable parameters** (8 bands × Active/Type/Frequency/Gain/Q/Slope/Routing + Global Gain, Output Trim, Bypass, Auto-Gain, Auto-Gain Mode) with sample-accurate sub-block automation, Touch/Latch UI gestures, text value parsing, and versioned CRC32 binary + JSON state persistence.
+  - **61 automatable parameters** (8 bands × Active/Type/Frequency/Gain/Q/Slope/Routing + Global Gain, Output Trim, Bypass, Auto-Gain, Auto-Gain Mode, Processing Mode) with sample-accurate sub-block automation, Touch/Latch UI gestures, text value parsing, and versioned CRC32 binary + JSON state persistence.
 - **Standalone macOS Application (`Equaform-8.app` — macOS only)**
   - System-wide EQ powered by a native C11 CoreAudio `AudioServerPlugIn` virtual audio driver (`driver/equaform-hal`) and drift-compensated CoreAudio playback.
 - **CLI / Offline Renderer (`equaform-cli`)**
   - Offline WAV processing and diagnostics using the shared DSP engine.
 - **DSP, Analysis & Shared UI (`equaform-gui`)**
-  - 8-band minimum-phase EQ (`Bell`, `LowShelf`, `HiShelf`, `HiPass`, `LowPass`; 6/12/18/24 dB/oct slopes) with zero-unsafe vectorized stereo biquad kernels, dual-mode Auto-Gain (**Perceptual** loudness match & musical **Anti-Clip** headroom protection), per-band **Stereo / Left / Right / Mid / Side** routing, monitor-only **Band Solo** audition, instant **A/B Compare** (`A / B / A>B`), bounded **Undo/Redo** (`Cmd/Ctrl+Z`, `Cmd/Ctrl+Shift+Z` / `Ctrl+Y`), `[-40 dB .. +40 dB]` response curve plot (dirty-flag cached), real-time FFT spectrum analyzer, stereo L/R VU-meter, and native zero-allocation i18n (`EN` / `FR` / `DE` / `ES`).
+  - 8-band EQ (`Bell`, `LowShelf`, `HiShelf`, `HiPass`, `LowPass`; 6/12/18/24 dB/oct slopes) with selectable **Zero Latency** (minimum-phase SIMD IIR) and **Linear Phase** (`Linear Low` / `Linear High` UPOLS FIR) processing modes, dual-mode Auto-Gain (**Perceptual** loudness match & musical **Anti-Clip** headroom protection), per-band **Stereo / Left / Right / Mid / Side** routing, monitor-only **Band Solo** audition, instant **A/B Compare** (`A / B / A>B`), bounded **Undo/Redo** (`Cmd/Ctrl+Z`, `Cmd/Ctrl+Shift+Z` / `Ctrl+Y`), `[-40 dB .. +40 dB]` response curve plot (dirty-flag cached), real-time FFT spectrum analyzer, stereo L/R VU-meter, and native zero-allocation i18n (`EN` / `FR` / `DE` / `ES`).
   - Lock-free audio hot path (`ADR-007`: zero allocation, non-blocking ring buffers & atomic snapshots).
   - **15 factory presets** and user presets (sorted with user presets first and factory presets alphabetically) synchronized across standalone and plugins (`~/.equaform/presets/*.req` on macOS, `%APPDATA%\Equaform\presets\*.req` on Windows).
 
+## Processing Modes (Zero Latency vs Linear Phase — v1.3.0)
+
+Equaform-8 provides three real-time processing modes so you can trade zero algorithmic latency for phase-coherent filtering depending on the mixing or mastering stage:
+
+| Mode | Topology | Latency (@ 48 kHz) | Phase & Transient Character | Best For |
+| :--- | :--- | :---: | :--- | :--- |
+| **`Zero Latency`** | Minimum-phase SIMD IIR biquad cascade | `0` samples (`0.0 ms`) | Analog-style phase shift, zero pre-ringing, minimal CPU | Live tracking/monitoring, individual tracks, dry/punchy percussion |
+| **`Linear Low`** | Linear-phase FIR (`2048` taps, UPOLS) | `1024` samples (`≈ 21.3 ms`) | Zero relative phase shift across all frequencies (constant group delay); auto-compensated via DAW PDC (`CLAP_EXT_LATENCY` / VST3 / AUv2) | Parallel bus processing (no comb filtering), multi-mic drums/overheads, general mixing |
+| **`Linear High`** | Linear-phase FIR (`4096` taps, UPOLS) | `2048` samples (`≈ 42.7 ms`) | Double low-frequency resolution (`20–60 Hz` sub-bass & steep `24 dB/oct` slopes); auto-compensated via DAW PDC | Mastering and critical sub-bass sculpting |
+
+### Signal Flow & Seamless Transitions
+
+```mermaid
+flowchart LR
+    In["Input Audio"] --> Mode{"Mode Selector"}
+    Mode -->|"Zero Latency"| IIR["SIMD IIR Cascade (0 samples)"]
+    Mode -->|"Linear Low / High"| FIR["Dual-Bank UPOLS FIR (1024 / 2048 samples)"]
+    In -->|"Bypass Active"| Dry["Latency-Aligned Dry Delay (0 / 1024 / 2048 samples)"]
+    IIR --> Xfade["Click-Free Crossfade (10 ms transition)"]
+    FIR --> Xfade
+    Dry --> Xfade
+    Xfade --> Out["Output Audio"]
+    Mode -.->|"CLAP_EXT_LATENCY / VST3 / AUv2"| PDC["DAW Plugin Delay Compensation (PDC)"]
+```
+
+- **Latency-Aligned Bypass**: When **Bypass** is engaged in `Linear Low` or `Linear High`, the dry signal passes through a matching sample delay (`1024` or `2048` samples) so toggling Bypass never introduces timing jumps or comb filtering against DAW PDC.
+- **Click-Free Mode & Parameter Updates**: Linear-phase EQ changes crossfade between dual pre-allocated UPOLS filter banks, and switching between `Zero Latency`, `Linear Low`, and `Linear High` uses a smooth `10 ms` transition without clicks or audio-thread allocations.
+
 ## Future Scope
 
-- Dynamic EQ, linear-phase mode, and oversampling
+- Dynamic EQ and oversampling
 - Linux packaging for `CLAP` / `VST3` plugins
 - Audio Unit v3 (`AUv3`) and multichannel support
 
