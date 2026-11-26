@@ -21,13 +21,13 @@ Real-time 8-band parametric equalizer written in Rust, available as **DAW plugin
 - **DAW Plugins (`CLAP`, `VST3`, `AUv2`)**
   - Native **CLAP** implementation in `crates/equaform-plugin` with embedded **macOS Cocoa (`NSView`) + Metal** and **Windows Win32 (`HWND`) + DirectX 12 / Vulkan** editors (`wgpu` / `egui-wgpu`, `1180×560`).
   - **VST3** (Ableton Live, Cubase, Reaper, Bitwig, FL Studio) on macOS & Windows, and **Audio Unit v2** (`aufx` / `Eqf8` / `Eqfm` for Logic Pro, GarageBand, MainStage) on macOS, generated via `clap-wrapper`.
-  - **59 automatable parameters** (8 bands × Active/Type/Frequency/Gain/Q/Slope/Routing + Global Gain, Output Trim, Bypass) with sample-accurate sub-block automation, Touch/Latch UI gestures, text value parsing, and versioned CRC32 binary + JSON state persistence.
+  - **60 automatable parameters** (8 bands × Active/Type/Frequency/Gain/Q/Slope/Routing + Global Gain, Output Trim, Bypass, Auto-Gain, Auto-Gain Mode) with sample-accurate sub-block automation, Touch/Latch UI gestures, text value parsing, and versioned CRC32 binary + JSON state persistence.
 - **Standalone macOS Application (`Equaform-8.app` — macOS only)**
   - System-wide EQ powered by a native C11 CoreAudio `AudioServerPlugIn` virtual audio driver (`driver/equaform-hal`) and drift-compensated CoreAudio playback.
 - **CLI / Offline Renderer (`equaform-cli`)**
   - Offline WAV processing and diagnostics using the shared DSP engine.
 - **DSP, Analysis & Shared UI (`equaform-gui`)**
-  - 8-band minimum-phase EQ (`Bell`, `LowShelf`, `HiShelf`, `HiPass`, `LowPass`; 6/12/18/24 dB/oct slopes) with zero-unsafe vectorized stereo biquad kernels, per-band **Stereo / Left / Right / Mid / Side** routing, monitor-only **Band Solo** audition, and instant **A/B Compare** (`A / B / A→B`), `[-40 dB .. +40 dB]` response curve plot (dirty-flag cached), real-time FFT spectrum analyzer, stereo L/R VU-meter, and native zero-allocation i18n (`EN` / `FR` / `DE`).
+  - 8-band minimum-phase EQ (`Bell`, `LowShelf`, `HiShelf`, `HiPass`, `LowPass`; 6/12/18/24 dB/oct slopes) with zero-unsafe vectorized stereo biquad kernels, dual-mode Auto-Gain (**Perceptual** loudness match & musical **Anti-Clip** headroom protection), per-band **Stereo / Left / Right / Mid / Side** routing, monitor-only **Band Solo** audition, instant **A/B Compare** (`A / B / A>B`), bounded **Undo/Redo** (`Cmd/Ctrl+Z`, `Cmd/Ctrl+Shift+Z` / `Ctrl+Y`), `[-40 dB .. +40 dB]` response curve plot (dirty-flag cached), real-time FFT spectrum analyzer, stereo L/R VU-meter, and native zero-allocation i18n (`EN` / `FR` / `DE` / `ES`).
   - Lock-free audio hot path (`ADR-007`: zero allocation, non-blocking ring buffers & atomic snapshots).
   - **15 factory presets** and user presets (sorted with user presets first and factory presets alphabetically) synchronized across standalone and plugins (`~/.equaform/presets/*.req` on macOS, `%APPDATA%\Equaform\presets\*.req` on Windows).
 
@@ -99,10 +99,10 @@ auval -v aufx Eqf8 Eqfm
 ### Combined Distribution DMG (Plugins + Standalone)
 
 ```bash
-./scripts/package-distribution-plugins.sh 1.1.1
+./scripts/package-distribution-plugins.sh 1.2.0
 ```
 
-This generates `target/release/dist/Equaform-8-v1.1.1.dmg` (and its `.sha256` checksum) containing both the DAW plugins installer (`Equaform-8-Plugins-Installer.pkg` for `AUv2`, `VST3`, `CLAP`, and presets) and the standalone `Equaform-8.app` bundle.
+This generates `target/release/dist/Equaform-8-v1.2.0.dmg` (and its `.sha256` checksum) containing both the DAW plugins installer (`Equaform-8-Plugins-Installer.pkg` for `AUv2`, `VST3`, `CLAP`, and presets) and the standalone `Equaform-8.app` bundle.
 
 ## Real-Time Contract
 

@@ -1266,7 +1266,7 @@ checksum = "fc7e7a64c02cf7a5b51e745a9e45f60660a286f151c238b9d397b3e923f5082f"
 
 [[package]]
 name = "equaform-analysis"
-version = "1.1.1"
+version = "1.2.0"
 dependencies = [
  "equaform-common",
  "rustfft",
@@ -1274,7 +1274,7 @@ dependencies = [
 
 [[package]]
 name = "equaform-cli"
-version = "1.1.1"
+version = "1.2.0"
 dependencies = [
  "equaform-common",
  "equaform-engine",
@@ -1283,7 +1283,7 @@ dependencies = [
 
 [[package]]
 name = "equaform-common"
-version = "1.1.1"
+version = "1.2.0"
 dependencies = [
  "criterion",
  "serde",
@@ -1292,7 +1292,7 @@ dependencies = [
 
 [[package]]
 name = "equaform-dsp"
-version = "1.1.1"
+version = "1.2.0"
 dependencies = [
  "criterion",
  "equaform-common",
@@ -1300,7 +1300,7 @@ dependencies = [
 
 [[package]]
 name = "equaform-engine"
-version = "1.1.1"
+version = "1.2.0"
 dependencies = [
  "bincode",
  "equaform-analysis",
@@ -1311,7 +1311,7 @@ dependencies = [
 
 [[package]]
 name = "equaform-gui"
-version = "1.1.1"
+version = "1.2.0"
 dependencies = [
  "cpal",
  "eframe",
@@ -1325,7 +1325,7 @@ dependencies = [
 
 [[package]]
 name = "equaform-integration-tests"
-version = "1.1.1"
+version = "1.2.0"
 dependencies = [
  "equaform-analysis",
  "equaform-cli",
@@ -1338,7 +1338,7 @@ dependencies = [
 
 [[package]]
 name = "equaform-plugin"
-version = "1.1.1"
+version = "1.2.0"
 dependencies = [
  "block2 0.6.2",
  "clack-common",
@@ -1362,7 +1362,7 @@ dependencies = [
 
 [[package]]
 name = "equaform-standalone"
-version = "1.1.1"
+version = "1.2.0"
 dependencies = [
  "coreaudio-sys",
  "cpal",

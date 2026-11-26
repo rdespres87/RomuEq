@@ -122,7 +122,11 @@
   - [x] Filter ephemeral Band Solo IDs (`106..=806`) on preset save and strip on load/import (`1738c7c`)
   - [x] Localize all Band Solo, A/B Compare, and Mid/Side routing tooltips across EN/FR/DE/ES (`de304c4`)
   - [x] Hoist `update_auto_gain_db()` and Mid/Side solo transforms out of inner loops + remove unused `query_automation` (`580d735`)
-- [ ] Optional Next Milestone (v1.2.0 Candidates):
-  - [ ] Undo/Redo stack (`UndoStack<EqParameters>`, `Cmd/Ctrl+Z`)
-  - [ ] Linear-phase EQ mode (FIR partitioned convolution + DAW latency reporting)
-  - [ ] Modularize remaining >1000 LOC files (`equaform-plugin/src/lib.rs`, `standalone.rs`) and replace `WgpuSurfaceHost::new` 8-arg signature with `WgpuSurfaceConfig`
+- [x] v1.2.0 "Musical Control & Workflow" Release (Maturity Audit 9.4/10, 0 P0s, 0 P1s):
+  - [x] Dual-mode Auto-Gain (`Perceptual` vs musical `HeadroomSafe` Anti-Clip, 64-point stack-only formula, `ParamId(7)`, 60 DAW params, `67b3d5f`)
+  - [x] Replace 8-arg `WgpuSurfaceHost::new` with `WgpuSurfaceConfig` (`9b34825`, 0 `allow(clippy::)` workspace-wide)
+  - [x] Bounded 64-step Undo/Redo stack (`Cmd/Ctrl+Z`, `Cmd/Ctrl+Shift+Z`/`Ctrl+Y`, gesture coalescing, Bypass/Solo excluded, 0 tofu glyphs: `88b40a7`, `fdcb42c`)
+  - [x] Modularize >1,000 LOC files (`equaform-plugin/src/processor.rs`, `equaform-gui/src/standalone/engine_client.rs`, `fdd74bc`)
+  - [x] P2 cleanup: remove all stale `ADR-*`/`Phase *`/`M*-T*` comments, update `~/.equaform` docstrings, atomic PID-scoped `.pkg` write with escaping & readiness polling (`3e9f3e0`)
+- [ ] Optional Next Milestone (v1.3.0 Candidates):
+  - [ ] Linear-phase FIR EQ mode (`Zero Latency | Linear Phase` UI selector + partitioned convolution + `CLAP_EXT_LATENCY` DAW PDC reporting)
