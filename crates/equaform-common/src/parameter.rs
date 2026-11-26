@@ -242,10 +242,10 @@ pub fn parameter_info(id: u32) -> Option<ParameterInfo> {
         4 => Some(ParameterInfo {
             id: 4,
             name: "global.processing_mode",
-            param_type: ParameterType::Enum { count: 1 },
+            param_type: ParameterType::Enum { count: 3 },
             range: ParameterRange {
                 min: 0.0,
-                max: 0.0,
+                max: 2.0,
                 default: 0.0,
             },
             unit: "",
@@ -695,18 +695,75 @@ impl BandRouting {
 // ===========================================================================
 
 /// Processing mode for the EQ.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize,
+)]
 pub enum ProcessingMode {
+    /// Zero-latency minimum-phase IIR biquad cascade (0 samples latency).
+    #[default]
     MinimumPhase,
+    /// Linear-phase 2048-tap FIR equalizer (1024 samples latency).
+    LinearPhaseLow,
+    /// Linear-phase 4096-tap FIR equalizer (2048 samples latency).
+    LinearPhaseHigh,
 }
 
 impl ProcessingMode {
-    pub const fn from_raw(_value: u32) -> Option<Self> {
-        Some(ProcessingMode::MinimumPhase)
+    /// Converts a raw `u32` value to a `ProcessingMode`, returning `None` for unknown values.
+    #[inline]
+    pub const fn from_raw(value: u32) -> Option<Self> {
+        match value {
+            0 => Some(Self::MinimumPhase),
+            1 => Some(Self::LinearPhaseLow),
+            2 => Some(Self::LinearPhaseHigh),
+            _ => None,
+        }
     }
 
+    /// Returns the raw `u32` representation of this mode.
+    #[inline]
     pub const fn to_raw(self) -> u32 {
-        0
+        match self {
+            Self::MinimumPhase => 0,
+            Self::LinearPhaseLow => 1,
+            Self::LinearPhaseHigh => 2,
+        }
+    }
+
+    /// Returns the algorithmic latency in samples.
+    #[inline]
+    pub const fn latency_samples(self) -> u32 {
+        match self {
+            Self::MinimumPhase => 0,
+            Self::LinearPhaseLow => 1024,
+            Self::LinearPhaseHigh => 2048,
+        }
+    }
+
+    /// Returns the FIR filter length in taps (0 for minimum-phase IIR).
+    #[inline]
+    pub const fn fir_length(self) -> usize {
+        match self {
+            Self::MinimumPhase => 0,
+            Self::LinearPhaseLow => 2048,
+            Self::LinearPhaseHigh => 4096,
+        }
+    }
+
+    /// Returns `true` when linear-phase FIR processing is active.
+    #[inline]
+    pub const fn is_linear_phase(self) -> bool {
+        !matches!(self, Self::MinimumPhase)
+    }
+
+    /// Returns a human-readable display label for DAW hosts and UI tooltips.
+    #[inline]
+    pub const fn display_name(self) -> &'static str {
+        match self {
+            Self::MinimumPhase => "Zero Latency",
+            Self::LinearPhaseLow => "Linear Low",
+            Self::LinearPhaseHigh => "Linear High",
+        }
     }
 }
 
@@ -1291,8 +1348,27 @@ mod tests {
 
     #[test]
     fn test_processing_mode_roundtrip() {
-        let pm = ProcessingMode::from_raw(0).unwrap();
-        assert_eq!(pm.to_raw(), 0);
+        for raw in 0..=2 {
+            let pm = ProcessingMode::from_raw(raw).unwrap();
+            assert_eq!(pm.to_raw(), raw);
+        }
+        assert!(ProcessingMode::from_raw(3).is_none());
+        assert_eq!(ProcessingMode::default(), ProcessingMode::MinimumPhase);
+        assert_eq!(ProcessingMode::MinimumPhase.latency_samples(), 0);
+        assert_eq!(ProcessingMode::LinearPhaseLow.latency_samples(), 1024);
+        assert_eq!(ProcessingMode::LinearPhaseHigh.latency_samples(), 2048);
+        assert_eq!(ProcessingMode::MinimumPhase.fir_length(), 0);
+        assert_eq!(ProcessingMode::LinearPhaseLow.fir_length(), 2048);
+        assert_eq!(ProcessingMode::LinearPhaseHigh.fir_length(), 4096);
+        assert!(!ProcessingMode::MinimumPhase.is_linear_phase());
+        assert!(ProcessingMode::LinearPhaseLow.is_linear_phase());
+        assert!(ProcessingMode::LinearPhaseHigh.is_linear_phase());
+        assert_eq!(ProcessingMode::MinimumPhase.display_name(), "Zero Latency");
+        assert_eq!(ProcessingMode::LinearPhaseLow.display_name(), "Linear Low");
+        assert_eq!(
+            ProcessingMode::LinearPhaseHigh.display_name(),
+            "Linear High"
+        );
     }
 
     #[test]
@@ -1444,9 +1520,12 @@ mod tests {
         assert!(validate_value(3, 1.0).is_ok());
         assert!(validate_value(3, -0.001).is_err());
 
-        // processing_mode: 0..0 (single value)
+        // processing_mode: 0..2 (Zero Latency, Linear Low, Linear High)
         assert!(validate_value(4, 0.0).is_ok());
-        assert!(validate_value(4, 0.001).is_err());
+        assert!(validate_value(4, 1.0).is_ok());
+        assert!(validate_value(4, 2.0).is_ok());
+        assert!(validate_value(4, -0.001).is_err());
+        assert!(validate_value(4, 2.001).is_err());
 
         // stereo_mode: 0..0 (single value)
         assert!(validate_value(5, 0.0).is_ok());

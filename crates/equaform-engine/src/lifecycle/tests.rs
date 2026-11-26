@@ -18,14 +18,11 @@ fn test_lifecycle_new_is_created() {
 
 #[test]
 fn test_lifecycle_new_no_allocation() {
-    // Verify the struct size is reasonable (flat buffers inline).
-    // FLAT_BUFFER_SIZE = 8 * 8192 = 65536 f32s.
-    // buffer: FLAT_BUFFER_SIZE * 4 bytes = 262144.
-    // bypass_buffer: FLAT_BUFFER_SIZE * 4 bytes = 262144.
-    // DELAY_BUFFER_SIZE = 8 * 8 * 4 = 256 f32s = 1024 bytes.
-    // Metadata + padding brings total to ~526 KiB.
+    // Verify the inline struct size stays bounded (large scratch/delay arrays live behind Box<[f32]>).
     let size = std::mem::size_of::<EngineLifecycle>();
-    let expected = FLAT_BUFFER_SIZE * 8 + DELAY_BUFFER_SIZE * 4;
+    let expected = FLAT_BUFFER_SIZE * 8
+        + DELAY_BUFFER_SIZE * 8
+        + std::mem::size_of::<equaform_dsp::LinearPhaseConvolver>();
     // Allow up to 2048 bytes of metadata/padding overhead.
     assert!(
         size >= expected && size <= expected + 2048,
@@ -1633,4 +1630,358 @@ fn test_solo_mixed_mid_side_and_left_superposition() {
             all_r[i]
         );
     }
+}
+
+// ===========================================================================
+// Linear-phase convolver, dry delay line, and mode transition tests
+// ===========================================================================
+
+#[test]
+fn test_latency_samples_by_processing_mode() {
+    use equaform_common::ProcessingMode;
+
+    let mut engine = Box::new(EngineLifecycle::new());
+    engine.prepare(48_000.0, 256, 2);
+
+    assert_eq!(engine.latency_samples(), 0);
+
+    let mut params = *engine.eq_parameters();
+    params.global.processing_mode = ProcessingMode::LinearPhaseLow;
+    engine.set_parameters(params);
+    assert_eq!(engine.latency_samples(), 1024);
+
+    params.global.processing_mode = ProcessingMode::LinearPhaseHigh;
+    engine.set_parameters(params);
+    assert_eq!(engine.latency_samples(), 2048);
+
+    params.global.processing_mode = ProcessingMode::MinimumPhase;
+    engine.set_parameters(params);
+    assert_eq!(engine.latency_samples(), 0);
+}
+
+#[test]
+fn test_linear_phase_impulse_peaks_at_exact_latency() {
+    use equaform_common::ProcessingMode;
+
+    for (mode, expected_peak, total_len) in [
+        (ProcessingMode::LinearPhaseLow, 1024_usize, 4096_usize),
+        (ProcessingMode::LinearPhaseHigh, 2048_usize, 6144_usize),
+    ] {
+        let mut engine = Box::new(EngineLifecycle::new());
+        engine.prepare(48_000.0, 256, 2);
+
+        let mut params = EqParameters::default();
+        params.global.processing_mode = mode;
+        engine.set_parameters(params);
+
+        let mut in_l = vec![0.0_f32; total_len];
+        let mut in_r = vec![0.0_f32; total_len];
+        in_l[0] = 1.0;
+        in_r[0] = 1.0;
+
+        let mut out_l = Vec::with_capacity(total_len);
+        let mut out_r = Vec::with_capacity(total_len);
+        let mut blk_l = [0.0_f32; 256];
+        let mut blk_r = [0.0_f32; 256];
+
+        for (cl, cr) in in_l.chunks_exact(256).zip(in_r.chunks_exact(256)) {
+            assert!(engine.process(&[cl, cr], &mut [&mut blk_l, &mut blk_r]));
+            out_l.extend_from_slice(&blk_l);
+            out_r.extend_from_slice(&blk_r);
+        }
+
+        let peak_l = out_l
+            .iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| a.abs().total_cmp(&b.abs()))
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+        let peak_r = out_r
+            .iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| a.abs().total_cmp(&b.abs()))
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+
+        assert_eq!(peak_l, expected_peak, "mode={mode:?} L peak mismatch");
+        assert_eq!(peak_r, expected_peak, "mode={mode:?} R peak mismatch");
+        assert!((out_l[expected_peak] - 1.0).abs() < 1e-4);
+        assert!((out_r[expected_peak] - 1.0).abs() < 1e-4);
+    }
+}
+
+#[test]
+fn test_linear_phase_bypass_delays_dry_by_exact_latency() {
+    use equaform_common::ProcessingMode;
+
+    for (mode, expected_delay, total_len) in [
+        (ProcessingMode::LinearPhaseLow, 1024_usize, 3072_usize),
+        (ProcessingMode::LinearPhaseHigh, 2048_usize, 4096_usize),
+    ] {
+        let mut engine = Box::new(EngineLifecycle::new());
+        engine.prepare(48_000.0, 256, 2);
+
+        let mut params = EqParameters::default();
+        params.global.processing_mode = mode;
+        params.global.bypass = true;
+        params.bands[0].enabled = true;
+        params.bands[0].gain_db = 12.0;
+        engine.set_parameters(params);
+
+        let mut in_l = vec![0.0_f32; total_len];
+        let mut in_r = vec![0.0_f32; total_len];
+        in_l[0] = 1.0;
+        in_r[0] = 0.5;
+
+        let mut out_l = Vec::with_capacity(total_len);
+        let mut out_r = Vec::with_capacity(total_len);
+        let mut blk_l = [0.0_f32; 256];
+        let mut blk_r = [0.0_f32; 256];
+
+        for (cl, cr) in in_l.chunks_exact(256).zip(in_r.chunks_exact(256)) {
+            assert!(engine.process(&[cl, cr], &mut [&mut blk_l, &mut blk_r]));
+            out_l.extend_from_slice(&blk_l);
+            out_r.extend_from_slice(&blk_r);
+        }
+
+        for i in 0..total_len {
+            let exp_l = if i == expected_delay { 1.0 } else { 0.0 };
+            let exp_r = if i == expected_delay { 0.5 } else { 0.0 };
+            assert!(
+                (out_l[i] - exp_l).abs() < 1e-6 && (out_r[i] - exp_r).abs() < 1e-6,
+                "mode={mode:?} sample {i}: got ({}, {}), expected ({exp_l}, {exp_r})",
+                out_l[i],
+                out_r[i]
+            );
+        }
+    }
+}
+
+#[test]
+fn test_linear_phase_bypass_toggle_mid_stream_is_phase_aligned() {
+    use equaform_common::ProcessingMode;
+
+    let mut engine = Box::new(EngineLifecycle::new());
+    engine.prepare(48_000.0, 256, 2);
+
+    let mut params = EqParameters::default();
+    params.global.processing_mode = ProcessingMode::LinearPhaseLow;
+    params.global.bypass = false;
+    engine.set_parameters(params);
+
+    let sr = 48_000.0_f32;
+    let block = 256_usize;
+    let mut out_l = vec![0.0_f32; block];
+    let mut out_r = vec![0.0_f32; block];
+
+    // Feed 16 blocks (4096 samples) of flat active EQ so both convolver and DryDelayLine settle.
+    let mut sample_idx = 0_usize;
+    for _ in 0..16 {
+        let sig: Vec<f32> = (0..block)
+            .map(|i| {
+                0.5 * (2.0 * std::f32::consts::PI * 500.0 * (sample_idx + i) as f32 / sr).sin()
+            })
+            .collect();
+        sample_idx += block;
+        assert!(engine.process(&[&sig, &sig], &mut [&mut out_l, &mut out_r]));
+    }
+    let last_active = out_l[block - 1];
+
+    // Toggle bypass ON: DryDelayLine must already be populated and phase-aligned.
+    params.global.bypass = true;
+    engine.set_parameters(params);
+
+    let mut max_step = 0.0_f32;
+    let mut prev = last_active;
+    for _ in 0..8 {
+        let sig: Vec<f32> = (0..block)
+            .map(|i| {
+                0.5 * (2.0 * std::f32::consts::PI * 500.0 * (sample_idx + i) as f32 / sr).sin()
+            })
+            .collect();
+        sample_idx += block;
+        assert!(engine.process(&[&sig, &sig], &mut [&mut out_l, &mut out_r]));
+        for &s in &out_l {
+            assert!(s.is_finite());
+            max_step = max_step.max((s - prev).abs());
+            prev = s;
+        }
+    }
+
+    assert!(
+        max_step < 0.08,
+        "phase-aligned bypass toggle jumped: max_step={max_step}"
+    );
+}
+
+#[test]
+fn test_mode_switching_cycle_is_finite_and_click_free() {
+    use equaform_common::ProcessingMode;
+
+    let mut engine = Box::new(EngineLifecycle::new());
+    engine.prepare(48_000.0, 64, 2);
+
+    let mut params = EqParameters::default();
+    params.bands[0].enabled = true;
+    params.bands[0].filter_type = FilterType::Bell;
+    params.bands[0].frequency_hz = 1000.0;
+    params.bands[0].gain_db = 6.0;
+    params.bands[0].q = 1.0;
+    params.global.processing_mode = ProcessingMode::MinimumPhase;
+    engine.set_parameters(params);
+
+    let sr = 48_000.0_f32;
+    let block = 64_usize;
+    let mut out_l_all = Vec::new();
+    let mut out_r_all = Vec::new();
+    let mut in_blk = vec![0.0_f32; block];
+    let mut out_l = vec![0.0_f32; block];
+    let mut out_r = vec![0.0_f32; block];
+
+    let stages = [
+        (ProcessingMode::MinimumPhase, 40_usize),
+        (ProcessingMode::LinearPhaseLow, 60_usize),
+        (ProcessingMode::LinearPhaseHigh, 80_usize),
+        (ProcessingMode::MinimumPhase, 40_usize),
+    ];
+
+    let mut sample_cursor = 0_usize;
+    for (mode, num_blocks) in stages {
+        params.global.processing_mode = mode;
+        engine.set_parameters(params);
+        for _ in 0..num_blocks {
+            for (i, s) in in_blk.iter_mut().enumerate() {
+                let t = (sample_cursor + i) as f32 / sr;
+                *s = 0.25 * (2.0 * std::f32::consts::PI * 1000.0 * t).sin();
+            }
+            sample_cursor += block;
+            assert!(engine.process(&[&in_blk, &in_blk], &mut [&mut out_l, &mut out_r]));
+            out_l_all.extend_from_slice(&out_l);
+            out_r_all.extend_from_slice(&out_r);
+        }
+    }
+
+    assert!(out_l_all.iter().all(|s| s.is_finite()));
+    assert!(out_r_all.iter().all(|s| s.is_finite()));
+
+    let mut max_step_l = 0.0_f32;
+    let mut max_step_idx = 0_usize;
+    for (idx, w) in out_l_all.windows(2).enumerate() {
+        let d = (w[1] - w[0]).abs();
+        if d > max_step_l {
+            max_step_l = d;
+            max_step_idx = idx;
+        }
+    }
+    let max_step_r = out_r_all
+        .windows(2)
+        .map(|w| (w[1] - w[0]).abs())
+        .fold(0.0_f32, f32::max);
+
+    assert!(
+        max_step_l < 0.20 && max_step_r < 0.20,
+        "mode switch cycle caused click discontinuity at idx={max_step_idx} (prev={}, curr={}): max_step_l={max_step_l}, max_step_r={max_step_r}",
+        out_l_all[max_step_idx],
+        out_l_all[max_step_idx + 1]
+    );
+}
+
+#[test]
+fn test_linear_phase_mono_and_stereo_processing_and_solo() {
+    use equaform_common::ProcessingMode;
+
+    // 1. Mono impulse & boost check
+    let mut mono_engine = Box::new(EngineLifecycle::new());
+    mono_engine.prepare(48_000.0, 256, 1);
+    let mut params = EqParameters::default();
+    params.global.processing_mode = ProcessingMode::LinearPhaseLow;
+    params.bands[0].enabled = true;
+    params.bands[0].filter_type = FilterType::Bell;
+    params.bands[0].frequency_hz = 1000.0;
+    params.bands[0].gain_db = 6.0;
+    params.bands[0].q = 1.0;
+    mono_engine.set_parameters(params);
+
+    let mut imp = vec![0.0_f32; 4096];
+    imp[0] = 1.0;
+    let mut out_m = vec![0.0_f32; 256];
+    let mut collected = Vec::with_capacity(4096);
+    for chunk in imp.chunks_exact(256) {
+        assert!(mono_engine.process(&[chunk], &mut [&mut out_m]));
+        collected.extend_from_slice(&out_m);
+    }
+    let peak_idx = collected
+        .iter()
+        .enumerate()
+        .max_by(|(_, a), (_, b)| a.abs().total_cmp(&b.abs()))
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+    assert_eq!(peak_idx, 1024);
+    assert!(
+        collected[1024] > 1.01,
+        "expected boosted impulse center > 1.01, got {}",
+        collected[1024]
+    );
+
+    // 2. Stereo Band Solo in LinearPhaseLow isolates target frequency and aligns latency
+    let mut stereo_engine = Box::new(EngineLifecycle::new());
+    stereo_engine.prepare(48_000.0, 256, 2);
+    let mut solo_params = EqParameters::default();
+    solo_params.global.processing_mode = ProcessingMode::LinearPhaseLow;
+    solo_params.bands[0].frequency_hz = 1000.0;
+    solo_params.bands[0].q = 2.0;
+    solo_params.set_band_solo(0, true);
+    stereo_engine.set_parameters(solo_params);
+
+    let sig_1k = solo_test_sine(1000.0, 48_000.0, 256 * 16);
+    let sig_100 = solo_test_sine(100.0, 48_000.0, 256 * 16);
+    let out_1k = run_stereo_blocks(&mut stereo_engine, &sig_1k, 256);
+    stereo_engine.reset();
+    let out_100 = run_stereo_blocks(&mut stereo_engine, &sig_100, 256);
+
+    let in_rms = solo_test_rms(&sig_1k[..256]);
+    assert!(solo_test_rms(&out_1k) > 0.7 * in_rms);
+    assert!(solo_test_rms(&out_100) < 0.25 * in_rms);
+}
+
+#[test]
+fn test_linear_phase_automation_reset_and_large_block_dry_delay() {
+    use equaform_common::ProcessingMode;
+    use equaform_common::automation::AutomationEvent;
+
+    // Verify large block (> 2048 samples) bypass dry delay line works without wraparound
+    let mut engine = Box::new(EngineLifecycle::new());
+    engine.prepare(48_000.0, 4096, 2);
+    let mut params = EqParameters::default();
+    params.global.processing_mode = ProcessingMode::LinearPhaseLow;
+    params.global.bypass = true;
+    engine.set_parameters(params);
+
+    let mut in_l = vec![0.0_f32; 4096];
+    let in_r = vec![0.0_f32; 4096];
+    in_l[0] = 1.0;
+    let mut out_l = vec![0.0_f32; 4096];
+    let mut out_r = vec![0.0_f32; 4096];
+    assert!(engine.process(&[&in_l, &in_r], &mut [&mut out_l, &mut out_r]));
+    assert!((out_l[1024] - 1.0).abs() < 1e-6);
+    assert!(out_l[0].abs() < 1e-6);
+
+    // Reset and switch to active LinearPhaseLow with automation boost
+    engine.reset();
+    params.global.bypass = false;
+    params.bands[0].enabled = true;
+    params.bands[0].frequency_hz = 1000.0;
+    params.bands[0].gain_db = 0.0;
+    params.bands[0].filter_type = FilterType::Bell;
+    params.bands[0].q = 1.0;
+    engine.set_parameters(params);
+
+    let gain_id = params.bands[0].gain_param_id();
+    engine.push_automation_event(AutomationEvent::new(gain_id, 1.0, 0, 1));
+
+    let sine = solo_test_sine(1000.0, 48_000.0, 4096);
+    assert!(engine.process(&[&sine, &sine], &mut [&mut out_l, &mut out_r]));
+    assert_eq!(engine.eq_parameters().bands[0].gain_db, 24.0);
+    // Steady state tail (after latency settle) must reflect the +24 dB automated boost
+    assert!(solo_test_rms(&out_l[2048..]) > 5.0 * solo_test_rms(&sine[..2048]));
 }

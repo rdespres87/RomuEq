@@ -1296,6 +1296,7 @@ version = "1.2.0"
 dependencies = [
  "criterion",
  "equaform-common",
+ "rustfft",
 ]
 
 [[package]]

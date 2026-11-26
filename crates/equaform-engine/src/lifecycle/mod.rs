@@ -41,9 +41,11 @@ use crate::automation::AutomationIngestor;
 use equaform_analysis::AnalysisBuffer;
 use equaform_common::automation::{AutomationEvent, InterpolationMode};
 use equaform_common::{EqParameters, MAX_BANDS, MAX_BLOCK_SIZE, MAX_CHANNELS};
+use equaform_dsp::LinearPhaseConvolver;
 use equaform_dsp::coefficients::{
     BiquadCoefficients, FilterSpecification, compute_solo_audition_coefficients,
 };
+use linear_phase::{DryDelayLine, ModeTransitionState};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -274,9 +276,16 @@ pub struct EngineLifecycle {
     analysis_buffer: AnalysisBuffer,
     /// Cached biquad coefficients and perceptual auto-gain compensation.
     coeff_cache: CoefficientCache,
+    /// Pre-allocated UPOLS linear-phase convolver.
+    linear_phase: LinearPhaseConvolver,
+    /// Pre-allocated dry delay line for latency-aligned bypass in linear-phase modes.
+    dry_delay_line: DryDelayLine,
+    /// Click-free crossfade state for runtime processing-mode transitions.
+    mode_transition: ModeTransitionState,
 }
 
 mod auto_gain;
+mod linear_phase;
 mod processor;
 
 #[cfg(test)]
@@ -305,6 +314,9 @@ impl EngineLifecycle {
             bypass: BypassTransitionState::new(),
             analysis_buffer: AnalysisBuffer::new(),
             coeff_cache: CoefficientCache::new(),
+            linear_phase: LinearPhaseConvolver::new(LIFECYCLE_MAX_BLOCK_SIZE),
+            dry_delay_line: DryDelayLine::new(),
+            mode_transition: ModeTransitionState::new(),
         }
     }
 
@@ -354,12 +366,19 @@ impl EngineLifecycle {
         self.solo_scratch.fill(0.0);
         self.solo.reset();
         self.bypass.reset();
+        self.dry_delay_line.reset();
+        self.mode_transition
+            .reset(self.eq_params.global.processing_mode);
 
         // Initialize the automation ingestor on prepare (not process) so it is
         // allocation-free in the hot path.
         self.automation_ingestor = Some(AutomationIngestor::new(InterpolationMode::Linear));
 
         self.recompute_all_coefficients();
+        let mode = self.eq_params.global.processing_mode;
+        self.linear_phase
+            .update_kernel(&self.eq_params, sample_rate as f32, mode);
+        self.linear_phase.reset();
 
         self.state = LifecycleState::Ready;
         true
@@ -450,6 +469,10 @@ impl EngineLifecycle {
                 ingestor.reset();
             }
             self.bypass.reset();
+            self.dry_delay_line.reset();
+            self.linear_phase.reset();
+            self.mode_transition
+                .reset(self.eq_params.global.processing_mode);
         }
     }
 
@@ -471,6 +494,17 @@ impl EngineLifecycle {
         self.blocks_processed = 0;
         self.sample_offset = 0;
         self.automation_ingestor = None;
+        self.bypass.reset();
+        self.dry_delay_line.reset();
+        self.linear_phase.reset();
+        self.mode_transition
+            .reset(self.eq_params.global.processing_mode);
+    }
+
+    /// Return the algorithmic latency in samples for the active processing mode.
+    #[inline]
+    pub fn latency_samples(&self) -> u32 {
+        self.eq_params.global.processing_mode.latency_samples()
     }
 
     /// Return the current lifecycle state.

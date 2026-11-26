@@ -30,6 +30,7 @@
 pub mod coefficients;
 pub mod filter;
 pub mod frequency_response;
+pub mod linear_phase;
 pub mod simd;
 
 // Re-export the main API for convenience.
@@ -38,6 +39,9 @@ pub use coefficients::{
 };
 pub use filter::{BiquadFilter, BiquadState};
 pub use frequency_response::{ResponsePoint, biquad_response_at_frequency, compute_response};
+pub use linear_phase::{
+    LINEAR_HIGH_FFT_SIZE, LINEAR_LOW_FFT_SIZE, LinearPhaseConvolver, UPOLS_BLOCK_SIZE,
+};
 pub use simd::{
     lr_to_ms_in_place, ms_to_lr_in_place, process_mono_in_place, process_stereo_interleaved,
     process_stereo_planar_in_place,

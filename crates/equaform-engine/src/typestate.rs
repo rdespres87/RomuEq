@@ -238,6 +238,12 @@ impl<S: EngineState> Engine<S> {
         self.inner.auto_gain_compensation_db()
     }
 
+    /// Return the algorithmic latency in samples for the active processing mode.
+    #[inline]
+    pub fn latency_samples(&self) -> u32 {
+        self.inner.latency_samples()
+    }
+
     /// Serialize EQ parameters to a binary payload.
     pub fn save_state(&self) -> Vec<u8> {
         self.inner.save_state()
@@ -432,6 +438,14 @@ mod tests {
 
         assert!(running.load_state(&saved));
         assert_eq!(running.eq_parameters(), &custom);
+        assert_eq!(running.latency_samples(), 0);
+
+        custom.global.processing_mode = equaform_common::ProcessingMode::LinearPhaseLow;
+        running.set_parameters(custom);
+        assert_eq!(running.latency_samples(), 1024);
+
+        let prepared_again = running.stop();
+        assert_eq!(prepared_again.latency_samples(), 1024);
 
         Ok(())
     }
