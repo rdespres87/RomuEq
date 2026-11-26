@@ -1,5 +1,5 @@
 //! CLAP Parameters extension implementation for Equaform.
-//! Exposes 51 automatable parameters with two-way mapping to EqParameters.
+//! Exposes 61 automatable parameters with two-way mapping to EqParameters.
 
 use clack_common::extensions::{
     Extension, ExtensionImplementation, PluginExtensionSide, RawExtension,
@@ -11,10 +11,9 @@ use clap_sys::events::*;
 use clap_sys::ext::params::*;
 use clap_sys::id::clap_id;
 use clap_sys::plugin::clap_plugin;
-use equaform_common::{FilterType, Slope};
 use std::ffi::{CStr, c_char};
 
-use crate::params_map::{PARAM_COUNT, get_param_meta};
+use crate::params_map::{PARAM_COUNT, format_param_value, get_param_meta, parse_param_value};
 
 // FFI Sanctuary: `EquaformParams` wraps the CLAP parameter extension handle (`clap_plugin_params`).
 // It is queried and automated by host DAWs through the CLAP C ABI via `clack-plugin`.
@@ -143,66 +142,7 @@ unsafe extern "C" fn value_to_text(
         return false;
     }
 
-    let text = if param_id == 1 {
-        if value >= 0.5 {
-            "Bypass".to_string()
-        } else {
-            "On".to_string()
-        }
-    } else if param_id == 3 {
-        if value >= 0.5 {
-            "On".to_string()
-        } else {
-            "Off".to_string()
-        }
-    } else if param_id == 7 {
-        if value >= 0.5 {
-            "Anti-Clip".to_string()
-        } else {
-            "Perceptual".to_string()
-        }
-    } else if param_id == 2 || (param_id >= 100 && param_id % 100 == 3) {
-        format!("{value:+.1} dB")
-    } else if param_id >= 100 && param_id % 100 == 0 {
-        if value >= 0.5 {
-            "On".to_string()
-        } else {
-            "Off".to_string()
-        }
-    } else if param_id >= 100 && param_id % 100 == 1 {
-        match FilterType::from_raw(value.round().clamp(0.0, 4.0) as u32) {
-            Some(FilterType::Bell) => "Bell".to_string(),
-            Some(FilterType::LowShelf) => "Low Shelf".to_string(),
-            Some(FilterType::HighShelf) => "High Shelf".to_string(),
-            Some(FilterType::HighPass) => "High Pass".to_string(),
-            Some(FilterType::LowPass) => "Low Pass".to_string(),
-            None => "Bell".to_string(),
-        }
-    } else if param_id >= 100 && param_id % 100 == 2 {
-        if value >= 1000.0 {
-            format!("{:.2} kHz", value / 1000.0)
-        } else {
-            format!("{value:.0} Hz")
-        }
-    } else if param_id >= 100 && param_id % 100 == 4 {
-        format!("Q {value:.2}")
-    } else if param_id >= 100 && param_id % 100 == 5 {
-        match Slope::from_raw(value.round().clamp(0.0, 3.0) as u32) {
-            Some(Slope::Db6) => "6 dB/o".to_string(),
-            Some(Slope::Db12) => "12 dB/o".to_string(),
-            Some(Slope::Db18) => "18 dB/o".to_string(),
-            Some(Slope::Db24) => "24 dB/o".to_string(),
-            None => "12 dB/o".to_string(),
-        }
-    } else if param_id >= 100 && param_id % 100 == 7 {
-        equaform_common::BandRouting::from_raw(value.round().clamp(0.0, 4.0) as u32)
-            .unwrap_or_default()
-            .display_name()
-            .to_string()
-    } else {
-        format!("{value:.2}")
-    };
-
+    let text = format_param_value(param_id, value);
     let bytes = text.as_bytes();
     let len = bytes.len().min(out_buffer_capacity as usize - 1);
     // SAFETY: `out_buffer` is non-null with capacity >= `len + 1` bytes provided by the CLAP host.
@@ -231,89 +171,8 @@ unsafe extern "C" fn text_to_value(
         let Ok(s) = cstr.to_str() else {
             return false;
         };
-        let lower = s.trim().to_ascii_lowercase().replace(',', ".");
-
-        if param_id == 1 {
-            if lower == "bypass" || lower == "off" || lower == "1" || lower == "true" {
-                *out_value = 1.0;
-                return true;
-            }
-            if lower == "on" || lower == "0" || lower == "false" || lower == "active" {
-                *out_value = 0.0;
-                return true;
-            }
-        }
-        if param_id == 3 || (param_id >= 100 && param_id % 100 == 0) {
-            if lower == "on" || lower == "1" || lower == "true" {
-                *out_value = 1.0;
-                return true;
-            }
-            if lower == "off" || lower == "0" || lower == "false" {
-                *out_value = 0.0;
-                return true;
-            }
-        }
-        if param_id >= 100 && param_id % 100 == 1 {
-            let parsed = match lower.as_str() {
-                "bell" | "peak" => Some(FilterType::Bell.to_raw() as f64),
-                "low shelf" | "lowshelf" | "ls" => Some(FilterType::LowShelf.to_raw() as f64),
-                "high shelf" | "highshelf" | "hishelf" | "hs" => {
-                    Some(FilterType::HighShelf.to_raw() as f64)
-                }
-                "high pass" | "highpass" | "hipass" | "hp" | "hpf" => {
-                    Some(FilterType::HighPass.to_raw() as f64)
-                }
-                "low pass" | "lowpass" | "lp" | "lpf" => Some(FilterType::LowPass.to_raw() as f64),
-                _ => None,
-            };
-            if let Some(v) = parsed {
-                *out_value = v;
-                return true;
-            }
-        }
-        if param_id >= 100 && param_id % 100 == 5 {
-            let parsed = match lower.as_str() {
-                "6 db/o" | "6 db/oct" | "6" => Some(Slope::Db6.to_raw() as f64),
-                "12 db/o" | "12 db/oct" | "12" => Some(Slope::Db12.to_raw() as f64),
-                "18 db/o" | "18 db/oct" | "18" => Some(Slope::Db18.to_raw() as f64),
-                "24 db/o" | "24 db/oct" | "24" => Some(Slope::Db24.to_raw() as f64),
-                _ => None,
-            };
-            if let Some(v) = parsed {
-                *out_value = v;
-                return true;
-            }
-        }
-        if param_id >= 100 && param_id % 100 == 7 {
-            let parsed = match lower.as_str() {
-                "stereo" | "st" => Some(equaform_common::BandRouting::Stereo.to_raw() as f64),
-                "left" | "l" => Some(equaform_common::BandRouting::Left.to_raw() as f64),
-                "right" | "r" => Some(equaform_common::BandRouting::Right.to_raw() as f64),
-                "mid" | "m" => Some(equaform_common::BandRouting::Mid.to_raw() as f64),
-                "side" | "s" => Some(equaform_common::BandRouting::Side.to_raw() as f64),
-                _ => None,
-            };
-            if let Some(v) = parsed {
-                *out_value = v;
-                return true;
-            }
-        }
-
-        let is_khz = lower.ends_with("khz") || (lower.ends_with('k') && !lower.ends_with("ok"));
-        let cleaned = lower
-            .trim_end_matches("db/o")
-            .trim_end_matches("db/oct")
-            .trim_end_matches("db")
-            .trim_end_matches("khz")
-            .trim_end_matches("hz")
-            .trim_end_matches('k')
-            .trim_start_matches('q')
-            .trim();
-        if let Ok(mut v) = cleaned.parse::<f64>() {
-            if is_khz && param_id >= 100 && param_id % 100 == 2 {
-                v *= 1000.0;
-            }
-            *out_value = v;
+        if let Some(parsed) = parse_param_value(param_id, s) {
+            *out_value = parsed;
             return true;
         }
     }

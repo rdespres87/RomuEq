@@ -13,6 +13,7 @@ use clack_common::events::spaces::CoreEventSpace;
 use clack_common::utils::{ClapId, Cookie};
 use clack_plugin::prelude::*;
 use equaform_common::MAX_BLOCK_SIZE;
+use equaform_common::parameter::global;
 use equaform_engine::lifecycle::EngineLifecycle;
 
 use crate::params_map::PARAM_COUNT_USIZE;
@@ -21,22 +22,23 @@ use crate::{EquaformMainThread, EquaformShared, EquaformSharedInner};
 /// Real-time audio processor owning an isolated `EngineLifecycle` and
 /// pre-allocated planar scratch buffers. Zero allocations and zero locks
 /// in `process()`.
-pub struct EquaformAudioProcessor {
+pub struct EquaformAudioProcessor<'a> {
     engine: Box<EngineLifecycle>,
     shared: Arc<EquaformSharedInner>,
+    host: Option<HostAudioProcessorHandle<'a>>,
     last_param_version: u64,
     active_channels: usize,
     input_scratch: [Box<[f32]>; 2],
     output_scratch: [Box<[f32]>; 2],
 }
 
-impl Default for EquaformAudioProcessor {
+impl Default for EquaformAudioProcessor<'_> {
     fn default() -> Self {
         Self::new(Arc::new(EquaformSharedInner::new()))
     }
 }
 
-impl EquaformAudioProcessor {
+impl<'a> EquaformAudioProcessor<'a> {
     /// Creates an audio processor bound to the given shared atomic state.
     pub fn new(shared: Arc<EquaformSharedInner>) -> Self {
         let mut engine = Box::new(EngineLifecycle::new());
@@ -47,6 +49,7 @@ impl EquaformAudioProcessor {
         Self {
             engine,
             shared,
+            host: None,
             last_param_version: version,
             active_channels: 2,
             input_scratch: [
@@ -57,6 +60,25 @@ impl EquaformAudioProcessor {
                 vec![0.0f32; MAX_BLOCK_SIZE].into_boxed_slice(),
                 vec![0.0f32; MAX_BLOCK_SIZE].into_boxed_slice(),
             ],
+        }
+    }
+
+    #[inline]
+    fn apply_host_param_event(&self, id: u32, value: f64, latency_dirty: &mut bool) {
+        if self.shared.set_param_from_host(id, value)
+            && id == global::PROCESSING_MODE
+            && self.shared.is_latency_changed_pending()
+        {
+            *latency_dirty = true;
+        }
+    }
+
+    #[inline]
+    fn notify_latency_callback_if_needed(&self, latency_dirty: bool) {
+        if latency_dirty {
+            if let Some(host) = &self.host {
+                host.request_callback();
+            }
         }
     }
 
@@ -214,15 +236,16 @@ fn linear_to_dbfs(peak: f32) -> f32 {
 }
 
 impl<'a> PluginAudioProcessor<'a, EquaformShared, EquaformMainThread<'a>>
-    for EquaformAudioProcessor
+    for EquaformAudioProcessor<'a>
 {
     fn activate(
-        _host: HostAudioProcessorHandle<'a>,
+        host: HostAudioProcessorHandle<'a>,
         _main_thread: &mut EquaformMainThread<'a>,
         shared: &'a EquaformShared,
         audio_config: PluginAudioConfiguration,
     ) -> Result<Self, PluginError> {
         let mut processor = Self::new(Arc::clone(shared.inner()));
+        processor.host = Some(host);
         let channels = 2;
         if !processor.prepare(
             audio_config.sample_rate,
@@ -274,19 +297,21 @@ impl<'a> PluginAudioProcessor<'a, EquaformShared, EquaformMainThread<'a>>
 
         let input_len = events.input.len();
         let mut ev_idx = 0u32;
+        let mut latency_dirty = false;
 
         if ch_count == 0 || total_frames == 0 {
             while ev_idx < input_len {
                 if let Some(ev) = events.input.get(ev_idx) {
                     if let Some(CoreEventSpace::ParamValue(pv)) = ev.as_core_event() {
                         if let Some(id) = pv.param_id() {
-                            self.shared.set_param_from_host(id.get(), pv.value());
+                            self.apply_host_param_event(id.get(), pv.value(), &mut latency_dirty);
                         }
                     }
                 }
                 ev_idx += 1;
             }
             self.sync_params_from_shared();
+            self.notify_latency_callback_if_needed(latency_dirty);
             return Ok(ProcessStatus::Continue);
         }
 
@@ -308,7 +333,7 @@ impl<'a> PluginAudioProcessor<'a, EquaformShared, EquaformMainThread<'a>>
                 }
                 if let Some(CoreEventSpace::ParamValue(pv)) = ev.as_core_event() {
                     if let Some(id) = pv.param_id() {
-                        self.shared.set_param_from_host(id.get(), pv.value());
+                        self.apply_host_param_event(id.get(), pv.value(), &mut latency_dirty);
                     }
                 }
                 ev_idx += 1;
@@ -371,6 +396,7 @@ impl<'a> PluginAudioProcessor<'a, EquaformShared, EquaformMainThread<'a>>
             }
 
             if !self.run_engine_chunk(slice_len) {
+                self.notify_latency_callback_if_needed(latency_dirty);
                 return Ok(ProcessStatus::Continue);
             }
 
@@ -413,13 +439,14 @@ impl<'a> PluginAudioProcessor<'a, EquaformShared, EquaformMainThread<'a>>
             if let Some(ev) = events.input.get(ev_idx) {
                 if let Some(CoreEventSpace::ParamValue(pv)) = ev.as_core_event() {
                     if let Some(id) = pv.param_id() {
-                        self.shared.set_param_from_host(id.get(), pv.value());
+                        self.apply_host_param_event(id.get(), pv.value(), &mut latency_dirty);
                     }
                 }
             }
             ev_idx += 1;
         }
         self.sync_params_from_shared();
+        self.notify_latency_callback_if_needed(latency_dirty);
 
         self.shared.set_telemetry(
             linear_to_dbfs(max_l),

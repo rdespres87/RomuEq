@@ -63,7 +63,7 @@ pub fn block_on_sync<F: std::future::Future>(fut: F) -> F::Output {
 
 /// Converts a lock-free `EqParameters` snapshot into a `ParamSnapshot` for the workspace UI.
 pub fn eq_to_param_snapshot(eq: &EqParameters, auto_gain_comp_db: f32) -> ParamSnapshot {
-    let mut vals = Vec::with_capacity(PARAM_COUNT_USIZE + 1);
+    let mut vals = Vec::with_capacity(PARAM_COUNT_USIZE + 1 + MAX_BANDS);
     vals.push(ParamValue {
         param_id: ParamId(global::BYPASS),
         value: if eq.global.bypass { 1.0 } else { 0.0 },
@@ -75,6 +75,10 @@ pub fn eq_to_param_snapshot(eq: &EqParameters, auto_gain_comp_db: f32) -> ParamS
     vals.push(ParamValue {
         param_id: ParamId(global::AUTO_GAIN),
         value: if eq.global.auto_gain { 1.0 } else { 0.0 },
+    });
+    vals.push(ParamValue {
+        param_id: ParamId(global::PROCESSING_MODE),
+        value: eq.global.processing_mode.to_raw() as f32,
     });
     vals.push(ParamValue {
         param_id: ParamId(global::AUTO_GAIN_COMPENSATION_DB),
@@ -618,6 +622,9 @@ impl SharedEditorState {
         if dirty_host {
             self.request_host_flush();
         }
+        if self.shared.is_latency_changed_pending() {
+            self.request_host_callback();
+        }
 
         full_output
     }
@@ -714,6 +721,21 @@ impl SharedEditorState {
         }
     }
 
+    /// Requests a main-thread callback from the CLAP host (thread-safe).
+    pub fn request_host_callback(&self) {
+        if let Some(host) = self.host {
+            if !host.is_null() {
+                // SAFETY: `host` is a valid CLAP host pointer for the plugin's lifetime,
+                // and `clap_host::request_callback` is thread-safe per the CLAP specification.
+                unsafe {
+                    if let Some(req) = (*host).request_callback {
+                        req(host);
+                    }
+                }
+            }
+        }
+    }
+
     #[cfg(test)]
     pub fn current_preset(&self) -> &str {
         &self.current_preset
@@ -747,6 +769,7 @@ mod tests {
         eq.global.bypass = true;
         eq.global.output_gain_db = -3.5;
         eq.global.auto_gain = true;
+        eq.global.processing_mode = equaform_common::ProcessingMode::LinearPhaseHigh;
         eq.bands[2].enabled = true;
         eq.bands[2].filter_type = FilterType::HighShelf;
         eq.bands[2].frequency_hz = 4200.0;
@@ -759,6 +782,7 @@ mod tests {
         assert_eq!(snap.get(ParamId(global::BYPASS)), Some(1.0));
         assert_eq!(snap.get(ParamId(global::OUTPUT_GAIN_DB)), Some(-3.5));
         assert_eq!(snap.get(ParamId(global::AUTO_GAIN)), Some(1.0));
+        assert_eq!(snap.get(ParamId(global::PROCESSING_MODE)), Some(2.0));
         assert_eq!(
             snap.get(ParamId(global::AUTO_GAIN_COMPENSATION_DB)),
             Some(-1.25)

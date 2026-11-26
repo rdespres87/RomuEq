@@ -6,6 +6,7 @@
 
 pub mod editor;
 pub mod ext_gui;
+pub mod ext_latency;
 pub mod ext_params;
 pub mod ext_ports;
 pub mod params_map;
@@ -30,17 +31,20 @@ use clap_sys::events::{
     clap_output_events,
 };
 use clap_sys::ext::gui::clap_window;
+use clap_sys::ext::latency::{CLAP_EXT_LATENCY, clap_host_latency};
 use clap_sys::ext::params::{CLAP_EXT_PARAMS, CLAP_PARAM_RESCAN_VALUES, clap_host_params};
 use clap_sys::ext::state::{CLAP_EXT_STATE, clap_plugin_state};
 use clap_sys::id::clap_id;
 use clap_sys::plugin::clap_plugin;
 use clap_sys::stream::{clap_istream, clap_ostream};
 
+use equaform_common::parameter::global;
 use equaform_common::{
-    AudioRingConsumer, AudioRingProducer, EqParameters, create_audio_ring_buffer,
+    AudioRingConsumer, AudioRingProducer, EqParameters, ProcessingMode, create_audio_ring_buffer,
 };
 
 use ext_gui::{EquaformGui, EquaformGuiImplementation};
+use ext_latency::{EquaformLatency, EquaformLatencyImplementation};
 use ext_params::{EquaformParams, EquaformParamsImplementation};
 use ext_ports::EquaformAudioPorts;
 use params_map::{
@@ -57,7 +61,7 @@ pub use processor::EquaformAudioProcessor;
 fn get_descriptor() -> PluginDescriptor {
     PluginDescriptor::new("com.equaform.audio.equalizer", "Equaform-8")
         .with_vendor("Equaform Audio")
-        .with_version("1.2.0")
+        .with_version("1.3.0")
         .with_description("High-Precision 8-Band Parametric Equalizer")
 }
 
@@ -83,6 +87,8 @@ pub struct EquaformSharedInner {
     gesture_end_pending: [AtomicBool; PARAM_COUNT_USIZE],
     version: AtomicU64,
     solo_mask: std::sync::atomic::AtomicU8,
+    latency_samples: AtomicU32,
+    latency_changed_pending: AtomicBool,
     peak_l_bits: AtomicU32,
     peak_r_bits: AtomicU32,
     auto_gain_db_bits: AtomicU32,
@@ -95,6 +101,7 @@ impl EquaformSharedInner {
     /// Creates a new lock-free shared state initialized with default 8-band EQ parameters.
     pub fn new() -> Self {
         let defaults = default_eq_parameters();
+        let initial_latency = defaults.global.processing_mode.latency_samples();
         let param_bits = std::array::from_fn(|slot| {
             let id = slot_to_param_id(slot);
             let val = get_param_from_eq(&defaults, id).unwrap_or(0.0) as f32;
@@ -114,6 +121,8 @@ impl EquaformSharedInner {
             gesture_end_pending,
             version: AtomicU64::new(1),
             solo_mask: std::sync::atomic::AtomicU8::new(0),
+            latency_samples: AtomicU32::new(initial_latency),
+            latency_changed_pending: AtomicBool::new(false),
             peak_l_bits: AtomicU32::new(f32::NEG_INFINITY.to_bits()),
             peak_r_bits: AtomicU32::new(f32::NEG_INFINITY.to_bits()),
             auto_gain_db_bits: AtomicU32::new(0.0f32.to_bits()),
@@ -126,6 +135,34 @@ impl EquaformSharedInner {
     #[inline]
     pub fn version(&self) -> u64 {
         self.version.load(Ordering::Acquire)
+    }
+
+    #[inline]
+    pub fn latency_samples(&self) -> u32 {
+        self.latency_samples.load(Ordering::Acquire)
+    }
+
+    #[inline]
+    pub fn is_latency_changed_pending(&self) -> bool {
+        self.latency_changed_pending.load(Ordering::Acquire)
+    }
+
+    #[inline]
+    pub fn take_latency_changed(&self) -> bool {
+        self.latency_changed_pending.swap(false, Ordering::AcqRel)
+    }
+
+    /// Updates reported plugin latency for `mode` and marks a pending host notification if changed.
+    #[inline]
+    pub fn update_latency_for_mode(&self, mode: ProcessingMode) -> bool {
+        let next = mode.latency_samples();
+        let prev = self.latency_samples.swap(next, Ordering::AcqRel);
+        if prev != next {
+            self.latency_changed_pending.store(true, Ordering::Release);
+            true
+        } else {
+            false
+        }
     }
 
     #[inline]
@@ -143,6 +180,11 @@ impl EquaformSharedInner {
         };
         let norm = normalize_param_value(id, value);
         self.param_bits[slot].store(norm.to_bits(), Ordering::Release);
+        if id == global::PROCESSING_MODE {
+            if let Some(mode) = ProcessingMode::from_raw(norm as u32) {
+                let _ = self.update_latency_for_mode(mode);
+            }
+        }
         self.version.fetch_add(1, Ordering::Release);
         true
     }
@@ -179,6 +221,11 @@ impl EquaformSharedInner {
                 }
             }
             self.param_bits[slot].store(norm.to_bits(), Ordering::Release);
+            if id == global::PROCESSING_MODE {
+                if let Some(mode) = ProcessingMode::from_raw(norm as u32) {
+                    let _ = self.update_latency_for_mode(mode);
+                }
+            }
             self.dirty_to_host[slot].store(true, Ordering::Release);
             self.version.fetch_add(1, Ordering::Release);
         }
@@ -198,7 +245,7 @@ impl EquaformSharedInner {
         any_ended
     }
 
-    /// Snapshots all 51 parameters lock-free into `EqParameters`.
+    /// Snapshots all parameters lock-free into `EqParameters`.
     pub fn read_eq_parameters(&self) -> EqParameters {
         let mut eq = default_eq_parameters();
         for slot in 0..PARAM_COUNT_USIZE {
@@ -210,7 +257,7 @@ impl EquaformSharedInner {
         eq
     }
 
-    /// Overwrites all 51 parameters from `EqParameters` without notifying host.
+    /// Overwrites all parameters from `EqParameters` without notifying host.
     pub fn write_eq_parameters_from_host(&self, eq: &EqParameters) {
         for slot in 0..PARAM_COUNT_USIZE {
             let id = slot_to_param_id(slot);
@@ -219,10 +266,11 @@ impl EquaformSharedInner {
             self.param_bits[slot].store(norm.to_bits(), Ordering::Release);
         }
         self.solo_mask.store(eq.global.solo_mask, Ordering::Release);
+        let _ = self.update_latency_for_mode(eq.global.processing_mode);
         self.version.fetch_add(1, Ordering::Release);
     }
 
-    /// Overwrites all 51 parameters from UI (e.g. preset load) and marks all changed slots dirty.
+    /// Overwrites all parameters from UI (e.g. preset load) and marks all changed slots dirty.
     pub fn write_eq_parameters_from_ui(&self, eq: &EqParameters) {
         for slot in 0..PARAM_COUNT_USIZE {
             let id = slot_to_param_id(slot);
@@ -236,6 +284,7 @@ impl EquaformSharedInner {
                 self.gesture_end_pending[slot].store(true, Ordering::Release);
             }
         }
+        let _ = self.update_latency_for_mode(eq.global.processing_mode);
         self.version.fetch_add(1, Ordering::Release);
     }
 
@@ -353,6 +402,13 @@ impl EquaformShared {
 }
 
 impl<'a> PluginShared<'a> for EquaformShared {}
+
+impl EquaformLatencyImplementation for EquaformShared {
+    #[inline]
+    fn latency_samples(&self) -> u32 {
+        self.inner.latency_samples()
+    }
+}
 
 impl EquaformParamsImplementation for EquaformShared {
     fn get_value(&self, id: clap_id) -> Option<f64> {
@@ -484,9 +540,34 @@ impl<'a> EquaformMainThread<'a> {
             }
         }
     }
+
+    fn notify_host_latency_changed_if_pending(&self) {
+        if !self.shared.take_latency_changed() {
+            return;
+        }
+        if let Some(host) = &self.host {
+            let raw = host.as_raw();
+            if let Some(get_ext) = raw.get_extension {
+                // SAFETY: `raw` is a valid `clap_host` handle on the main thread; `CLAP_EXT_LATENCY`
+                // is NUL-terminated; `ptr` is checked non-null before dereferencing its `changed` callback.
+                unsafe {
+                    let ptr = get_ext(raw, CLAP_EXT_LATENCY.as_ptr()) as *const clap_host_latency;
+                    if !ptr.is_null() {
+                        if let Some(changed) = (*ptr).changed {
+                            changed(raw);
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
-impl<'a> PluginMainThread<'a, EquaformShared> for EquaformMainThread<'a> {}
+impl<'a> PluginMainThread<'a, EquaformShared> for EquaformMainThread<'a> {
+    fn on_main_thread(&mut self) {
+        self.notify_host_latency_changed_if_pending();
+    }
+}
 
 impl EquaformParamsImplementation for EquaformMainThread<'_> {
     fn get_value(&self, id: clap_id) -> Option<f64> {
@@ -543,7 +624,7 @@ pub struct EquaformPlugin;
 impl Plugin for EquaformPlugin {
     type Shared<'a> = EquaformShared;
     type MainThread<'a> = EquaformMainThread<'a>;
-    type AudioProcessor<'a> = EquaformAudioProcessor;
+    type AudioProcessor<'a> = EquaformAudioProcessor<'a>;
 
     fn declare_extensions(
         builder: &mut PluginExtensions<Self>,
@@ -553,6 +634,7 @@ impl Plugin for EquaformPlugin {
             .register::<EquaformState>()
             .register::<EquaformAudioPorts>()
             .register::<EquaformParams>()
+            .register::<EquaformLatency>()
             .register::<EquaformGui>();
     }
 }
@@ -705,6 +787,11 @@ impl EquaformStateImplementation for EquaformMainThread<'_> {
 
         self.shared.write_eq_parameters_from_host(&eq);
         self.request_host_params_rescan();
+        if self.shared.is_latency_changed_pending() {
+            if let Some(host) = &self.host {
+                host.request_callback();
+            }
+        }
         Ok(())
     }
 }
@@ -723,8 +810,8 @@ mod tests {
     use params_map::{PARAM_COUNT, get_param_meta};
 
     #[test]
-    fn test_all_59_params_round_trip_mapping() {
-        assert_eq!(PARAM_COUNT, 60);
+    fn test_all_61_params_round_trip_mapping() {
+        assert_eq!(PARAM_COUNT, 61);
         let shared = EquaformSharedInner::new();
 
         for idx in 0..PARAM_COUNT {
@@ -742,6 +829,49 @@ mod tests {
                 meta.default_value
             );
         }
+    }
+
+    #[test]
+    fn test_latency_updates_and_changed_pending_flag() {
+        let shared = EquaformSharedInner::new();
+        assert_eq!(shared.latency_samples(), 0);
+        assert!(!shared.is_latency_changed_pending());
+
+        // Same mode does not flag change
+        assert!(!shared.update_latency_for_mode(ProcessingMode::MinimumPhase));
+        assert!(!shared.is_latency_changed_pending());
+
+        // 0 -> 1024 via host parameter automation
+        assert!(shared.set_param_from_host(global::PROCESSING_MODE, 1.0));
+        assert_eq!(shared.latency_samples(), 1024);
+        assert!(shared.is_latency_changed_pending());
+        assert!(shared.take_latency_changed());
+        assert!(!shared.is_latency_changed_pending());
+
+        // 1024 -> 2048 via UI parameter change
+        assert!(shared.set_param_from_ui(global::PROCESSING_MODE, 2.0, false));
+        assert_eq!(shared.latency_samples(), 2048);
+        assert!(shared.take_latency_changed());
+        assert!(!shared.is_latency_changed_pending());
+
+        // Setting the exact same value via UI should not trigger pending flag
+        assert!(shared.set_param_from_ui(global::PROCESSING_MODE, 2.0, false));
+        assert!(!shared.is_latency_changed_pending());
+
+        // 2048 -> 0 via state/host EQ load
+        let mut eq = default_eq_parameters();
+        eq.global.processing_mode = ProcessingMode::MinimumPhase;
+        shared.write_eq_parameters_from_host(&eq);
+        assert_eq!(shared.latency_samples(), 0);
+        assert!(shared.is_latency_changed_pending());
+        assert!(shared.take_latency_changed());
+        assert!(!shared.take_latency_changed());
+
+        // Descriptor reports v1.3.0
+        assert_eq!(
+            get_descriptor().version().map(|v| v.to_str().ok()),
+            Some(Some("1.3.0"))
+        );
     }
 
     #[test]
