@@ -14,7 +14,7 @@ use crate::undo_stack::{EqUndoController, capture_undo_snapshot, is_undoable_par
 use crate::{
     AnalysisSnapshot, BandControls, BandRenderContext, EqCurveCache, GuiCommandBatch,
     ParamSnapshot, PlotContext, render_band, render_interactive_frequency_response_plot,
-    render_master_section_localized, render_spectrum_analyzer_localized,
+    render_master_section_with_rate, render_spectrum_analyzer_localized,
     render_vertical_stereo_vu_meter,
 };
 
@@ -398,7 +398,8 @@ pub fn render_workspace(
 
     // 3. Unified Master & Preset bar on a single compact row
     ui.horizontal(|ui| {
-        render_master_section_localized(ui, snapshot, t, &mut batch);
+        ui.spacing_mut().item_spacing.x = 4.0;
+        render_master_section_with_rate(ui, snapshot, sample_rate, t, &mut batch);
 
         ui.separator();
 
@@ -413,7 +414,7 @@ pub fn render_workspace(
 
         let mut chosen_preset = current_preset.to_string();
         egui::ComboBox::new("preset_select", "")
-            .width(170.0)
+            .width(145.0)
             .selected_text(selected_text)
             .show_ui(ui, |ui| {
                 for name in &user_presets {
@@ -433,7 +434,7 @@ pub fn render_workspace(
 
         ui.add(
             egui::TextEdit::singleline(&mut state.preset_name_input)
-                .desired_width(130.0)
+                .desired_width(100.0)
                 .hint_text(t.preset_name_hint),
         );
 

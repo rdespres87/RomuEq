@@ -40,12 +40,13 @@ pub struct AbCompareState {
 /// Captures all persistent EQ parameters from `snapshot`, excluding monitor-only
 /// solo state and read-only auto-gain telemetry.
 pub fn capture_eq_snapshot(snapshot: &ParamSnapshot) -> Vec<(ParamId, f32)> {
-    let mut out = Vec::with_capacity(4 + MAX_BANDS * 7);
+    let mut out = Vec::with_capacity(5 + MAX_BANDS * 7);
 
     for raw_id in [
         global::BYPASS,
         global::OUTPUT_GAIN_DB,
         global::AUTO_GAIN,
+        global::PROCESSING_MODE,
         global::AUTO_GAIN_MODE,
     ] {
         let id = ParamId(raw_id);
@@ -223,6 +224,55 @@ mod tests {
             captured
                 .iter()
                 .all(|&(id, _)| id != ParamId(100 + band::SOLO))
+        );
+    }
+
+    #[test]
+    fn test_processing_mode_participates_in_ab_compare() {
+        let mut state = AbCompareState::default();
+        let snap_a = ParamSnapshot::new(vec![
+            ParamValue {
+                param_id: ParamId(global::PROCESSING_MODE),
+                value: 0.0,
+            },
+            ParamValue {
+                param_id: ParamId(100 + band::GAIN_DB),
+                value: 0.0,
+            },
+        ]);
+        state.ensure_initialized(&snap_a);
+
+        let snap_a_linear = ParamSnapshot::new(vec![
+            ParamValue {
+                param_id: ParamId(global::PROCESSING_MODE),
+                value: 2.0,
+            },
+            ParamValue {
+                param_id: ParamId(100 + band::GAIN_DB),
+                value: 0.0,
+            },
+        ]);
+
+        let mut batch = GuiCommandBatch::new();
+        state.switch_to(AbSlot::B, &snap_a_linear, &mut batch);
+        assert!(
+            batch
+                .commands()
+                .iter()
+                .any(|c| c.param_id == ParamId(global::PROCESSING_MODE)
+                    && (c.value - 0.0).abs() < 1e-6),
+            "switching from slot A (Linear High) to slot B (Zero) must emit PROCESSING_MODE=0.0"
+        );
+
+        let mut batch_back = GuiCommandBatch::new();
+        state.switch_to(AbSlot::A, &snap_a, &mut batch_back);
+        assert!(
+            batch_back
+                .commands()
+                .iter()
+                .any(|c| c.param_id == ParamId(global::PROCESSING_MODE)
+                    && (c.value - 2.0).abs() < 1e-6),
+            "switching back to slot A must restore PROCESSING_MODE=2.0"
         );
     }
 }

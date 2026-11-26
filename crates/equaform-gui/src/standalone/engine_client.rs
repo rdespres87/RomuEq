@@ -109,8 +109,8 @@ impl EngineClient {
     }
 
     /// Map a ProcessingMode enum to a float value (for snapshot encoding).
-    fn processing_mode_to_f32(_pm: equaform_common::ProcessingMode) -> f32 {
-        0.0
+    fn processing_mode_to_f32(pm: equaform_common::ProcessingMode) -> f32 {
+        pm.to_raw() as f32
     }
 
     /// Map a StereoMode enum to a float value (for snapshot encoding).
@@ -213,8 +213,13 @@ impl EngineClient {
                 1 => params.global.bypass = cmd.value > 0.5,
                 2 => params.global.output_gain_db = cmd.value.clamp(-24.0, 24.0),
                 3 => params.global.auto_gain = cmd.value > 0.5,
-                4 => {
-                    params.global.processing_mode = equaform_common::ProcessingMode::MinimumPhase;
+                equaform_common::global::PROCESSING_MODE => {
+                    if cmd.value.is_finite() {
+                        let raw = cmd.value.round().clamp(0.0, 2.0) as u32;
+                        if let Some(mode) = equaform_common::ProcessingMode::from_raw(raw) {
+                            params.global.processing_mode = mode;
+                        }
+                    }
                 }
                 5 => {
                     params.global.stereo_mode = equaform_common::StereoMode::Stereo;
@@ -547,5 +552,119 @@ impl GuiClient for EngineClient {
         // Return an empty slice; `analysis_snapshot()` provides spectrum data for the UI plot.
         static EMPTY: &[[f64; 2]] = &[];
         EMPTY
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use equaform_common::{ProcessingMode, global};
+
+    #[test]
+    fn test_engine_client_processing_mode_roundtrip() {
+        let mut client = EngineClient::new(egui::Context::default());
+        client.prepare(48_000.0, 256, 2);
+
+        assert_eq!(
+            client.snapshot().get(ParamId(global::PROCESSING_MODE)),
+            Some(0.0),
+            "initial PROCESSING_MODE should default to MinimumPhase (0.0)"
+        );
+
+        let cases = [
+            (ProcessingMode::MinimumPhase, 0.0),
+            (ProcessingMode::LinearPhaseLow, 1.0),
+            (ProcessingMode::LinearPhaseHigh, 2.0),
+            (ProcessingMode::MinimumPhase, 0.0),
+        ];
+
+        for (mode, raw) in cases {
+            let mut batch = GuiCommandBatch::new();
+            batch.push(ParamId(global::PROCESSING_MODE), raw);
+            client.apply_commands(batch);
+
+            assert_eq!(
+                client.snapshot().get(ParamId(global::PROCESSING_MODE)),
+                Some(raw),
+                "snapshot PROCESSING_MODE must round-trip {raw}"
+            );
+            assert_eq!(
+                client
+                    .engine
+                    .as_ref()
+                    .map(|e| e.eq_parameters().global.processing_mode),
+                Some(mode),
+                "engine processing_mode must match {mode:?}"
+            );
+        }
+
+        // Non-finite input must not panic or corrupt current mode.
+        let mut set_high = GuiCommandBatch::new();
+        set_high.push(ParamId(global::PROCESSING_MODE), 2.0);
+        client.apply_commands(set_high);
+
+        let mut nan_batch = GuiCommandBatch::new();
+        nan_batch.push(ParamId(global::PROCESSING_MODE), f32::NAN);
+        client.apply_commands(nan_batch);
+
+        assert_eq!(
+            client
+                .engine
+                .as_ref()
+                .map(|e| e.eq_parameters().global.processing_mode),
+            Some(ProcessingMode::LinearPhaseHigh)
+        );
+    }
+
+    #[test]
+    fn test_engine_client_preset_processing_mode_and_legacy_fallback()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut client = EngineClient::new(egui::Context::default());
+        client.prepare(48_000.0, 256, 2);
+
+        let mut batch = GuiCommandBatch::new();
+        batch.push(ParamId(global::PROCESSING_MODE), 2.0);
+        client.apply_commands(batch);
+        assert_eq!(
+            client.snapshot().get(ParamId(global::PROCESSING_MODE)),
+            Some(2.0)
+        );
+
+        client
+            .create_preset("Linear Master")
+            .map_err(std::io::Error::other)?;
+
+        let mut reset_batch = GuiCommandBatch::new();
+        reset_batch.push(ParamId(global::PROCESSING_MODE), 0.0);
+        client.apply_commands(reset_batch);
+        assert_eq!(
+            client.snapshot().get(ParamId(global::PROCESSING_MODE)),
+            Some(0.0)
+        );
+
+        client
+            .apply_preset("Linear Master")
+            .map_err(std::io::Error::other)?;
+        assert_eq!(
+            client.snapshot().get(ParamId(global::PROCESSING_MODE)),
+            Some(2.0),
+            "preset with PROCESSING_MODE must restore LinearPhaseHigh (2.0)"
+        );
+
+        // Legacy preset without PROCESSING_MODE preserves active user mode.
+        let mut legacy = Preset::new("Legacy NoMode");
+        legacy.parameter_values.set(103, 3.0);
+        client
+            .preset_manager
+            .add("Legacy NoMode".to_string(), legacy)?;
+        client
+            .apply_preset("Legacy NoMode")
+            .map_err(std::io::Error::other)?;
+        assert_eq!(
+            client.snapshot().get(ParamId(global::PROCESSING_MODE)),
+            Some(2.0)
+        );
+
+        Ok(())
     }
 }

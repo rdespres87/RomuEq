@@ -131,6 +131,12 @@ pub struct Translations {
     pub auto_gain_mode_safe: &'static str,
     pub tooltip_auto_gain_perceptual: &'static str,
     pub tooltip_auto_gain_safe: &'static str,
+    pub processing_mode_zero: &'static str,
+    pub processing_mode_linear_low: &'static str,
+    pub processing_mode_linear_high: &'static str,
+    pub tooltip_processing_mode_zero: &'static str,
+    pub tooltip_processing_mode_linear_low: &'static str,
+    pub tooltip_processing_mode_linear_high: &'static str,
     pub preset_label: &'static str,
     pub select_preset: &'static str,
     pub preset_name_hint: &'static str,
@@ -218,6 +224,12 @@ mod tests {
                 t.auto_gain_mode_safe,
                 t.tooltip_auto_gain_perceptual,
                 t.tooltip_auto_gain_safe,
+                t.processing_mode_zero,
+                t.processing_mode_linear_low,
+                t.processing_mode_linear_high,
+                t.tooltip_processing_mode_zero,
+                t.tooltip_processing_mode_linear_low,
+                t.tooltip_processing_mode_linear_high,
                 t.preset_label,
                 t.select_preset,
                 t.preset_name_hint,
@@ -282,6 +294,18 @@ mod tests {
             assert_ne!(
                 t.tooltip_channel_routing_hint,
                 en.tooltip_channel_routing_hint
+            );
+            assert_ne!(
+                t.tooltip_processing_mode_zero,
+                en.tooltip_processing_mode_zero
+            );
+            assert_ne!(
+                t.tooltip_processing_mode_linear_low,
+                en.tooltip_processing_mode_linear_low
+            );
+            assert_ne!(
+                t.tooltip_processing_mode_linear_high,
+                en.tooltip_processing_mode_linear_high
             );
         }
     }

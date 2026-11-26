@@ -370,11 +370,25 @@ mod tests {
         assert!(!is_undoable_param(ParamId(100 + band::SOLO)));
         assert!(is_undoable_param(ParamId(global::OUTPUT_GAIN_DB)));
         assert!(is_undoable_param(ParamId(global::AUTO_GAIN)));
+        assert!(is_undoable_param(ParamId(global::PROCESSING_MODE)));
         assert!(is_undoable_param(ParamId(global::AUTO_GAIN_MODE)));
         assert!(is_undoable_param(ParamId(100 + band::GAIN_DB)));
 
-        let snap = snapshot_with_gain(2.5);
-        let captured = capture_undo_snapshot(&snap);
+        let snap_with_pm = ParamSnapshot::new(vec![
+            ParamValue {
+                param_id: ParamId(global::BYPASS),
+                value: 0.0,
+            },
+            ParamValue {
+                param_id: ParamId(global::PROCESSING_MODE),
+                value: 1.0,
+            },
+            ParamValue {
+                param_id: ParamId(100 + band::GAIN_DB),
+                value: 2.5,
+            },
+        ]);
+        let captured = capture_undo_snapshot(&snap_with_pm);
         assert!(
             !captured
                 .iter()
@@ -382,9 +396,49 @@ mod tests {
             "BYPASS must not be captured in undo snapshots"
         );
         assert!(
+            captured.iter().any(
+                |&(id, val)| id == ParamId(global::PROCESSING_MODE) && (val - 1.0).abs() < 1e-5
+            ),
+            "PROCESSING_MODE must be captured in undo snapshots"
+        );
+        assert!(
             captured
                 .iter()
                 .any(|&(id, val)| id == ParamId(100 + band::GAIN_DB) && (val - 2.5).abs() < 1e-5)
         );
+    }
+
+    #[test]
+    fn test_processing_mode_undo_redo_roundtrip() {
+        let mut ctrl = EqUndoController::default();
+        let s_zero = ParamSnapshot::new(vec![ParamValue {
+            param_id: ParamId(global::PROCESSING_MODE),
+            value: 0.0,
+        }]);
+        let s_high = ParamSnapshot::new(vec![ParamValue {
+            param_id: ParamId(global::PROCESSING_MODE),
+            value: 2.0,
+        }]);
+
+        ctrl.observe_frame(capture_undo_snapshot(&s_zero), true, false);
+        assert_eq!(ctrl.undo_len(), 1);
+
+        let mut undo_batch = GuiCommandBatch::new();
+        assert!(ctrl.undo(&s_high, &mut undo_batch));
+        assert_eq!(undo_batch.commands().len(), 1);
+        assert_eq!(
+            undo_batch.commands()[0].param_id,
+            ParamId(global::PROCESSING_MODE)
+        );
+        assert!((undo_batch.commands()[0].value - 0.0).abs() < 1e-5);
+
+        let mut redo_batch = GuiCommandBatch::new();
+        assert!(ctrl.redo(&s_zero, &mut redo_batch));
+        assert_eq!(redo_batch.commands().len(), 1);
+        assert_eq!(
+            redo_batch.commands()[0].param_id,
+            ParamId(global::PROCESSING_MODE)
+        );
+        assert!((redo_batch.commands()[0].value - 2.0).abs() < 1e-5);
     }
 }

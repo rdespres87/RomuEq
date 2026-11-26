@@ -11,7 +11,10 @@ pub use eq_plot::{
     EqCurveCache, PlotContext, render_frequency_response_plot,
     render_frequency_response_plot_localized, render_interactive_frequency_response_plot,
 };
-pub use master_section::{render_master_section, render_master_section_localized};
+pub use master_section::{
+    format_processing_mode_tooltip, render_master_section, render_master_section_localized,
+    render_master_section_with_rate,
+};
 pub use spectrum_view::{render_spectrum_analyzer, render_spectrum_analyzer_localized};
 pub use vu_meter::{render_stereo_vu_meter, render_vertical_stereo_vu_meter};
 

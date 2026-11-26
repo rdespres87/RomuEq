@@ -174,3 +174,88 @@ fn test_standalone_workspace_rendering() {
         });
     });
 }
+
+#[test]
+fn test_master_bar_fits_within_1180x560_across_all_languages_with_auto_gain_on() {
+    use equaform_common::global;
+    use equaform_gui::i18n::Language;
+    use equaform_gui::{ParamId, ParamValue};
+
+    let bands = default_8_bands();
+    let sample_rate = 48_000.0;
+    let snapshot = ParamSnapshot::new(vec![
+        ParamValue {
+            param_id: ParamId(global::AUTO_GAIN),
+            value: 1.0,
+        },
+        ParamValue {
+            param_id: ParamId(global::AUTO_GAIN_COMPENSATION_DB),
+            value: -2.4,
+        },
+        ParamValue {
+            param_id: ParamId(global::AUTO_GAIN_MODE),
+            value: 1.0,
+        },
+        ParamValue {
+            param_id: ParamId(global::PROCESSING_MODE),
+            value: 2.0,
+        },
+    ]);
+    let analysis = AnalysisSnapshot::default();
+    let mut preset_manager = PresetManager::new();
+    populate_factory_presets(&mut preset_manager);
+
+    let env = HostEnvironment::Plugin {
+        host_description: "Ableton Live • VST3".to_string(),
+        sample_rate,
+        peak_levels_db: (-12.0, -12.0),
+    };
+
+    for lang in Language::ALL {
+        let ctx = egui::Context::default();
+        let mut state = WorkspaceUiState {
+            language: lang,
+            ..Default::default()
+        };
+        let raw_input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1180.0, 560.0),
+            )),
+            ..Default::default()
+        };
+
+        let _output = ctx.run(raw_input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let initial_min_rect = ui.min_rect();
+                let ws_ctx = WorkspaceUiContext {
+                    env: &env,
+                    band_params: &bands,
+                    sample_rate,
+                    snapshot: &snapshot,
+                    analysis: &analysis,
+                    preset_manager: &preset_manager,
+                    current_preset: "HS7 Monitor Correction",
+                    status_message: Some("Test Status"),
+                };
+                let (_batch, _actions) = render_workspace(ui, &mut state, &ws_ctx);
+
+                let rendered_rect = ui.min_rect();
+                assert_eq!(
+                    rendered_rect.max.x, 1172.0,
+                    "Horizontal overflow in {lang:?} (max.x = {})",
+                    rendered_rect.max.x
+                );
+                assert!(
+                    rendered_rect.max.y <= 552.0,
+                    "Vertical overflow in {lang:?} (max.y = {})",
+                    rendered_rect.max.y
+                );
+                assert_eq!(
+                    initial_min_rect, rendered_rect,
+                    "Layout must not overflow 1180x560 rect in {lang:?}"
+                );
+            });
+        });
+    }
+}
