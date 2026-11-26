@@ -40,7 +40,9 @@ pub use parameter::ProcessingMode;
 pub use parameter::Slope;
 pub use parameter::StereoMode;
 pub use parameter::{band, global};
-pub use triple_buffer::{TripleBufferConsumer, TripleBufferProducer, create_triple_buffer};
+pub use triple_buffer::{
+    TripleBufferConsumer, TripleBufferProducer, create_triple_buffer, create_triple_buffer_with,
+};
 
 // ---------------------------------------------------------------------------
 // Bounded SPSC transport (exported for analysis handoff)

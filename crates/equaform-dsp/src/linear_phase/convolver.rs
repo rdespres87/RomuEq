@@ -7,6 +7,7 @@
 use super::synthesis::{
     KernelSynthesizer, PartitionBank, UPOLS_BLOCK_SIZE, UPOLS_FFT_SIZE, UPOLS_MAX_PARTITIONS,
 };
+use super::worker::AsyncKernelWorker;
 use equaform_common::{EqParameters, ProcessingMode};
 use rustfft::{Fft, FftPlanner, num_complex::Complex};
 use std::sync::Arc;
@@ -329,6 +330,7 @@ fn convolve_bank(
 /// and `2048` samples in [`ProcessingMode::LinearPhaseHigh`].
 pub struct LinearPhaseConvolver {
     engine: ConvolverEngine,
+    worker: AsyncKernelWorker,
     max_chunk_size: usize,
     mono_scratch: Vec<f32>,
 }
@@ -339,6 +341,7 @@ impl std::fmt::Debug for LinearPhaseConvolver {
             .field("current_mode", &self.engine.current_mode)
             .field("active_bank", &self.engine.active_bank)
             .field("crossfade_pending", &self.engine.crossfade_pending)
+            .field("async_worker_available", &self.worker.is_available())
             .field("max_chunk_size", &self.max_chunk_size)
             .finish()
     }
@@ -404,17 +407,21 @@ impl LinearPhaseConvolver {
                 old_block_l: vec![0.0; UPOLS_BLOCK_SIZE],
                 old_block_r: vec![0.0; UPOLS_BLOCK_SIZE],
             },
+            worker: AsyncKernelWorker::new(),
             max_chunk_size,
             mono_scratch: vec![0.0; max_chunk_size],
         }
     }
 
-    /// Re-synthesizes the EQ filter kernel into the inactive bank.
+    /// Re-synthesizes the EQ filter kernel synchronously into the inactive bank.
     ///
-    /// If `mode` differs from the active mode, swaps immediately and resets all
-    /// delay lines. Otherwise schedules a click-free linear crossfade over the
-    /// next 256-sample UPOLS output block.
+    /// Invalidates any older in-flight asynchronous synthesis result. If `mode`
+    /// differs from the active mode, swaps immediately and resets all delay lines;
+    /// otherwise schedules a click-free linear crossfade over the next 256-sample
+    /// UPOLS output block.
     pub fn update_kernel(&mut self, params: &EqParameters, sample_rate: f32, mode: ProcessingMode) {
+        self.worker.invalidate_in_flight();
+
         let inactive = 1 - self.engine.active_bank;
         self.engine.synthesizer.synthesize(
             params,
@@ -433,6 +440,45 @@ impl LinearPhaseConvolver {
         }
     }
 
+    /// Requests a steady-state EQ filter kernel update.
+    ///
+    /// When `mode` matches the active mode and the background worker is
+    /// available, publishes the request wait-free with zero FFT work on the
+    /// audio thread. Falls back to [`LinearPhaseConvolver::update_kernel`] on
+    /// mode switches or if the worker thread could not be spawned.
+    pub fn request_kernel_update(
+        &mut self,
+        params: &EqParameters,
+        sample_rate: f32,
+        mode: ProcessingMode,
+    ) {
+        if mode != self.engine.current_mode || !self.worker.is_available() {
+            self.update_kernel(params, sample_rate, mode);
+            return;
+        }
+        self.worker.request_update(params, sample_rate, mode);
+    }
+
+    /// Polls the background synthesis worker for a completed partition bank.
+    ///
+    /// Returns `true` if a matching bank was swapped into the inactive slot and
+    /// queued for a click-free crossfade. Never overwrites a pending crossfade.
+    pub fn poll_async_kernel(&mut self) -> bool {
+        if self.engine.crossfade_pending || !self.engine.current_mode.is_linear_phase() {
+            return false;
+        }
+        let inactive = 1 - self.engine.active_bank;
+        if self
+            .worker
+            .poll_ready(&mut self.engine.banks[inactive], self.engine.current_mode)
+        {
+            self.engine.crossfade_pending = true;
+            true
+        } else {
+            false
+        }
+    }
+
     /// Clears all overlap buffers, FDL history, and FIFOs, restoring the
     /// pre-filled output latency offset without allocating.
     pub fn reset(&mut self) {
@@ -441,6 +487,7 @@ impl LinearPhaseConvolver {
 
     /// Processes stereo planar audio buffers in place with zero heap allocations.
     pub fn process_stereo(&mut self, left: &mut [f32], right: &mut [f32]) {
+        let _ = self.poll_async_kernel();
         if self.engine.current_mode == ProcessingMode::MinimumPhase {
             return;
         }
@@ -459,6 +506,7 @@ impl LinearPhaseConvolver {
 
     /// Processes a mono audio buffer in place with zero heap allocations.
     pub fn process_mono(&mut self, samples: &mut [f32]) {
+        let _ = self.poll_async_kernel();
         if self.engine.current_mode == ProcessingMode::MinimumPhase || samples.is_empty() {
             return;
         }
@@ -480,5 +528,30 @@ impl LinearPhaseConvolver {
     #[inline]
     pub fn current_mode(&self) -> ProcessingMode {
         self.engine.current_mode
+    }
+
+    #[cfg(test)]
+    pub(super) fn worker_next_generation(&self) -> u64 {
+        self.worker.next_generation()
+    }
+
+    #[cfg(test)]
+    pub(super) fn worker_last_published_generation(&self) -> u64 {
+        self.worker.last_published_generation()
+    }
+
+    #[cfg(test)]
+    pub(super) fn worker_last_polled_generation(&self) -> u64 {
+        self.worker.last_polled_generation()
+    }
+
+    #[cfg(test)]
+    pub(super) fn worker_synthesis_count(&self) -> u64 {
+        self.worker.synthesis_count()
+    }
+
+    #[cfg(test)]
+    pub(super) fn is_crossfade_pending(&self) -> bool {
+        self.engine.crossfade_pending
     }
 }

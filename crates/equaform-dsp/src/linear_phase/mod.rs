@@ -5,6 +5,7 @@
 
 pub mod convolver;
 pub mod synthesis;
+mod worker;
 
 pub use convolver::LinearPhaseConvolver;
 pub use synthesis::{
@@ -383,5 +384,217 @@ mod tests {
         let expected = mono.clone();
         convolver.process_mono(&mut mono);
         assert_eq!(mono, expected);
+    }
+
+    #[test]
+    fn test_async_kernel_update_applies_eq_gain_click_free() {
+        use std::time::{Duration, Instant};
+
+        let sample_rate = 48_000.0_f32;
+        let block_size = 256_usize;
+        let mut convolver = LinearPhaseConvolver::new(block_size);
+        let mut out_l = Vec::new();
+        let mut out_r = Vec::new();
+        let mut sample_idx = 0_usize;
+
+        let mut push_sine_block = |conv: &mut LinearPhaseConvolver, cursor: &mut usize| {
+            let mut l: Vec<f32> = (0..block_size)
+                .map(|i| 0.25 * (2.0 * PI * 1000.0 * (*cursor + i) as f32 / sample_rate).sin())
+                .collect();
+            let mut r = l.clone();
+            *cursor += block_size;
+            conv.process_stereo(&mut l, &mut r);
+            out_l.extend_from_slice(&l);
+            out_r.extend_from_slice(&r);
+        };
+
+        for _ in 0..8 {
+            push_sine_block(&mut convolver, &mut sample_idx);
+        }
+
+        let target_params = bell_params(6.0, 1000.0, 1.0, BandRouting::Stereo);
+        convolver.request_kernel_update(
+            &target_params,
+            sample_rate,
+            ProcessingMode::LinearPhaseLow,
+        );
+        let target_gen = convolver.worker_next_generation();
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut settled_blocks = 0_usize;
+        while settled_blocks < 10 {
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for async kernel update"
+            );
+            push_sine_block(&mut convolver, &mut sample_idx);
+            if convolver.worker_last_polled_generation() >= target_gen
+                && !convolver.is_crossfade_pending()
+            {
+                settled_blocks += 1;
+            } else {
+                std::thread::yield_now();
+            }
+        }
+
+        assert!(out_l.iter().all(|s| s.is_finite()));
+        assert!(out_r.iter().all(|s| s.is_finite()));
+
+        let max_delta = out_l
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_delta < 0.25,
+            "async kernel update caused discontinuity: max_delta={max_delta}"
+        );
+
+        let coeffs = FilterSpecification::from_band(&target_params.bands[0], sample_rate).compute();
+        let ref_db = biquad_response_at_frequency(&coeffs, 1000.0, sample_rate);
+        let in_rms = 0.25 * std::f32::consts::FRAC_1_SQRT_2;
+        let out_rms = rms(&out_l[out_l.len() - 1024..]);
+        let measured_db = 20.0 * (out_rms / in_rms).log10();
+        assert!(
+            (measured_db - ref_db).abs() < 0.3,
+            "expected ~{ref_db:.3} dB, got {measured_db:.3} dB"
+        );
+    }
+
+    #[test]
+    fn test_async_kernel_coalesces_rapid_automation_requests() {
+        use std::time::{Duration, Instant};
+
+        let sample_rate = 48_000.0_f32;
+        let block_size = 256_usize;
+        let mut convolver = LinearPhaseConvolver::new(block_size);
+        let mut out_l = Vec::new();
+        let mut sample_idx = 0_usize;
+
+        let mut push_sine_block = |conv: &mut LinearPhaseConvolver, cursor: &mut usize| {
+            let mut l: Vec<f32> = (0..block_size)
+                .map(|i| 0.20 * (2.0 * PI * 1000.0 * (*cursor + i) as f32 / sample_rate).sin())
+                .collect();
+            let mut r = l.clone();
+            *cursor += block_size;
+            conv.process_stereo(&mut l, &mut r);
+            out_l.extend_from_slice(&l);
+        };
+
+        for _ in 0..8 {
+            push_sine_block(&mut convolver, &mut sample_idx);
+        }
+
+        let mut final_params = EqParameters::default();
+        for step in 1..=50 {
+            let gain_db = (step as f32 / 50.0) * 12.0;
+            final_params = bell_params(gain_db, 1000.0, 1.0, BandRouting::Stereo);
+            convolver.request_kernel_update(
+                &final_params,
+                sample_rate,
+                ProcessingMode::LinearPhaseLow,
+            );
+        }
+        let target_gen = convolver.worker_next_generation();
+        assert_eq!(target_gen, 50);
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut settled_blocks = 0_usize;
+        while settled_blocks < 10 {
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for coalesced automation kernel"
+            );
+            push_sine_block(&mut convolver, &mut sample_idx);
+            if convolver.worker_last_polled_generation() >= target_gen
+                && !convolver.is_crossfade_pending()
+            {
+                settled_blocks += 1;
+            } else {
+                std::thread::yield_now();
+            }
+        }
+
+        assert_eq!(convolver.worker_last_published_generation(), target_gen);
+        let synth_count = convolver.worker_synthesis_count();
+        assert!(
+            (1..50).contains(&synth_count),
+            "expected rapid requests to coalesce (< 50 syntheses), got {synth_count}"
+        );
+
+        assert!(out_l.iter().all(|s| s.is_finite()));
+        let max_delta = out_l
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_delta < 0.35,
+            "coalesced automation update caused discontinuity: max_delta={max_delta}"
+        );
+
+        let coeffs = FilterSpecification::from_band(&final_params.bands[0], sample_rate).compute();
+        let ref_db = biquad_response_at_frequency(&coeffs, 1000.0, sample_rate);
+        let in_rms = 0.20 * std::f32::consts::FRAC_1_SQRT_2;
+        let out_rms = rms(&out_l[out_l.len() - 1024..]);
+        let measured_db = 20.0 * (out_rms / in_rms).log10();
+        assert!(
+            (measured_db - ref_db).abs() < 0.3,
+            "expected ~{ref_db:.3} dB, got {measured_db:.3} dB"
+        );
+    }
+
+    #[test]
+    fn test_async_kernel_discards_stale_mode_result() {
+        use std::time::{Duration, Instant};
+
+        let sample_rate = 48_000.0_f32;
+        let mut convolver = LinearPhaseConvolver::new(256);
+        let boosted = bell_params(12.0, 1000.0, 1.0, BandRouting::Stereo);
+
+        convolver.request_kernel_update(&boosted, sample_rate, ProcessingMode::LinearPhaseLow);
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while convolver.worker_last_published_generation() < 1 {
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for worker to complete stale bank"
+            );
+            std::thread::yield_now();
+        }
+
+        // Switching mode synchronously invalidates generation 1 and changes current_mode.
+        convolver.update_kernel(
+            &EqParameters::default(),
+            sample_rate,
+            ProcessingMode::LinearPhaseHigh,
+        );
+        assert!(!convolver.poll_async_kernel());
+
+        let (left, right) = run_impulse_stereo(&mut convolver, 6144, 256);
+        for (idx, (&l, &r)) in left.iter().zip(right.iter()).enumerate() {
+            if idx == 2048 {
+                assert!(
+                    (l - 1.0).abs() < 1e-5 && (r - 1.0).abs() < 1e-5,
+                    "expected unity impulse at 2048, got l={l}, r={r}"
+                );
+            } else {
+                assert!(
+                    l.abs() < 1e-5 && r.abs() < 1e-5,
+                    "expected ~0.0 at {idx}, got l={l}, r={r}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_async_kernel_worker_drops_cleanly() {
+        let idle = LinearPhaseConvolver::new(256);
+        drop(idle);
+
+        for _ in 0..8 {
+            let mut active = LinearPhaseConvolver::new(256);
+            let params = bell_params(6.0, 1000.0, 1.0, BandRouting::Stereo);
+            active.request_kernel_update(&params, 48_000.0, ProcessingMode::LinearPhaseLow);
+            drop(active);
+        }
     }
 }

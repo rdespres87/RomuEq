@@ -203,7 +203,7 @@ impl EngineLifecycle {
 
         if (coeff_was_dirty || any_automated) && target_mode.is_linear_phase() {
             self.linear_phase
-                .update_kernel(&self.eq_params, sample_rate, target_mode);
+                .request_kernel_update(&self.eq_params, sample_rate, target_mode);
         }
     }
 
