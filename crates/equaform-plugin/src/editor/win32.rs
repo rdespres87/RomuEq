@@ -22,7 +22,7 @@ mod windows {
     use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
     use crate::EquaformSharedInner;
-    use crate::editor::shared_host::{SharedEditorState, WgpuSurfaceHost};
+    use crate::editor::shared_host::{SharedEditorState, WgpuSurfaceConfig, WgpuSurfaceHost};
     use crate::editor::{EDITOR_HEIGHT, EDITOR_WIDTH, PluginEditor};
 
     const TIMER_ID: usize = 1001;
@@ -82,16 +82,16 @@ mod windows {
             // SAFETY: `hwnd` is a valid Win32 child window owned by `Win32Editor`, which destroys
             // it and clears `GWLP_USERDATA` in `destroy()` before dropping `Win32EditorRuntime`.
             let wgpu = unsafe {
-                WgpuSurfaceHost::new(
-                    wgpu::Backends::PRIMARY,
-                    raw_display,
-                    raw_window,
-                    physical_width,
-                    physical_height,
-                    scale_factor,
-                    true,
-                    "Equaform Win32 Device",
-                )
+                WgpuSurfaceHost::new(WgpuSurfaceConfig {
+                    backends: wgpu::Backends::PRIMARY,
+                    raw_display_handle: raw_display,
+                    raw_window_handle: raw_window,
+                    width_px: physical_width,
+                    height_px: physical_height,
+                    pixels_per_point: scale_factor,
+                    allow_fallback_adapter: true,
+                    device_label: "Equaform Win32 Device",
+                })
             }
             .ok()?;
 

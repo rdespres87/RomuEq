@@ -27,7 +27,7 @@ mod macos {
     };
 
     use crate::EquaformSharedInner;
-    use crate::editor::shared_host::{SharedEditorState, WgpuSurfaceHost};
+    use crate::editor::shared_host::{SharedEditorState, WgpuSurfaceConfig, WgpuSurfaceHost};
     pub use crate::editor::{EDITOR_HEIGHT, EDITOR_WIDTH};
 
     struct ViewIvars {
@@ -406,16 +406,16 @@ mod macos {
             // SAFETY: `view` is retained by `CocoaEditor` and `teardown_view` drops `EditorRuntime`
             // (and its `WgpuSurfaceHost`) before removing or releasing `view`.
             let wgpu = unsafe {
-                WgpuSurfaceHost::new(
-                    wgpu::Backends::METAL,
-                    raw_display,
-                    raw_window,
+                WgpuSurfaceHost::new(WgpuSurfaceConfig {
+                    backends: wgpu::Backends::METAL,
+                    raw_display_handle: raw_display,
+                    raw_window_handle: raw_window,
                     width_px,
                     height_px,
                     pixels_per_point,
-                    false,
-                    "EquaformPluginDevice",
-                )?
+                    allow_fallback_adapter: false,
+                    device_label: "EquaformPluginDevice",
+                })?
             };
 
             let state = SharedEditorState::new(shared, host, "CLAP / VST3 / AU");

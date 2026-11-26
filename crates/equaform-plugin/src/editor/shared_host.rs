@@ -124,6 +124,19 @@ pub fn eq_to_param_snapshot(eq: &EqParameters, auto_gain_comp_db: f32) -> ParamS
     ParamSnapshot::new(vals)
 }
 
+/// Configuration for creating a [`WgpuSurfaceHost`].
+#[derive(Debug, Clone, Copy)]
+pub struct WgpuSurfaceConfig {
+    pub backends: wgpu::Backends,
+    pub raw_display_handle: RawDisplayHandle,
+    pub raw_window_handle: RawWindowHandle,
+    pub width_px: u32,
+    pub height_px: u32,
+    pub pixels_per_point: f32,
+    pub allow_fallback_adapter: bool,
+    pub device_label: &'static str,
+}
+
 /// Shared `wgpu` surface, device, queue, and `egui-wgpu` renderer state.
 pub struct WgpuSurfaceHost {
     _instance: wgpu::Instance,
@@ -139,19 +152,19 @@ impl WgpuSurfaceHost {
     /// Initializes a `wgpu` surface and `egui_wgpu::Renderer` attached to a native window handle.
     ///
     /// # Safety
-    /// `raw_display_handle` and `raw_window_handle` must remain valid for the entire lifetime
-    /// of the returned `WgpuSurfaceHost`.
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn new(
-        backends: wgpu::Backends,
-        raw_display_handle: RawDisplayHandle,
-        raw_window_handle: RawWindowHandle,
-        width_px: u32,
-        height_px: u32,
-        pixels_per_point: f32,
-        allow_fallback_adapter: bool,
-        device_label: &'static str,
-    ) -> Result<Self, String> {
+    /// `config.raw_display_handle` and `config.raw_window_handle` must remain valid for the entire
+    /// lifetime of the returned `WgpuSurfaceHost`.
+    pub unsafe fn new(config: WgpuSurfaceConfig) -> Result<Self, String> {
+        let WgpuSurfaceConfig {
+            backends,
+            raw_display_handle,
+            raw_window_handle,
+            width_px,
+            height_px,
+            pixels_per_point,
+            allow_fallback_adapter,
+            device_label,
+        } = config;
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends,
             ..Default::default()
