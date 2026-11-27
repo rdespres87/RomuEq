@@ -180,6 +180,219 @@ impl<A: GuiApp> StandaloneRunner<A> {
     }
 }
 
+impl<A: GuiApp> StandaloneRunner<A> {
+    fn is_bypassed(&self) -> bool {
+        self.client
+            .snapshot()
+            .get(ParamId(1))
+            .map(|v| v >= 0.5)
+            .unwrap_or(false)
+    }
+
+    fn sync_audio_parameters(&mut self) {
+        if let (Some(audio), Some(engine)) =
+            (self.audio_stream.as_mut(), self.client.engine.as_ref())
+        {
+            let _ = audio.set_parameters(*engine.eq_parameters());
+        }
+    }
+
+    fn update_live_spectrum(&mut self) {
+        let Some(ref audio) = self.audio_stream else {
+            self.analysis.spectrum_data.clear();
+            return;
+        };
+        if !self.audio_active {
+            self.analysis.spectrum_data.clear();
+            return;
+        }
+        let (peak_l, peak_r) = audio.peak_levels_db();
+        self.analysis.peak[0] = peak_l;
+        self.analysis.peak[1] = peak_r;
+        self.analysis.rms[0] = peak_l;
+        self.analysis.rms[1] = peak_r;
+
+        audio.copy_latest_output_samples(&mut self.sample_buffer);
+        let max_peak = peak_l.max(peak_r);
+        let is_silent = max_peak <= -90.0 || self.sample_buffer.is_empty();
+        if is_silent {
+            self.silence_frames = self.silence_frames.saturating_add(1);
+        } else if max_peak > -84.0 {
+            self.silence_frames = 0;
+        }
+
+        if self.silence_frames < 15 && !self.sample_buffer.is_empty() {
+            let sr = audio.sample_rate();
+            let frame = self.spectrum_processor.process_ref(
+                &self.sample_buffer,
+                sr as f64,
+                self.spectrum_frame_num,
+            );
+            self.spectrum_frame_num += 1;
+            let dft_norm_db = 20.0 * ((frame.fft_size as f64) * 0.5).log10();
+            self.analysis.spectrum_data.clear();
+            self.analysis
+                .spectrum_data
+                .extend((0..frame.num_bins).map(|b| {
+                    [
+                        frame.bin_frequency(b),
+                        (frame.magnitudes_db[b] as f64) - dft_norm_db,
+                    ]
+                }));
+        } else {
+            self.analysis.spectrum_data.clear();
+        }
+    }
+
+    fn handle_toggle_play_stop(&mut self, t: &'static Translations) {
+        let bypassed = self.is_bypassed();
+        let Some(ref mut audio) = self.audio_stream else {
+            return;
+        };
+        if audio.is_active() {
+            let now_muted = !audio.is_muted();
+            audio.set_muted(now_muted);
+            self.audio_active = !now_muted;
+            self.status_message = Some(if now_muted {
+                t.status_audio_muted.to_string()
+            } else {
+                let out_name = audio.selected_output_device().unwrap_or(t.output_slider);
+                format_audio_status(bypassed, out_name, t)
+            });
+            return;
+        }
+
+        audio.set_muted(false);
+        if let Some(ref engine) = self.client.engine {
+            let _ = audio.set_parameters(*engine.eq_parameters());
+        }
+        match audio.start() {
+            Ok(()) => {
+                self.audio_active = true;
+                self.client.sample_rate = audio.sample_rate();
+                let out_name = audio.selected_output_device().unwrap_or(t.output_slider);
+                self.status_message = Some(format_audio_status(bypassed, out_name, t));
+            }
+            Err(err) => {
+                self.status_message = Some(format!("{}: {err}", t.status_audio_error));
+            }
+        }
+    }
+
+    fn handle_select_output_device(&mut self, dev: String, t: &'static Translations) {
+        let bypassed = self.is_bypassed();
+        let Some(ref mut audio) = self.audio_stream else {
+            return;
+        };
+        audio.set_output_device(Some(dev.clone()));
+        save_selected_output_device(&dev);
+        if let Some(ref engine) = self.client.engine {
+            let _ = audio.set_parameters(*engine.eq_parameters());
+        }
+        if !self.audio_active {
+            self.status_message = Some(format!("{}: {dev}", t.status_selected_output));
+            return;
+        }
+        let _ = audio.stop();
+        match audio.start() {
+            Ok(()) => {
+                self.audio_active = true;
+                self.client.sample_rate = audio.sample_rate();
+                self.status_message = Some(format_audio_status(bypassed, &dev, t));
+            }
+            Err(e) => {
+                self.audio_active = false;
+                self.status_message = Some(format!("{} '{dev}': {e}", t.status_output_error));
+            }
+        }
+    }
+
+    fn handle_workspace_action(&mut self, action: WorkspaceAction, ctx: &egui::Context) {
+        let t = Translations::for_language(self.ui_state.language);
+        match action {
+            WorkspaceAction::TogglePlayStop => self.handle_toggle_play_stop(t),
+            WorkspaceAction::SelectOutputDevice(dev) => self.handle_select_output_device(dev, t),
+            WorkspaceAction::RefreshDevices => {
+                self.available_outputs = audio::AudioStream::available_output_devices();
+                self.available_inputs = audio::AudioStream::available_input_devices();
+                self.status_message = Some(t.status_devices_refreshed.to_string());
+            }
+            WorkspaceAction::ApplyPreset(name) => {
+                let _ = self.client.apply_preset(&name);
+                self.client._current_preset = name.clone();
+                save_last_active_preset_name(&name);
+                save_complete_app_state(&self.client);
+                self.sync_audio_parameters();
+                self.status_message = Some(format!("{}: '{name}'", t.status_preset_applied));
+            }
+            WorkspaceAction::SavePreset(name) => match self.client.create_preset(&name) {
+                Err(e) => {
+                    self.status_message = Some(format!("{} '{name}': {e}", t.status_preset_error));
+                }
+                Ok(_) => {
+                    self.client._current_preset = name.clone();
+                    let _ = persist_preset_to_disk(&mut self.client.preset_manager, &name);
+                    save_last_active_preset_name(&name);
+                    save_complete_app_state(&self.client);
+                    self.status_message = Some(format!("{}: '{name}'", t.status_preset_saved));
+                }
+            },
+            WorkspaceAction::DeletePreset(name) => {
+                let _ = self.client.remove_preset(&name);
+                remove_preset_from_disk(&name);
+                self.client._current_preset.clear();
+                save_complete_app_state(&self.client);
+                self.status_message = Some(format!("{}: '{name}'", t.status_preset_deleted));
+            }
+            WorkspaceAction::SetLanguage(lang) => self.handle_set_language(lang, ctx),
+        }
+    }
+
+    fn handle_set_language(&mut self, lang: Language, ctx: &egui::Context) {
+        lang.save();
+        let updated_t = Translations::for_language(lang);
+        ctx.send_viewport_cmd(egui::ViewportCommand::Title(
+            updated_t.window_title.to_string(),
+        ));
+        if self.audio_active {
+            let out_name = self
+                .audio_stream
+                .as_ref()
+                .and_then(|a| a.selected_output_device())
+                .unwrap_or(updated_t.output_slider);
+            self.status_message =
+                Some(format_audio_status(self.is_bypassed(), out_name, updated_t));
+        } else if self
+            .audio_stream
+            .as_ref()
+            .map(|a| a.is_muted())
+            .unwrap_or(false)
+        {
+            self.status_message = Some(updated_t.status_audio_muted.to_string());
+        }
+    }
+
+    fn apply_ui_command_batch(&mut self, batch: GuiCommandBatch) {
+        if batch.is_empty() {
+            return;
+        }
+        let modifies_bypass = batch.commands().iter().any(|c| c.param_id.0 == 1);
+        self.client.apply_commands(batch);
+        save_complete_app_state(&self.client);
+        self.sync_audio_parameters();
+        if modifies_bypass && self.audio_active {
+            let updated_t = Translations::for_language(self.ui_state.language);
+            let out_name = self
+                .audio_stream
+                .as_ref()
+                .and_then(|a| a.selected_output_device())
+                .unwrap_or(updated_t.output_slider);
+            self.status_message =
+                Some(format_audio_status(self.is_bypassed(), out_name, updated_t));
+        }
+    }
+}
+
 impl<A: GuiApp> App for StandaloneRunner<A> {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if GRACEFUL_SHUTDOWN_REQUESTED.load(Ordering::Acquire) {
@@ -196,7 +409,6 @@ impl<A: GuiApp> App for StandaloneRunner<A> {
             ctx.request_repaint_after(std::time::Duration::from_millis(500));
             return;
         }
-
         if self.was_in_zero_fps {
             if let Some(ref audio) = self.audio_stream {
                 audio.clear_spectrum_buffer();
@@ -205,77 +417,16 @@ impl<A: GuiApp> App for StandaloneRunner<A> {
         }
 
         ctx.set_visuals(egui::Visuals::dark());
+        self.analysis.dropped = self.client.analysis_snapshot().dropped;
+        self.update_live_spectrum();
 
-        // Update DPI scaling.
-        let _pixels_per_point = ctx.pixels_per_point();
-
-        // Query engine state.
-        let _snapshot = self.client.snapshot();
-        let engine_analysis = self.client.analysis_snapshot();
-        self.analysis.dropped = engine_analysis.dropped;
-
-        // Compute real FFT spectrum from audio stream if running
-        if self.audio_active {
-            if let Some(ref audio) = self.audio_stream {
-                let (peak_l, peak_r) = audio.peak_levels_db();
-                self.analysis.peak[0] = peak_l;
-                self.analysis.peak[1] = peak_r;
-                self.analysis.rms[0] = peak_l;
-                self.analysis.rms[1] = peak_r;
-
-                audio.copy_latest_output_samples(&mut self.sample_buffer);
-                let max_peak = peak_l.max(peak_r);
-                let is_silent = max_peak <= -90.0 || self.sample_buffer.is_empty();
-
-                if is_silent {
-                    self.silence_frames = self.silence_frames.saturating_add(1);
-                } else if max_peak > -84.0 {
-                    self.silence_frames = 0;
-                }
-
-                if self.silence_frames < 15 && !self.sample_buffer.is_empty() {
-                    let sr = audio.sample_rate();
-                    let frame = self.spectrum_processor.process_ref(
-                        &self.sample_buffer,
-                        sr as f64,
-                        self.spectrum_frame_num,
-                    );
-                    self.spectrum_frame_num += 1;
-                    let dft_norm_db = 20.0 * ((frame.fft_size as f64) * 0.5).log10();
-                    self.analysis.spectrum_data.clear();
-                    self.analysis
-                        .spectrum_data
-                        .extend((0..frame.num_bins).map(|b| {
-                            [
-                                frame.bin_frequency(b),
-                                (frame.magnitudes_db[b] as f64) - dft_norm_db,
-                            ]
-                        }));
-                } else {
-                    self.analysis.spectrum_data.clear();
-                }
-            }
-        } else {
-            self.analysis.spectrum_data.clear();
-        }
-
-        // Process any pending commands from client.
         let pending = self.client.take_pending_commands();
         if !pending.is_empty() {
             self.client.apply_commands(pending);
-            // Synchronize live parameters with audio thread
-            if let Some(ref mut audio) = self.audio_stream {
-                if let Some(ref engine) = self.client.engine {
-                    let _ = audio.set_parameters(*engine.eq_parameters());
-                }
-            }
+            self.sync_audio_parameters();
         }
-
-        // Update GUI app with current state.
         self.app.update(&mut self.client);
 
-        // Render the UI.
-        // Render the unified workspace UI across Standalone and Plugin modes.
         let t = Translations::for_language(self.ui_state.language);
         let env = HostEnvironment::Standalone {
             audio_active: self.audio_active,
@@ -295,7 +446,6 @@ impl<A: GuiApp> App for StandaloneRunner<A> {
 
         let mut batch = GuiCommandBatch::new();
         let mut actions = Vec::new();
-
         egui::CentralPanel::default().show(ctx, |ui| {
             let ws_ctx = WorkspaceUiContext {
                 env: &env,
@@ -312,195 +462,17 @@ impl<A: GuiApp> App for StandaloneRunner<A> {
             actions = a;
         });
 
-        // Handle actions from workspace UI
-        let t = Translations::for_language(self.ui_state.language);
         for action in actions {
-            match action {
-                WorkspaceAction::TogglePlayStop => {
-                    if let Some(ref mut audio) = self.audio_stream {
-                        if audio.is_active() {
-                            let now_muted = !audio.is_muted();
-                            audio.set_muted(now_muted);
-                            self.audio_active = !now_muted;
-                            if now_muted {
-                                self.status_message = Some(t.status_audio_muted.to_string());
-                            } else {
-                                let out_name =
-                                    audio.selected_output_device().unwrap_or(t.output_slider);
-                                let is_bypassed = self
-                                    .client
-                                    .snapshot()
-                                    .get(ParamId(1))
-                                    .map(|v| v >= 0.5)
-                                    .unwrap_or(false);
-                                self.status_message =
-                                    Some(format_audio_status(is_bypassed, out_name, t));
-                            }
-                        } else {
-                            audio.set_muted(false);
-                            if let Some(ref engine) = self.client.engine {
-                                let _ = audio.set_parameters(*engine.eq_parameters());
-                            }
-                            match audio.start() {
-                                Ok(()) => {
-                                    self.audio_active = true;
-                                    self.client.sample_rate = audio.sample_rate();
-                                    let out_name =
-                                        audio.selected_output_device().unwrap_or(t.output_slider);
-                                    let is_bypassed = self
-                                        .client
-                                        .snapshot()
-                                        .get(ParamId(1))
-                                        .map(|v| v >= 0.5)
-                                        .unwrap_or(false);
-                                    self.status_message =
-                                        Some(format_audio_status(is_bypassed, out_name, t));
-                                }
-                                Err(err) => {
-                                    self.status_message =
-                                        Some(format!("{}: {err}", t.status_audio_error));
-                                }
-                            }
-                        }
-                    }
-                }
-                WorkspaceAction::SelectOutputDevice(dev) => {
-                    if let Some(ref mut audio) = self.audio_stream {
-                        audio.set_output_device(Some(dev.clone()));
-                        save_selected_output_device(&dev);
-                        if let Some(ref engine) = self.client.engine {
-                            let _ = audio.set_parameters(*engine.eq_parameters());
-                        }
-                        if self.audio_active {
-                            let _ = audio.stop();
-                            match audio.start() {
-                                Ok(()) => {
-                                    self.audio_active = true;
-                                    self.client.sample_rate = audio.sample_rate();
-                                    let is_bypassed = self
-                                        .client
-                                        .snapshot()
-                                        .get(ParamId(1))
-                                        .map(|v| v >= 0.5)
-                                        .unwrap_or(false);
-                                    self.status_message =
-                                        Some(format_audio_status(is_bypassed, &dev, t));
-                                }
-                                Err(e) => {
-                                    self.audio_active = false;
-                                    self.status_message =
-                                        Some(format!("{} '{dev}': {e}", t.status_output_error));
-                                }
-                            }
-                        } else {
-                            self.status_message =
-                                Some(format!("{}: {dev}", t.status_selected_output));
-                        }
-                    }
-                }
-                WorkspaceAction::RefreshDevices => {
-                    self.available_outputs = audio::AudioStream::available_output_devices();
-                    self.available_inputs = audio::AudioStream::available_input_devices();
-                    self.status_message = Some(t.status_devices_refreshed.to_string());
-                }
-                WorkspaceAction::ApplyPreset(name) => {
-                    let _ = self.client.apply_preset(&name);
-                    self.client._current_preset = name.clone();
-                    save_last_active_preset_name(&name);
-                    save_complete_app_state(&self.client);
-                    if let Some(ref mut audio) = self.audio_stream {
-                        if let Some(ref engine) = self.client.engine {
-                            let _ = audio.set_parameters(*engine.eq_parameters());
-                        }
-                    }
-                    self.status_message = Some(format!("{}: '{name}'", t.status_preset_applied));
-                }
-                WorkspaceAction::SavePreset(name) => {
-                    if let Err(e) = self.client.create_preset(&name) {
-                        self.status_message =
-                            Some(format!("{} '{name}': {e}", t.status_preset_error));
-                    } else {
-                        self.client._current_preset = name.clone();
-                        let _ = persist_preset_to_disk(&mut self.client.preset_manager, &name);
-                        save_last_active_preset_name(&name);
-                        save_complete_app_state(&self.client);
-                        self.status_message = Some(format!("{}: '{name}'", t.status_preset_saved));
-                    }
-                }
-                WorkspaceAction::DeletePreset(name) => {
-                    let _ = self.client.remove_preset(&name);
-                    remove_preset_from_disk(&name);
-                    self.client._current_preset.clear();
-                    save_complete_app_state(&self.client);
-                    self.status_message = Some(format!("{}: '{name}'", t.status_preset_deleted));
-                }
-                WorkspaceAction::SetLanguage(lang) => {
-                    lang.save();
-                    let updated_t = Translations::for_language(lang);
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Title(
-                        updated_t.window_title.to_string(),
-                    ));
-                    if self.audio_active {
-                        let out_name = self
-                            .audio_stream
-                            .as_ref()
-                            .and_then(|a| a.selected_output_device())
-                            .unwrap_or(updated_t.output_slider);
-                        let is_bypassed = self
-                            .client
-                            .snapshot()
-                            .get(ParamId(1))
-                            .map(|v| v >= 0.5)
-                            .unwrap_or(false);
-                        self.status_message =
-                            Some(format_audio_status(is_bypassed, out_name, updated_t));
-                    } else if self
-                        .audio_stream
-                        .as_ref()
-                        .map(|a| a.is_muted())
-                        .unwrap_or(false)
-                    {
-                        self.status_message = Some(updated_t.status_audio_muted.to_string());
-                    }
-                }
-            }
+            self.handle_workspace_action(action, ctx);
+        }
+        self.apply_ui_command_batch(batch);
+
+        if let (Some(audio), Some(engine)) =
+            (self.audio_stream.as_mut(), self.client.engine.as_ref())
+        {
+            audio.ensure_parameters_synced(*engine.eq_parameters());
         }
 
-        // Process the batch through the engine client.
-        if !batch.is_empty() {
-            let modifies_bypass = batch.commands().iter().any(|c| c.param_id.0 == 1);
-            self.client.apply_commands(batch);
-            save_complete_app_state(&self.client);
-            if let Some(ref mut audio) = self.audio_stream {
-                if let Some(ref engine) = self.client.engine {
-                    let _ = audio.set_parameters(*engine.eq_parameters());
-                }
-            }
-            if modifies_bypass && self.audio_active {
-                let updated_t = Translations::for_language(self.ui_state.language);
-                let out_name = self
-                    .audio_stream
-                    .as_ref()
-                    .and_then(|a| a.selected_output_device())
-                    .unwrap_or(updated_t.output_slider);
-                let is_bypassed = self
-                    .client
-                    .snapshot()
-                    .get(ParamId(1))
-                    .map(|v| v >= 0.5)
-                    .unwrap_or(false);
-                self.status_message = Some(format_audio_status(is_bypassed, out_name, updated_t));
-            }
-        }
-
-        // Guarantee that the real-time audio thread always has the exact latest EqParameters
-        if let Some(ref mut audio) = self.audio_stream {
-            if let Some(ref engine) = self.client.engine {
-                audio.ensure_parameters_synced(*engine.eq_parameters());
-            }
-        }
-
-        // Repaint adaptively based on focus and user interaction.
         if is_focused || has_interaction {
             ctx.request_repaint();
         } else {

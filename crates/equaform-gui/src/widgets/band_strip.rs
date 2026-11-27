@@ -22,245 +22,272 @@ pub struct BandRenderContext<'a> {
 /// before emitting commands through the batch. Only pushes a command when the
 /// value actually changes (tracked via egui response.changed()).
 pub fn render_band(ui: &mut egui::Ui, ctx: BandRenderContext<'_>, batch: &mut GuiCommandBatch) {
-    let band_index = ctx.band_index;
-    let params = ctx.params;
-    let snapshot = ctx.snapshot;
-    let t = ctx.translations;
-    let band_name = t
-        .band_names
-        .get(band_index)
-        .copied()
-        .unwrap_or(t.band_fallback);
-
-    let color = match band_index % 8 {
-        0 => egui::Color32::from_rgb(255, 80, 80),   // Red
-        1 => egui::Color32::from_rgb(255, 160, 40),  // Orange
-        2 => egui::Color32::from_rgb(255, 220, 50),  // Yellow
-        3 => egui::Color32::from_rgb(50, 220, 100),  // Green
-        4 => egui::Color32::from_rgb(40, 200, 220),  // Cyan
-        5 => egui::Color32::from_rgb(80, 140, 255),  // Blue
-        6 => egui::Color32::from_rgb(180, 90, 255),  // Purple
-        _ => egui::Color32::from_rgb(255, 100, 200), // Magenta
-    };
-
     ui.group(|ui| {
         ui.set_width(ui.available_width());
         ui.vertical_centered(|ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
-
-            // 1. Compact single-line colored header badge + ON/OFF toggle + Solo button
-            let enabled_val = snapshot.get(params.enabled()).unwrap_or(1.0);
-            let mut enabled = enabled_val >= 0.5;
-            let solo = snapshot.get(params.solo()).unwrap_or(0.0) >= 0.5;
-            let header_color = if enabled {
-                color
-            } else {
-                egui::Color32::from_rgb(110, 115, 125)
-            };
-
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 3.0;
-                if ui.checkbox(&mut enabled, "").changed() {
-                    batch.push(params.enabled(), if enabled { 1.0 } else { 0.0 });
-                }
-                ui.label(
-                    egui::RichText::new(format!("B{}", band_index + 1))
-                        .strong()
-                        .color(header_color),
-                );
-                ui.label(
-                    egui::RichText::new(band_name)
-                        .small()
-                        .color(egui::Color32::from_rgb(175, 180, 190)),
-                );
-                let solo_btn =
-                    egui::Button::new(egui::RichText::new("S").small().strong().color(if solo {
-                        egui::Color32::from_rgb(20, 20, 24)
-                    } else {
-                        egui::Color32::from_rgb(175, 180, 190)
-                    }))
-                    .fill(if solo {
-                        egui::Color32::from_rgb(245, 195, 50)
-                    } else {
-                        egui::Color32::from_rgb(42, 46, 54)
-                    })
-                    .min_size(egui::vec2(18.0, 16.0));
-                if ui
-                    .add(solo_btn)
-                    .on_hover_text(t.tooltip_band_solo)
-                    .clicked()
-                {
-                    batch.push(params.solo(), if solo { 0.0 } else { 1.0 });
-                }
-            });
-
-            // 2. Compact Filter type dropdown (enum, 0–4 matching FilterType::to_raw)
-            let ft_val = snapshot.get(params.filter_type()).unwrap_or(0.0);
-            let filter_types = t.filter_types;
-            let ft_idx = (ft_val.round().max(0.0) as usize).min(filter_types.len() - 1);
-            let mut ft_idx = ft_idx;
-
+            render_band_header(ui, ctx, batch);
             let col_w = (ui.available_width() - 4.0).max(52.0);
-            egui::ComboBox::from_id_salt(format!("ft_{band_index}"))
-                .width(col_w)
-                .selected_text(filter_types[ft_idx])
-                .show_index(ui, &mut ft_idx, filter_types.len(), |idx| {
-                    filter_types[idx].to_string()
-                });
-            if ft_idx as f32 != ft_val {
-                batch.push(params.filter_type(), ft_idx as f32);
-            }
-
-            // 3. Vertical Gain Fader (top-to-bottom console strip) + compact dB DragValue
-            let mut gain_val = snapshot.get(params.gain_db()).unwrap_or(0.0);
-            let is_pass = ft_idx == 3 || ft_idx == 4;
-            ui.spacing_mut().slider_width = 68.0;
-            if is_pass {
-                ui.add_enabled(
-                    false,
-                    egui::Slider::new(&mut gain_val, -24.0..=24.0)
-                        .vertical()
-                        .show_value(false),
-                );
-                ui.add_enabled(
-                    false,
-                    egui::DragValue::new(&mut gain_val)
-                        .range(-24.0..=24.0)
-                        .speed(0.1)
-                        .fixed_decimals(1)
-                        .suffix(" dB"),
-                );
-            } else {
-                if ui
-                    .add(
-                        egui::Slider::new(&mut gain_val, -24.0..=24.0)
-                            .vertical()
-                            .show_value(false),
-                    )
-                    .on_hover_text(t.tooltip_reset_gain)
-                    .changed()
-                {
-                    batch.push(params.gain_db(), gain_val);
-                }
-                if ui
-                    .add(
-                        egui::DragValue::new(&mut gain_val)
-                            .range(-24.0..=24.0)
-                            .speed(0.1)
-                            .fixed_decimals(1)
-                            .suffix(" dB"),
-                    )
-                    .changed()
-                {
-                    batch.push(params.gain_db(), gain_val);
-                }
-            }
-
-            // 4. Stacked Frequency DragValue (20–20000 Hz)
-            let mut freq_val = snapshot.get(params.frequency_hz()).unwrap_or(1000.0);
-            let freq_speed = (freq_val * 0.015).max(1.0);
-            if ui
-                .add(
-                    egui::DragValue::new(&mut freq_val)
-                        .range(20.0..=20_000.0)
-                        .speed(freq_speed)
-                        .custom_formatter(|n, _| {
-                            if n >= 1000.0 {
-                                format!("{:.2} kHz", n / 1000.0)
-                            } else {
-                                format!("{n:.0} Hz")
-                            }
-                        }),
-                )
-                .on_hover_text(t.tooltip_center_freq)
-                .changed()
-            {
-                batch.push(params.frequency_hz(), freq_val);
-            }
-
-            // 5. Stacked Q Factor DragValue (0.1–20.0)
-            let mut q_val = snapshot.get(params.q()).unwrap_or(0.707);
-            if ui
-                .add(
-                    egui::DragValue::new(&mut q_val)
-                        .range(0.1..=20.0)
-                        .speed(0.05)
-                        .fixed_decimals(2)
-                        .prefix("Q "),
-                )
-                .on_hover_text(t.tooltip_q_factor)
-                .changed()
-            {
-                batch.push(params.q(), q_val);
-            }
-
-            // 6. Compact Slope dropdown + Stereo / Mid-Side routing button on one row
-            let slope_val = snapshot.get(params.slope()).unwrap_or(1.0);
-            let slopes = ["6 dB/o", "12 dB/o", "24 dB/o", "48 dB/o"];
-            let sl_idx = (slope_val as usize).min(slopes.len() - 1);
-            let mut sl_idx = sl_idx;
-
-            let routing_raw = snapshot
-                .get(params.routing())
-                .unwrap_or(0.0)
-                .round()
-                .clamp(0.0, 4.0) as u32;
-            let routing = equaform_common::BandRouting::from_raw(routing_raw).unwrap_or_default();
-            let (routing_fill, routing_text) = match routing {
-                equaform_common::BandRouting::Stereo => (
-                    egui::Color32::from_rgb(38, 42, 50),
-                    egui::Color32::from_rgb(175, 180, 190),
-                ),
-                equaform_common::BandRouting::Left => (
-                    egui::Color32::from_rgb(40, 85, 145),
-                    egui::Color32::from_rgb(235, 242, 255),
-                ),
-                equaform_common::BandRouting::Right => (
-                    egui::Color32::from_rgb(145, 85, 35),
-                    egui::Color32::from_rgb(255, 242, 230),
-                ),
-                equaform_common::BandRouting::Mid => (
-                    egui::Color32::from_rgb(30, 130, 150),
-                    egui::Color32::from_rgb(235, 252, 255),
-                ),
-                equaform_common::BandRouting::Side => (
-                    egui::Color32::from_rgb(140, 50, 145),
-                    egui::Color32::from_rgb(255, 235, 255),
-                ),
-            };
-
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 3.0;
-                let slope_w = (col_w - 28.0).max(46.0);
-                egui::ComboBox::from_id_salt(format!("slope_{band_index}"))
-                    .width(slope_w)
-                    .selected_text(slopes[sl_idx])
-                    .show_index(ui, &mut sl_idx, slopes.len(), |idx| slopes[idx].to_string());
-                if sl_idx as f32 != slope_val {
-                    batch.push(params.slope(), sl_idx as f32);
-                }
-
-                let routing_btn = egui::Button::new(
-                    egui::RichText::new(routing.short_label())
-                        .small()
-                        .strong()
-                        .color(routing_text),
-                )
-                .fill(routing_fill)
-                .min_size(egui::vec2(24.0, 18.0));
-                if ui
-                    .add(routing_btn)
-                    .on_hover_text(format!(
-                        "{}: {} ({})",
-                        t.tooltip_channel_routing_prefix,
-                        routing.display_name(),
-                        t.tooltip_channel_routing_hint
-                    ))
-                    .clicked()
-                {
-                    batch.push(params.routing(), routing.next().to_raw() as f32);
-                }
-            });
+            let ft_idx = render_filter_type(ui, ctx, col_w, batch);
+            render_gain_controls(ui, ctx, ft_idx == 3 || ft_idx == 4, batch);
+            render_frequency_and_q(ui, ctx, batch);
+            render_slope_and_routing(ui, ctx, col_w, batch);
         });
+    });
+}
+
+fn band_color(band_index: usize) -> egui::Color32 {
+    const PALETTE: [egui::Color32; 8] = [
+        egui::Color32::from_rgb(255, 80, 80),
+        egui::Color32::from_rgb(255, 160, 40),
+        egui::Color32::from_rgb(255, 220, 50),
+        egui::Color32::from_rgb(50, 220, 100),
+        egui::Color32::from_rgb(40, 200, 220),
+        egui::Color32::from_rgb(80, 140, 255),
+        egui::Color32::from_rgb(180, 90, 255),
+        egui::Color32::from_rgb(255, 100, 200),
+    ];
+    PALETTE[band_index % PALETTE.len()]
+}
+
+fn render_band_header(ui: &mut egui::Ui, ctx: BandRenderContext<'_>, batch: &mut GuiCommandBatch) {
+    let t = ctx.translations;
+    let band_name = t
+        .band_names
+        .get(ctx.band_index)
+        .copied()
+        .unwrap_or(t.band_fallback);
+    let mut enabled = ctx.snapshot.get(ctx.params.enabled()).unwrap_or(1.0) >= 0.5;
+    let solo = ctx.snapshot.get(ctx.params.solo()).unwrap_or(0.0) >= 0.5;
+    let header_color = if enabled {
+        band_color(ctx.band_index)
+    } else {
+        egui::Color32::from_rgb(110, 115, 125)
+    };
+
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 3.0;
+        if ui.checkbox(&mut enabled, "").changed() {
+            batch.push(ctx.params.enabled(), if enabled { 1.0 } else { 0.0 });
+        }
+        ui.label(
+            egui::RichText::new(format!("B{}", ctx.band_index + 1))
+                .strong()
+                .color(header_color),
+        );
+        ui.label(
+            egui::RichText::new(band_name)
+                .small()
+                .color(egui::Color32::from_rgb(175, 180, 190)),
+        );
+        let solo_btn =
+            egui::Button::new(egui::RichText::new("S").small().strong().color(if solo {
+                egui::Color32::from_rgb(20, 20, 24)
+            } else {
+                egui::Color32::from_rgb(175, 180, 190)
+            }))
+            .fill(if solo {
+                egui::Color32::from_rgb(245, 195, 50)
+            } else {
+                egui::Color32::from_rgb(42, 46, 54)
+            })
+            .min_size(egui::vec2(18.0, 16.0));
+        if ui
+            .add(solo_btn)
+            .on_hover_text(t.tooltip_band_solo)
+            .clicked()
+        {
+            batch.push(ctx.params.solo(), if solo { 0.0 } else { 1.0 });
+        }
+    });
+}
+
+fn render_filter_type(
+    ui: &mut egui::Ui,
+    ctx: BandRenderContext<'_>,
+    col_w: f32,
+    batch: &mut GuiCommandBatch,
+) -> usize {
+    let ft_val = ctx.snapshot.get(ctx.params.filter_type()).unwrap_or(0.0);
+    let filter_types = ctx.translations.filter_types;
+    let mut ft_idx = (ft_val.round().max(0.0) as usize).min(filter_types.len() - 1);
+
+    egui::ComboBox::from_id_salt(format!("ft_{}", ctx.band_index))
+        .width(col_w)
+        .selected_text(filter_types[ft_idx])
+        .show_index(ui, &mut ft_idx, filter_types.len(), |idx| {
+            filter_types[idx].to_string()
+        });
+    if ft_idx as f32 != ft_val {
+        batch.push(ctx.params.filter_type(), ft_idx as f32);
+    }
+    ft_idx
+}
+
+fn render_gain_controls(
+    ui: &mut egui::Ui,
+    ctx: BandRenderContext<'_>,
+    is_pass: bool,
+    batch: &mut GuiCommandBatch,
+) {
+    let mut gain_val = ctx.snapshot.get(ctx.params.gain_db()).unwrap_or(0.0);
+    ui.spacing_mut().slider_width = 68.0;
+    let slider = egui::Slider::new(&mut gain_val, -24.0..=24.0)
+        .vertical()
+        .show_value(false);
+    if is_pass {
+        ui.add_enabled(false, slider);
+        ui.add_enabled(
+            false,
+            egui::DragValue::new(&mut gain_val)
+                .range(-24.0..=24.0)
+                .speed(0.1)
+                .fixed_decimals(1)
+                .suffix(" dB"),
+        );
+        return;
+    }
+
+    if ui
+        .add(slider)
+        .on_hover_text(ctx.translations.tooltip_reset_gain)
+        .changed()
+    {
+        batch.push(ctx.params.gain_db(), gain_val);
+    }
+    if ui
+        .add(
+            egui::DragValue::new(&mut gain_val)
+                .range(-24.0..=24.0)
+                .speed(0.1)
+                .fixed_decimals(1)
+                .suffix(" dB"),
+        )
+        .changed()
+    {
+        batch.push(ctx.params.gain_db(), gain_val);
+    }
+}
+
+fn render_frequency_and_q(
+    ui: &mut egui::Ui,
+    ctx: BandRenderContext<'_>,
+    batch: &mut GuiCommandBatch,
+) {
+    let mut freq_val = ctx
+        .snapshot
+        .get(ctx.params.frequency_hz())
+        .unwrap_or(1000.0);
+    let freq_speed = (freq_val * 0.015).max(1.0);
+    if ui
+        .add(
+            egui::DragValue::new(&mut freq_val)
+                .range(20.0..=20_000.0)
+                .speed(freq_speed)
+                .custom_formatter(|n, _| {
+                    if n >= 1000.0 {
+                        format!("{:.2} kHz", n / 1000.0)
+                    } else {
+                        format!("{n:.0} Hz")
+                    }
+                }),
+        )
+        .on_hover_text(ctx.translations.tooltip_center_freq)
+        .changed()
+    {
+        batch.push(ctx.params.frequency_hz(), freq_val);
+    }
+
+    let mut q_val = ctx.snapshot.get(ctx.params.q()).unwrap_or(0.707);
+    if ui
+        .add(
+            egui::DragValue::new(&mut q_val)
+                .range(0.1..=20.0)
+                .speed(0.05)
+                .fixed_decimals(2)
+                .prefix("Q "),
+        )
+        .on_hover_text(ctx.translations.tooltip_q_factor)
+        .changed()
+    {
+        batch.push(ctx.params.q(), q_val);
+    }
+}
+
+fn routing_colors(routing: equaform_common::BandRouting) -> (egui::Color32, egui::Color32) {
+    match routing {
+        equaform_common::BandRouting::Stereo => (
+            egui::Color32::from_rgb(38, 42, 50),
+            egui::Color32::from_rgb(175, 180, 190),
+        ),
+        equaform_common::BandRouting::Left => (
+            egui::Color32::from_rgb(40, 85, 145),
+            egui::Color32::from_rgb(235, 242, 255),
+        ),
+        equaform_common::BandRouting::Right => (
+            egui::Color32::from_rgb(145, 85, 35),
+            egui::Color32::from_rgb(255, 242, 230),
+        ),
+        equaform_common::BandRouting::Mid => (
+            egui::Color32::from_rgb(30, 130, 150),
+            egui::Color32::from_rgb(235, 252, 255),
+        ),
+        equaform_common::BandRouting::Side => (
+            egui::Color32::from_rgb(140, 50, 145),
+            egui::Color32::from_rgb(255, 235, 255),
+        ),
+    }
+}
+
+fn render_slope_and_routing(
+    ui: &mut egui::Ui,
+    ctx: BandRenderContext<'_>,
+    col_w: f32,
+    batch: &mut GuiCommandBatch,
+) {
+    let slope_val = ctx.snapshot.get(ctx.params.slope()).unwrap_or(1.0);
+    let slopes = ["6 dB/o", "12 dB/o", "24 dB/o", "48 dB/o"];
+    let mut sl_idx = (slope_val as usize).min(slopes.len() - 1);
+
+    let routing_raw = ctx
+        .snapshot
+        .get(ctx.params.routing())
+        .unwrap_or(0.0)
+        .round()
+        .clamp(0.0, 4.0) as u32;
+    let routing = equaform_common::BandRouting::from_raw(routing_raw).unwrap_or_default();
+    let (routing_fill, routing_text) = routing_colors(routing);
+
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 3.0;
+        let slope_w = (col_w - 28.0).max(46.0);
+        egui::ComboBox::from_id_salt(format!("slope_{}", ctx.band_index))
+            .width(slope_w)
+            .selected_text(slopes[sl_idx])
+            .show_index(ui, &mut sl_idx, slopes.len(), |idx| slopes[idx].to_string());
+        if sl_idx as f32 != slope_val {
+            batch.push(ctx.params.slope(), sl_idx as f32);
+        }
+
+        let routing_btn = egui::Button::new(
+            egui::RichText::new(routing.short_label())
+                .small()
+                .strong()
+                .color(routing_text),
+        )
+        .fill(routing_fill)
+        .min_size(egui::vec2(24.0, 18.0));
+        if ui
+            .add(routing_btn)
+            .on_hover_text(format!(
+                "{}: {} ({})",
+                ctx.translations.tooltip_channel_routing_prefix,
+                routing.display_name(),
+                ctx.translations.tooltip_channel_routing_hint
+            ))
+            .clicked()
+        {
+            batch.push(ctx.params.routing(), routing.next().to_raw() as f32);
+        }
     });
 }

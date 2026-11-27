@@ -68,9 +68,9 @@ fn test_realtime_threaded_streaming() {
 
     for step in 0..100 {
         // Producer pushes frames with controlled drift variations:
-        // - Initial priming phase (steps 0..4): 1024 frames per step to build buffer
-        // - Step 20, 40, 60, 80: 515 frames (producer runs slightly faster than consumer)
-        // - Step 15, 35, 55, 75: 509 frames (producer runs slightly slower than consumer)
+        // - Initial priming window (iterations 0..4): 1024 frames per iteration to build buffer
+        // - Iterations 20, 40, 60, 80: 515 frames (producer runs slightly faster than consumer)
+        // - Iterations 15, 35, 55, 75: 509 frames (producer runs slightly slower than consumer)
         // - Nominal: 512 frames
         let input_frames = if step < 4 {
             1024

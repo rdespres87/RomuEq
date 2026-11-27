@@ -116,67 +116,25 @@ impl ContinuousPiDriftController {
         count: usize,
     ) {
         let available = consumer.available_read();
-
-        // Severe backlog (> 12000 frames, ~270 ms): discard excess down to TARGET_FRAMES
         if available > 12000 {
-            let excess = available.saturating_sub(Self::TARGET_FRAMES);
-            let _ = consumer.discard(excess);
+            let _ = consumer.discard(available.saturating_sub(Self::TARGET_FRAMES));
         }
-
-        // 1. Initial pre-buffering: wait until buffer reaches TARGET_FRAMES
-        if !self.is_primed {
-            self.unprimed_cycles += 1;
-            if available >= Self::TARGET_FRAMES {
-                self.is_primed = true;
-                self.smoothed_available = available as f64;
-            } else {
-                left[..count].fill(0.0);
-                right[..count].fill(0.0);
-                return;
-            }
-        }
-
-        // 2. Buffer starvation protection:
-        // If available frames are 0 or drop below a full block `count`, deliver silence for this cycle
-        // without consuming partial blocks, avoiding audible chopping and exponential decay stutter.
-        if available == 0 {
-            self.underrun_count += 1;
-            self.resampler.has_samples = false;
-            self.resampler.phase = 0.0;
-            self.leftover.clear();
-            left[..count].fill(0.0);
-            right[..count].fill(0.0);
-            return;
-        }
-        if available < count && self.leftover.len == 0 {
-            self.underrun_count += 1;
-            self.resampler.has_samples = false;
-            self.resampler.phase = 0.0;
-            left[..count].fill(0.0);
-            right[..count].fill(0.0);
+        if !self.ensure_primed_and_available(available, left, right, count) {
             return;
         }
 
-        // 3. Smooth EMA tracking of buffer level
         self.smoothed_available = 0.98 * self.smoothed_available + 0.02 * (available as f64);
-
-        // 4. Smooth PI / proportional step calculation with generous ±512 frames deadband
         let error = self.smoothed_available - (Self::TARGET_FRAMES as f64);
         let in_deadband = error.abs() < 512.0;
         let is_1to1 = (self.rate_ratio - 1.0).abs() < 1e-6;
 
-        // Bit-exact fast-path: direct slice transfer without fractional resampling interpolation
-        if is_1to1 && in_deadband && self.leftover.len == 0 && available >= count {
-            let popped = consumer.pop_slice(&mut left[..count], &mut right[..count]);
-            if popped == count {
-                self.resampler.prev_l = left[count - 1];
-                self.resampler.prev_r = right[count - 1];
-                self.resampler.curr_l = self.resampler.prev_l;
-                self.resampler.curr_r = self.resampler.prev_r;
-                self.resampler.has_samples = true;
-                self.resampler.phase = 0.0;
-                return;
-            }
+        if is_1to1
+            && in_deadband
+            && self.leftover.len == 0
+            && available >= count
+            && self.try_fast_path_pop(consumer, left, right, count)
+        {
+            return;
         }
 
         let step = if in_deadband && is_1to1 {
@@ -186,19 +144,78 @@ impl ContinuousPiDriftController {
             self.rate_ratio * (1.0 + drift_ppm)
         };
 
-        // 5. Determine input frames needed (with +1 safety margin when fractional to guard against IEEE-754 repeated addition rounding)
+        let popped = self.populate_scratch(consumer, count, step);
+        let Some(scratch_idx) = self.seed_resampler(popped) else {
+            left[..count].fill(0.0);
+            right[..count].fill(0.0);
+            return;
+        };
+        let consumed = self.interpolate_block(left, right, count, step, scratch_idx, popped);
+        self.save_leftover(consumed, popped);
+    }
+
+    fn ensure_primed_and_available(
+        &mut self,
+        available: usize,
+        left: &mut [f32],
+        right: &mut [f32],
+        count: usize,
+    ) -> bool {
+        if !self.is_primed {
+            self.unprimed_cycles += 1;
+            if available >= Self::TARGET_FRAMES {
+                self.is_primed = true;
+                self.smoothed_available = available as f64;
+            } else {
+                left[..count].fill(0.0);
+                right[..count].fill(0.0);
+                return false;
+            }
+        }
+        if available == 0 || (available < count && self.leftover.len == 0) {
+            self.underrun_count += 1;
+            self.resampler.has_samples = false;
+            self.resampler.phase = 0.0;
+            if available == 0 {
+                self.leftover.clear();
+            }
+            left[..count].fill(0.0);
+            right[..count].fill(0.0);
+            return false;
+        }
+        true
+    }
+
+    fn try_fast_path_pop(
+        &mut self,
+        consumer: &AudioRingConsumer,
+        left: &mut [f32],
+        right: &mut [f32],
+        count: usize,
+    ) -> bool {
+        if consumer.pop_slice(&mut left[..count], &mut right[..count]) != count {
+            return false;
+        }
+        self.resampler.prev_l = left[count - 1];
+        self.resampler.prev_r = right[count - 1];
+        self.resampler.curr_l = self.resampler.prev_l;
+        self.resampler.curr_r = self.resampler.prev_r;
+        self.resampler.has_samples = true;
+        self.resampler.phase = 0.0;
+        true
+    }
+
+    fn populate_scratch(&mut self, consumer: &AudioRingConsumer, count: usize, step: f64) -> usize {
         let initial_need = if self.resampler.has_samples { 0 } else { 2 };
         let extra_margin = usize::from((step - 1.0).abs() > 1e-12 || self.resampler.phase > 0.0);
         let step_advances =
             (self.resampler.phase + (count as f64) * step).floor() as usize + extra_margin;
         let total_needed = (initial_need + step_advances).min(MAX_SCRATCH_FRAMES);
 
-        // Copy any unconsumed leftover frames from previous block to beginning of scratch
         for k in 0..self.leftover.len {
             self.scratch_l[k] = self.leftover.left[k];
             self.scratch_r[k] = self.leftover.right[k];
         }
-
         let from_consumer = total_needed.saturating_sub(self.leftover.len);
         let newly_popped = if from_consumer > 0 {
             consumer.pop_slice(
@@ -208,34 +225,43 @@ impl ContinuousPiDriftController {
         } else {
             0
         };
-
         let popped = self.leftover.len + newly_popped;
         self.leftover.clear();
+        popped
+    }
 
-        let mut scratch_idx = 0;
-        if !self.resampler.has_samples {
-            if popped >= 2 {
-                self.resampler.prev_l = self.scratch_l[0];
-                self.resampler.prev_r = self.scratch_r[0];
-                self.resampler.curr_l = self.scratch_l[1];
-                self.resampler.curr_r = self.scratch_r[1];
-                scratch_idx = 2;
-                self.resampler.has_samples = true;
-            } else if popped == 1 {
-                self.resampler.prev_l = self.scratch_l[0];
-                self.resampler.prev_r = self.scratch_r[0];
-                self.resampler.curr_l = self.resampler.prev_l;
-                self.resampler.curr_r = self.resampler.prev_r;
-                scratch_idx = 1;
-                self.resampler.has_samples = true;
-            } else {
-                left[..count].fill(0.0);
-                right[..count].fill(0.0);
-                return;
-            }
+    fn seed_resampler(&mut self, popped: usize) -> Option<usize> {
+        if self.resampler.has_samples {
+            return Some(0);
         }
+        if popped >= 2 {
+            self.resampler.prev_l = self.scratch_l[0];
+            self.resampler.prev_r = self.scratch_r[0];
+            self.resampler.curr_l = self.scratch_l[1];
+            self.resampler.curr_r = self.scratch_r[1];
+            self.resampler.has_samples = true;
+            Some(2)
+        } else if popped == 1 {
+            self.resampler.prev_l = self.scratch_l[0];
+            self.resampler.prev_r = self.scratch_r[0];
+            self.resampler.curr_l = self.resampler.prev_l;
+            self.resampler.curr_r = self.resampler.prev_r;
+            self.resampler.has_samples = true;
+            Some(1)
+        } else {
+            None
+        }
+    }
 
-        // 6. Phase-continuous sample-by-sample linear interpolation
+    fn interpolate_block(
+        &mut self,
+        left: &mut [f32],
+        right: &mut [f32],
+        count: usize,
+        step: f64,
+        mut scratch_idx: usize,
+        popped: usize,
+    ) -> usize {
         for i in 0..count {
             let frac = self.resampler.phase as f32;
             left[i] =
@@ -252,15 +278,16 @@ impl ContinuousPiDriftController {
                     self.resampler.curr_r = self.scratch_r[scratch_idx];
                     scratch_idx += 1;
                 } else {
-                    // Starvation underrun: soft exponential decay to silence without clicking
                     self.underrun_count += 1;
                     self.resampler.curr_l *= 0.98;
                     self.resampler.curr_r *= 0.98;
                 }
             }
         }
+        scratch_idx
+    }
 
-        // 7. Save any unconsumed frames for the next block
+    fn save_leftover(&mut self, scratch_idx: usize, popped: usize) {
         if scratch_idx < popped {
             let rem = (popped - scratch_idx).min(16);
             for k in 0..rem {

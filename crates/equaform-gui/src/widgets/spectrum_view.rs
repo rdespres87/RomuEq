@@ -37,90 +37,19 @@ pub fn render_spectrum_analyzer_localized(
     num_bars: usize,
     t: &'static Translations,
 ) {
-    let nyquist = sample_rate * 0.5;
-
-    // Build frequency bins (logarithmically spaced) for x-axis mapping.
     let log_min = 16.0_f64.log10();
-    let log_max = (nyquist as f64).min(24000.0).log10();
-
-    let mut bars: Vec<[f64; 2]> = Vec::with_capacity(num_bars);
-
-    if analysis.spectrum_data.is_empty() {
-        // No spectrum data yet — draw a flat floor at -90 dB.
-        for i in 0..num_bars {
-            let t = if num_bars == 1 {
-                0.5_f64
-            } else {
-                i as f64 / (num_bars - 1) as f64
-            };
-            let log_freq = log_min + t * (log_max - log_min);
-            bars.push([log_freq, -90.0]);
-        }
-    } else {
-        // Interpolate the FFT spectrum data onto logarithmic bins.
-        let spectrum = &analysis.spectrum_data;
-
-        for i in 0..num_bars {
-            let t = if num_bars == 1 {
-                0.5_f64
-            } else {
-                i as f64 / (num_bars - 1) as f64
-            };
-            let target_freq = 10.0_f64.powf(log_min + t * (log_max - log_min));
-
-            // Find the two nearest spectrum data points for interpolation.
-            let mut lower_idx = 0usize;
-            let mut upper_idx = spectrum.len().saturating_sub(1);
-
-            // Binary search for the insertion point.
-            if spectrum.len() > 1 {
-                let mut lo = 0usize;
-                let mut hi = spectrum.len() - 1;
-                while lo < hi {
-                    let mid = (lo + hi) / 2;
-                    if spectrum[mid][0] < target_freq {
-                        lo = mid + 1;
-                    } else {
-                        hi = mid;
-                    }
-                }
-                if lo == 0 {
-                    lower_idx = 0;
-                    upper_idx = std::cmp::min(1, spectrum.len() - 1);
-                } else if lo >= spectrum.len() {
-                    lower_idx = spectrum.len() - 1;
-                    upper_idx = spectrum.len() - 1;
-                } else {
-                    lower_idx = lo.saturating_sub(1);
-                    upper_idx = lo;
-                }
-            }
-
-            let mag_db = if spectrum[lower_idx][0] == spectrum[upper_idx][0] {
-                spectrum[lower_idx][1]
-            } else {
-                // Linear interpolation between the two nearest points.
-                let t_interp = (target_freq - spectrum[lower_idx][0])
-                    / (spectrum[upper_idx][0] - spectrum[lower_idx][0]);
-                let lo_val = spectrum[lower_idx][1];
-                let hi_val = spectrum[upper_idx][1];
-                lo_val + t_interp * (hi_val - lo_val)
-            };
-
-            let clamped_db = mag_db.clamp(-90.0, 0.0);
-            bars.push([target_freq.log10(), clamped_db]);
-        }
-    }
+    let log_max = (f64::from(sample_rate * 0.5)).min(24_000.0).log10();
+    let bars = build_spectrum_bars(&analysis.spectrum_data, num_bars, log_min, log_max);
 
     let bar_chart = Line::new(bars)
-        .color(egui::Color32::from_rgb(0, 230, 180)) // Studio cyan/emerald
+        .color(egui::Color32::from_rgb(0, 230, 180))
         .stroke(egui::Stroke::new(1.8, egui::Color32::from_rgb(0, 230, 180)))
         .fill(-90.0)
         .name(t.spectrum_series);
 
     let freq_short = t.tooltip_freq_short;
     let level_short = t.tooltip_level_short;
-    let plot = Plot::new("spectrum")
+    let _ = Plot::new("spectrum")
         .include_x(log_min)
         .include_x(log_max)
         .include_y(-90.0)
@@ -148,6 +77,52 @@ pub fn render_spectrum_analyzer_localized(
             ));
             plot_ui.line(bar_chart);
         });
+}
 
-    let _ = plot;
+fn build_spectrum_bars(
+    spectrum: &[[f64; 2]],
+    num_bars: usize,
+    log_min: f64,
+    log_max: f64,
+) -> Vec<[f64; 2]> {
+    let mut bars = Vec::with_capacity(num_bars);
+    for i in 0..num_bars {
+        let ratio = if num_bars == 1 {
+            0.5_f64
+        } else {
+            i as f64 / (num_bars - 1) as f64
+        };
+        let log_freq = log_min + ratio * (log_max - log_min);
+        let mag_db = if spectrum.is_empty() {
+            -90.0
+        } else {
+            interpolate_spectrum_db(spectrum, 10.0_f64.powf(log_freq)).clamp(-90.0, 0.0)
+        };
+        bars.push([log_freq, mag_db]);
+    }
+    bars
+}
+
+fn interpolate_spectrum_db(spectrum: &[[f64; 2]], target_freq: f64) -> f64 {
+    let (lower_idx, upper_idx) = if spectrum.len() > 1 {
+        let idx = spectrum.partition_point(|pt| pt[0] < target_freq);
+        if idx == 0 {
+            (0, 1)
+        } else if idx >= spectrum.len() {
+            (spectrum.len() - 1, spectrum.len() - 1)
+        } else {
+            (idx - 1, idx)
+        }
+    } else {
+        (0, 0)
+    };
+
+    let lo = spectrum[lower_idx];
+    let hi = spectrum[upper_idx];
+    if lo[0] == hi[0] {
+        lo[1]
+    } else {
+        let frac = (target_freq - lo[0]) / (hi[0] - lo[0]);
+        lo[1] + frac * (hi[1] - lo[1])
+    }
 }

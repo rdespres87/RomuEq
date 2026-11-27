@@ -91,6 +91,25 @@ pub struct WorkspaceUiContext<'a> {
     pub status_message: Option<&'a str>,
 }
 
+/// Mutable outputs accumulated while rendering a single workspace frame.
+struct FrameOutput {
+    batch: GuiCommandBatch,
+    actions: Vec<WorkspaceAction>,
+    undo_requested: bool,
+    redo_requested: bool,
+}
+
+impl FrameOutput {
+    fn new() -> Self {
+        Self {
+            batch: GuiCommandBatch::new(),
+            actions: Vec::new(),
+            undo_requested: false,
+            redo_requested: false,
+        }
+    }
+}
+
 /// Renders the complete Equaform workspace UI.
 ///
 /// Returns a tuple of:
@@ -101,38 +120,51 @@ pub fn render_workspace(
     state: &mut WorkspaceUiState,
     ctx: &WorkspaceUiContext<'_>,
 ) -> (GuiCommandBatch, Vec<WorkspaceAction>) {
-    let env = ctx.env;
-    let band_params = ctx.band_params;
-    let sample_rate = ctx.sample_rate;
-    let snapshot = ctx.snapshot;
-    let analysis = ctx.analysis;
-    let preset_manager = ctx.preset_manager;
-    let current_preset = ctx.current_preset;
-    let status_message = ctx.status_message;
-
-    let mut batch = GuiCommandBatch::new();
-    let mut actions = Vec::new();
+    let mut out = FrameOutput::new();
     let t = Translations::for_language(state.language);
-    let pre_frame_snapshot = capture_undo_snapshot(snapshot);
+    let pre_frame_snapshot = capture_undo_snapshot(ctx.snapshot);
 
-    let mut undo_requested = false;
-    let mut redo_requested = false;
-    if !ui.ctx().wants_keyboard_input() {
-        ui.input_mut(|input| {
-            let cmd_shift = egui::Modifiers::COMMAND | egui::Modifiers::SHIFT;
-            if input.consume_key(cmd_shift, egui::Key::Z)
-                || input.consume_key(egui::Modifiers::COMMAND, egui::Key::Y)
-            {
-                redo_requested = true;
-            } else if input.consume_key(egui::Modifiers::COMMAND, egui::Key::Z) {
-                undo_requested = true;
-            }
-        });
-    }
-
+    consume_undo_shortcuts(ui, &mut out);
     ui.spacing_mut().item_spacing.y = 4.0;
 
-    // 1. Top toolbar: Brand + Bypass + Output/Host info + Status + Language
+    render_top_toolbar(ui, state, ctx, t, &mut out);
+    ui.separator();
+
+    render_plots_and_vu(ui, state, ctx, t, &mut out.batch);
+    ui.separator();
+
+    render_master_and_presets_bar(ui, state, ctx, t, &mut out);
+    ui.separator();
+
+    render_band_strips(ui, ctx.snapshot, t, &mut out.batch);
+
+    finalize_undo_frame(ui, state, ctx.snapshot, pre_frame_snapshot, &mut out);
+    (out.batch, out.actions)
+}
+
+fn consume_undo_shortcuts(ui: &mut egui::Ui, out: &mut FrameOutput) {
+    if ui.ctx().wants_keyboard_input() {
+        return;
+    }
+    ui.input_mut(|input| {
+        let cmd_shift = egui::Modifiers::COMMAND | egui::Modifiers::SHIFT;
+        if input.consume_key(cmd_shift, egui::Key::Z)
+            || input.consume_key(egui::Modifiers::COMMAND, egui::Key::Y)
+        {
+            out.redo_requested = true;
+        } else if input.consume_key(egui::Modifiers::COMMAND, egui::Key::Z) {
+            out.undo_requested = true;
+        }
+    });
+}
+
+fn render_top_toolbar(
+    ui: &mut egui::Ui,
+    state: &mut WorkspaceUiState,
+    ctx: &WorkspaceUiContext<'_>,
+    t: &'static Translations,
+    out: &mut FrameOutput,
+) {
     ui.horizontal(|ui| {
         ui.label(
             egui::RichText::new("Equaform-8")
@@ -140,180 +172,16 @@ pub fn render_workspace(
                 .size(15.0)
                 .color(egui::Color32::from_rgb(0, 205, 255)),
         );
-
         ui.separator();
-
-        // Sleek unified Bypass button (LED style)
-        let is_bypassed = snapshot.get(ParamId(1)).map(|v| v >= 0.5).unwrap_or(false);
-        let (bypass_text, bypass_color) = if is_bypassed {
-            (t.bypass_on, egui::Color32::from_rgb(175, 180, 190))
-        } else {
-            (t.bypass_off, egui::Color32::from_rgb(70, 235, 130))
-        };
-
-        if ui
-            .add(egui::Button::new(
-                egui::RichText::new(bypass_text)
-                    .strong()
-                    .color(bypass_color),
-            ))
-            .on_hover_text(if is_bypassed {
-                t.tooltip_enable_eq
-            } else {
-                t.tooltip_bypass_eq
-            })
-            .clicked()
-        {
-            batch.push(ParamId(1), if is_bypassed { 0.0 } else { 1.0 });
-        }
-
+        render_bypass_button(ui, ctx.snapshot, t, &mut out.batch);
         ui.separator();
-
-        // Compact A/B compare toggle + copy active to inactive slot
-        state.ab_compare.ensure_initialized(snapshot);
-        let active_slot = state.ab_compare.active();
-        let a_active = active_slot == AbSlot::A;
-        let b_active = active_slot == AbSlot::B;
-
-        let a_btn = egui::Button::new(egui::RichText::new("A").strong().color(if a_active {
-            egui::Color32::from_rgb(16, 20, 26)
-        } else {
-            egui::Color32::from_rgb(175, 180, 190)
-        }))
-        .fill(if a_active {
-            egui::Color32::from_rgb(0, 205, 255)
-        } else {
-            egui::Color32::from_rgb(42, 46, 54)
-        })
-        .min_size(egui::vec2(22.0, 18.0));
-        if ui
-            .add(a_btn)
-            .on_hover_text(t.tooltip_compare_slot_a)
-            .clicked()
-        {
-            state.ab_compare.switch_to(AbSlot::A, snapshot, &mut batch);
-        }
-
-        let b_btn = egui::Button::new(egui::RichText::new("B").strong().color(if b_active {
-            egui::Color32::from_rgb(16, 20, 26)
-        } else {
-            egui::Color32::from_rgb(175, 180, 190)
-        }))
-        .fill(if b_active {
-            egui::Color32::from_rgb(255, 165, 50)
-        } else {
-            egui::Color32::from_rgb(42, 46, 54)
-        })
-        .min_size(egui::vec2(22.0, 18.0));
-        if ui
-            .add(b_btn)
-            .on_hover_text(t.tooltip_compare_slot_b)
-            .clicked()
-        {
-            state.ab_compare.switch_to(AbSlot::B, snapshot, &mut batch);
-        }
-
-        if ui
-            .add(
-                egui::Button::new(
-                    egui::RichText::new(active_slot.copy_label())
-                        .small()
-                        .color(egui::Color32::from_rgb(195, 200, 210)),
-                )
-                .min_size(egui::vec2(34.0, 18.0)),
-            )
-            .on_hover_text(format!(
-                "{} ({})",
-                t.tooltip_copy_ab_settings,
-                active_slot.copy_label()
-            ))
-            .clicked()
-        {
-            state.ab_compare.copy_active_to_other(snapshot);
-        }
-
+        render_ab_compare_controls(ui, state, ctx.snapshot, t, &mut out.batch);
         ui.separator();
-
-        // Compact Undo / Redo buttons (synced with Cmd/Ctrl+Z and Cmd/Ctrl+Shift+Z)
-        if ui
-            .add_enabled(
-                state.undo.can_undo(),
-                egui::Button::new(egui::RichText::new("<-").strong())
-                    .min_size(egui::vec2(26.0, 18.0)),
-            )
-            .on_hover_text(t.tooltip_undo)
-            .clicked()
-        {
-            undo_requested = true;
-        }
-        if ui
-            .add_enabled(
-                state.undo.can_redo(),
-                egui::Button::new(egui::RichText::new("->").strong())
-                    .min_size(egui::vec2(26.0, 18.0)),
-            )
-            .on_hover_text(t.tooltip_redo)
-            .clicked()
-        {
-            redo_requested = true;
-        }
-
+        render_undo_redo_buttons(ui, state, t, out);
         ui.separator();
+        render_host_controls(ui, ctx.env, t, &mut out.actions);
 
-        match env {
-            HostEnvironment::Standalone {
-                audio_active,
-                current_output,
-                available_outputs,
-                ..
-            } => {
-                let mute_label = if *audio_active { t.mute } else { t.unmute };
-                if ui.button(mute_label).clicked() {
-                    actions.push(WorkspaceAction::TogglePlayStop);
-                }
-
-                ui.separator();
-
-                let mut chosen_out = current_output.clone();
-                ui.label(t.output_label);
-                egui::ComboBox::from_id_salt("output_device_select")
-                    .selected_text(current_output)
-                    .show_ui(ui, |ui| {
-                        for dev in available_outputs {
-                            ui.selectable_value(&mut chosen_out, dev.clone(), dev.as_str());
-                        }
-                    });
-
-                if chosen_out != *current_output {
-                    actions.push(WorkspaceAction::SelectOutputDevice(chosen_out));
-                }
-
-                if ui
-                    .button("🔄")
-                    .on_hover_text(t.tooltip_refresh_devices)
-                    .clicked()
-                {
-                    actions.push(WorkspaceAction::RefreshDevices);
-                }
-            }
-            HostEnvironment::Plugin {
-                host_description,
-                sample_rate: host_sr,
-                ..
-            } => {
-                ui.label(
-                    egui::RichText::new(format!(
-                        "🎛 {host_description} • {:.1} kHz • {}",
-                        host_sr / 1000.0,
-                        t.stereo_label
-                    ))
-                    .small()
-                    .color(egui::Color32::from_rgb(170, 180, 195)),
-                );
-            }
-        }
-
-        if let Some(status) = status_message {
+        if let Some(status) = ctx.status_message {
             ui.separator();
             ui.label(
                 egui::RichText::new(status)
@@ -322,32 +190,221 @@ pub fn render_workspace(
             );
         }
 
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let mut chosen_lang = state.language;
-            egui::ComboBox::from_id_salt("language_select")
-                .width(52.0)
-                .selected_text(state.language.short_code())
-                .show_ui(ui, |ui| {
-                    for lang in Language::ALL {
-                        ui.selectable_value(&mut chosen_lang, lang, lang.native_name());
-                    }
-                })
-                .response
-                .on_hover_text(t.tooltip_language);
-
-            if chosen_lang != state.language {
-                state.language = chosen_lang;
-                actions.push(WorkspaceAction::SetLanguage(chosen_lang));
-            }
-        });
+        render_language_picker(ui, state, t, &mut out.actions);
     });
+}
 
-    ui.separator();
+fn render_bypass_button(
+    ui: &mut egui::Ui,
+    snapshot: &ParamSnapshot,
+    t: &'static Translations,
+    batch: &mut GuiCommandBatch,
+) {
+    let is_bypassed = snapshot.get(ParamId(1)).map(|v| v >= 0.5).unwrap_or(false);
+    let (bypass_text, bypass_color) = if is_bypassed {
+        (t.bypass_on, egui::Color32::from_rgb(175, 180, 190))
+    } else {
+        (t.bypass_off, egui::Color32::from_rgb(70, 235, 130))
+    };
 
-    // 2. Central section: Two side-by-side plots + Vertical stereo VU-meter on the right
-    let (peak_l, peak_r) = match env {
-        HostEnvironment::Standalone { peak_levels_db, .. } => *peak_levels_db,
-        HostEnvironment::Plugin { peak_levels_db, .. } => *peak_levels_db,
+    if ui
+        .add(egui::Button::new(
+            egui::RichText::new(bypass_text)
+                .strong()
+                .color(bypass_color),
+        ))
+        .on_hover_text(if is_bypassed {
+            t.tooltip_enable_eq
+        } else {
+            t.tooltip_bypass_eq
+        })
+        .clicked()
+    {
+        batch.push(ParamId(1), if is_bypassed { 0.0 } else { 1.0 });
+    }
+}
+
+fn render_ab_compare_controls(
+    ui: &mut egui::Ui,
+    state: &mut WorkspaceUiState,
+    snapshot: &ParamSnapshot,
+    t: &'static Translations,
+    batch: &mut GuiCommandBatch,
+) {
+    state.ab_compare.ensure_initialized(snapshot);
+    let active_slot = state.ab_compare.active();
+    let inactive_fg = egui::Color32::from_rgb(175, 180, 190);
+    let active_fg = egui::Color32::from_rgb(16, 20, 26);
+    let inactive_bg = egui::Color32::from_rgb(42, 46, 54);
+
+    let slots = [
+        (
+            AbSlot::A,
+            "A",
+            egui::Color32::from_rgb(0, 205, 255),
+            t.tooltip_compare_slot_a,
+        ),
+        (
+            AbSlot::B,
+            "B",
+            egui::Color32::from_rgb(255, 165, 50),
+            t.tooltip_compare_slot_b,
+        ),
+    ];
+    for (slot, label, active_bg, tooltip) in slots {
+        let is_active = active_slot == slot;
+        let btn = egui::Button::new(egui::RichText::new(label).strong().color(if is_active {
+            active_fg
+        } else {
+            inactive_fg
+        }))
+        .fill(if is_active { active_bg } else { inactive_bg })
+        .min_size(egui::vec2(22.0, 18.0));
+        if ui.add(btn).on_hover_text(tooltip).clicked() {
+            state.ab_compare.switch_to(slot, snapshot, batch);
+        }
+    }
+
+    if ui
+        .add(
+            egui::Button::new(
+                egui::RichText::new(active_slot.copy_label())
+                    .small()
+                    .color(egui::Color32::from_rgb(195, 200, 210)),
+            )
+            .min_size(egui::vec2(34.0, 18.0)),
+        )
+        .on_hover_text(format!(
+            "{} ({})",
+            t.tooltip_copy_ab_settings,
+            active_slot.copy_label()
+        ))
+        .clicked()
+    {
+        state.ab_compare.copy_active_to_other(snapshot);
+    }
+}
+
+fn render_undo_redo_buttons(
+    ui: &mut egui::Ui,
+    state: &WorkspaceUiState,
+    t: &'static Translations,
+    out: &mut FrameOutput,
+) {
+    if ui
+        .add_enabled(
+            state.undo.can_undo(),
+            egui::Button::new(egui::RichText::new("<-").strong()).min_size(egui::vec2(26.0, 18.0)),
+        )
+        .on_hover_text(t.tooltip_undo)
+        .clicked()
+    {
+        out.undo_requested = true;
+    }
+    if ui
+        .add_enabled(
+            state.undo.can_redo(),
+            egui::Button::new(egui::RichText::new("->").strong()).min_size(egui::vec2(26.0, 18.0)),
+        )
+        .on_hover_text(t.tooltip_redo)
+        .clicked()
+    {
+        out.redo_requested = true;
+    }
+}
+
+fn render_host_controls(
+    ui: &mut egui::Ui,
+    env: &HostEnvironment,
+    t: &'static Translations,
+    actions: &mut Vec<WorkspaceAction>,
+) {
+    match env {
+        HostEnvironment::Standalone {
+            audio_active,
+            current_output,
+            available_outputs,
+            ..
+        } => {
+            let mute_label = if *audio_active { t.mute } else { t.unmute };
+            if ui.button(mute_label).clicked() {
+                actions.push(WorkspaceAction::TogglePlayStop);
+            }
+            ui.separator();
+            ui.label(t.output_label);
+            egui::ComboBox::from_id_salt("output_device_select")
+                .selected_text(current_output.as_str())
+                .show_ui(ui, |ui| {
+                    for dev in available_outputs {
+                        let is_selected = dev == current_output;
+                        if ui.selectable_label(is_selected, dev.as_str()).clicked() && !is_selected
+                        {
+                            actions.push(WorkspaceAction::SelectOutputDevice(dev.clone()));
+                        }
+                    }
+                });
+            if ui
+                .button("🔄")
+                .on_hover_text(t.tooltip_refresh_devices)
+                .clicked()
+            {
+                actions.push(WorkspaceAction::RefreshDevices);
+            }
+        }
+        HostEnvironment::Plugin {
+            host_description,
+            sample_rate: host_sr,
+            ..
+        } => {
+            ui.label(
+                egui::RichText::new(format!(
+                    "🎛 {host_description} • {:.1} kHz • {}",
+                    host_sr / 1000.0,
+                    t.stereo_label
+                ))
+                .small()
+                .color(egui::Color32::from_rgb(170, 180, 195)),
+            );
+        }
+    }
+}
+
+fn render_language_picker(
+    ui: &mut egui::Ui,
+    state: &mut WorkspaceUiState,
+    t: &'static Translations,
+    actions: &mut Vec<WorkspaceAction>,
+) {
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        let mut chosen_lang = state.language;
+        egui::ComboBox::from_id_salt("language_select")
+            .width(52.0)
+            .selected_text(state.language.short_code())
+            .show_ui(ui, |ui| {
+                for lang in Language::ALL {
+                    ui.selectable_value(&mut chosen_lang, lang, lang.native_name());
+                }
+            })
+            .response
+            .on_hover_text(t.tooltip_language);
+
+        if chosen_lang != state.language {
+            state.language = chosen_lang;
+            actions.push(WorkspaceAction::SetLanguage(chosen_lang));
+        }
+    });
+}
+
+fn render_plots_and_vu(
+    ui: &mut egui::Ui,
+    state: &mut WorkspaceUiState,
+    ctx: &WorkspaceUiContext<'_>,
+    t: &'static Translations,
+    batch: &mut GuiCommandBatch,
+) {
+    let (peak_l, peak_r) = match ctx.env {
+        HostEnvironment::Standalone { peak_levels_db, .. }
+        | HostEnvironment::Plugin { peak_levels_db, .. } => *peak_levels_db,
     };
 
     ui.horizontal(|ui| {
@@ -371,103 +428,132 @@ pub fn render_workspace(
                     render_interactive_frequency_response_plot(
                         &mut cols[0],
                         PlotContext {
-                            bands: band_params,
-                            sample_rate,
+                            bands: ctx.band_params,
+                            sample_rate: ctx.sample_rate,
                             width: 512,
                             translations: t,
                         },
                         &mut state.curve_cache,
                         &mut state.dragged_band,
-                        &mut batch,
+                        batch,
                     );
 
                     cols[1].horizontal(|ui| {
                         ui.label(egui::RichText::new(t.spectrum_title).strong());
                     });
-                    render_spectrum_analyzer_localized(&mut cols[1], analysis, sample_rate, 128, t);
+                    render_spectrum_analyzer_localized(
+                        &mut cols[1],
+                        ctx.analysis,
+                        ctx.sample_rate,
+                        128,
+                        t,
+                    );
                 });
             },
         );
-
         ui.separator();
-
         render_vertical_stereo_vu_meter(ui, peak_l, peak_r, 180.0);
     });
+}
 
-    ui.separator();
-
-    // 3. Unified Master & Preset bar on a single compact row
+fn render_master_and_presets_bar(
+    ui: &mut egui::Ui,
+    state: &mut WorkspaceUiState,
+    ctx: &WorkspaceUiContext<'_>,
+    t: &'static Translations,
+    out: &mut FrameOutput,
+) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
-        render_master_section_with_rate(ui, snapshot, sample_rate, t, &mut batch);
-
+        render_master_section_with_rate(ui, ctx.snapshot, ctx.sample_rate, t, &mut out.batch);
         ui.separator();
 
         ui.label(egui::RichText::new(t.preset_label).strong());
         let (user_presets, factory_presets) =
-            partition_and_sort_presets(preset_manager.iter().map(|p| p.name.as_str()));
-        let selected_text = if current_preset.is_empty() {
-            t.select_preset.to_string()
+            partition_and_sort_presets(ctx.preset_manager.iter().map(|p| p.name.as_str()));
+        let selected_text = if ctx.current_preset.is_empty() {
+            t.select_preset
         } else {
-            current_preset.to_string()
+            ctx.current_preset
         };
 
-        let mut chosen_preset = current_preset.to_string();
         egui::ComboBox::new("preset_select", "")
             .width(145.0)
             .selected_text(selected_text)
             .show_ui(ui, |ui| {
-                for name in &user_presets {
-                    ui.selectable_value(&mut chosen_preset, name.clone(), name.as_str());
-                }
+                render_preset_list(ui, &user_presets, ctx.current_preset, &mut out.actions);
                 if !user_presets.is_empty() && !factory_presets.is_empty() {
                     ui.separator();
                 }
-                for name in &factory_presets {
-                    ui.selectable_value(&mut chosen_preset, name.clone(), name.as_str());
-                }
+                render_preset_list(ui, &factory_presets, ctx.current_preset, &mut out.actions);
             });
 
-        if chosen_preset != current_preset && !chosen_preset.is_empty() {
-            actions.push(WorkspaceAction::ApplyPreset(chosen_preset));
-        }
-
-        ui.add(
-            egui::TextEdit::singleline(&mut state.preset_name_input)
-                .desired_width(100.0)
-                .hint_text(t.preset_name_hint),
-        );
-
-        if ui.button(t.save_button).clicked() {
-            let name = if !state.preset_name_input.trim().is_empty() {
-                state.preset_name_input.trim().to_string()
-            } else if !current_preset.trim().is_empty() {
-                current_preset.trim().to_string()
-            } else {
-                preset_manager.next_auto_name()
-            };
-            actions.push(WorkspaceAction::SavePreset(name));
-            state.preset_name_input.clear();
-        }
-
-        let is_factory = is_factory_preset(current_preset);
-        let can_delete = !current_preset.is_empty() && !is_factory;
-        if ui
-            .add_enabled(can_delete, egui::Button::new(t.delete_button))
-            .on_hover_text(if is_factory {
-                t.tooltip_factory_preset_locked
-            } else {
-                t.tooltip_delete_preset
-            })
-            .clicked()
-        {
-            actions.push(WorkspaceAction::DeletePreset(current_preset.to_string()));
-        }
+        render_preset_save_delete(ui, state, ctx, t, &mut out.actions);
     });
+}
 
-    ui.separator();
+fn render_preset_list(
+    ui: &mut egui::Ui,
+    presets: &[String],
+    current_preset: &str,
+    actions: &mut Vec<WorkspaceAction>,
+) {
+    for name in presets {
+        let is_selected = name.as_str() == current_preset;
+        if ui.selectable_label(is_selected, name.as_str()).clicked() && !is_selected {
+            actions.push(WorkspaceAction::ApplyPreset(name.clone()));
+        }
+    }
+}
 
-    // 4. 8 equal-width columns Channel Strip grid
+fn render_preset_save_delete(
+    ui: &mut egui::Ui,
+    state: &mut WorkspaceUiState,
+    ctx: &WorkspaceUiContext<'_>,
+    t: &'static Translations,
+    actions: &mut Vec<WorkspaceAction>,
+) {
+    ui.add(
+        egui::TextEdit::singleline(&mut state.preset_name_input)
+            .desired_width(100.0)
+            .hint_text(t.preset_name_hint),
+    );
+
+    if ui.button(t.save_button).clicked() {
+        let name = if !state.preset_name_input.trim().is_empty() {
+            state.preset_name_input.trim().to_string()
+        } else if !ctx.current_preset.trim().is_empty() {
+            ctx.current_preset.trim().to_string()
+        } else {
+            ctx.preset_manager.next_auto_name()
+        };
+        actions.push(WorkspaceAction::SavePreset(name));
+        state.preset_name_input.clear();
+    }
+
+    let is_factory = is_factory_preset(ctx.current_preset);
+    let can_delete = !ctx.current_preset.is_empty() && !is_factory;
+    if ui
+        .add_enabled(can_delete, egui::Button::new(t.delete_button))
+        .on_hover_text(if is_factory {
+            t.tooltip_factory_preset_locked
+        } else {
+            t.tooltip_delete_preset
+        })
+        .clicked()
+    {
+        actions.push(WorkspaceAction::DeletePreset(
+            ctx.current_preset.to_string(),
+        ));
+    }
+}
+
+fn render_band_strips(
+    ui: &mut egui::Ui,
+    snapshot: &ParamSnapshot,
+    t: &'static Translations,
+    batch: &mut GuiCommandBatch,
+) {
     ui.columns(8, |cols| {
         let band_controls = BandControls::new();
         for (i, col) in cols.iter_mut().enumerate() {
@@ -480,25 +566,35 @@ pub fn render_workspace(
                     snapshot,
                     translations: t,
                 },
-                &mut batch,
+                batch,
             );
         }
     });
+}
 
-    let restored_from_history = if undo_requested {
-        state.undo.undo(snapshot, &mut batch)
-    } else if redo_requested {
-        state.undo.redo(snapshot, &mut batch)
+fn finalize_undo_frame(
+    ui: &egui::Ui,
+    state: &mut WorkspaceUiState,
+    snapshot: &ParamSnapshot,
+    pre_frame_snapshot: Vec<(equaform_common::ParamId, f32)>,
+    out: &mut FrameOutput,
+) {
+    let restored_from_history = if out.undo_requested {
+        state.undo.undo(snapshot, &mut out.batch)
+    } else if out.redo_requested {
+        state.undo.redo(snapshot, &mut out.batch)
     } else {
         false
     };
 
     if !restored_from_history {
-        let changed_this_frame = batch
+        let changed_this_frame = out
+            .batch
             .commands()
             .iter()
             .any(|cmd| is_undoable_param(cmd.param_id))
-            || actions
+            || out
+                .actions
                 .iter()
                 .any(|action| matches!(action, WorkspaceAction::ApplyPreset(_)));
         let pointer_down = ui.input(|i| i.pointer.any_down()) || state.dragged_band.is_some();
@@ -506,6 +602,4 @@ pub fn render_workspace(
             .undo
             .observe_frame(pre_frame_snapshot, changed_this_frame, pointer_down);
     }
-
-    (batch, actions)
 }

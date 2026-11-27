@@ -57,35 +57,6 @@ impl EngineClient {
         std::mem::take(&mut self.pending_commands)
     }
 
-    /// Update band parameters from a command batch.
-    #[allow(dead_code)]
-    fn apply_params_from_batch(&mut self, batch: &GuiCommandBatch) {
-        let commands = batch.commands();
-        for cmd in commands {
-            let pid = cmd.param_id.0;
-            // Global parameters (1..=99)
-            if (1..=99).contains(&pid) {
-                continue;
-            }
-            if pid >= 100 {
-                let band_idx = ((pid - 100) / 100) as usize;
-                let offset = ((pid - 100) % 100) as usize;
-                if band_idx < equaform_common::MAX_BANDS {
-                    let bp = &mut self.band_params[band_idx];
-                    match offset {
-                        0 => bp.enabled = cmd.value > 0.5,
-                        1 => bp.filter_type = Self::filter_type_from_f32(cmd.value),
-                        2 => bp.frequency_hz = cmd.value,
-                        3 => bp.gain_db = cmd.value.clamp(-24.0, 24.0),
-                        4 => bp.q = cmd.value.clamp(0.1, 20.0),
-                        5 => bp.slope = Self::slope_from_f32(cmd.value),
-                        _ => {}
-                    }
-                }
-            }
-        }
-    }
-
     /// Map a float value to a FilterType enum variant.
     fn filter_type_from_f32(v: f32) -> equaform_common::FilterType {
         equaform_common::FilterType::from_raw(v.round().max(0.0) as u32)

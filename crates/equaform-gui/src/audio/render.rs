@@ -59,139 +59,132 @@ pub struct AudioRenderContext<'a> {
 
 /// Real-time audio block processor: wait-free, zero allocation, zero mutex locks.
 pub(super) fn process_output_block(data: &mut [f32], ctx: &mut AudioRenderContext<'_>) {
-    let channels = ctx.format.channels;
-    let sample_rate = ctx.format.sample_rate;
-    let block_size = ctx.format.block_size;
-    let engine = &mut *ctx.engine;
-    let param_consumer = &mut *ctx.param_consumer;
-    let audio_consumer = ctx.audio_consumer;
-    let drift = &mut *ctx.drift;
-    let is_running = ctx.telemetry.is_running;
-    let is_muted = ctx.telemetry.is_muted;
-    let source_mode = ctx.telemetry.source_mode;
-    let peak_l = ctx.telemetry.peak_l;
-    let peak_r = ctx.telemetry.peak_r;
-    let spectrum_samples = ctx.telemetry.spectrum_samples;
-    let phase = &mut *ctx.phase;
-    let mute_gain = &mut *ctx.mute_gain;
-    let left_in = &mut *ctx.scratch.left_in;
-    let right_in = &mut *ctx.scratch.right_in;
-    let left_out = &mut *ctx.scratch.left_out;
-    let right_out = &mut *ctx.scratch.right_out;
-    let frames = (data.len() / channels).min(MAX_SCRATCH_FRAMES);
+    let frames = (data.len() / ctx.format.channels).min(MAX_SCRATCH_FRAMES);
     if frames == 0 {
         return;
     }
-
-    if !is_running.load(Ordering::Acquire) {
+    if !ctx.telemetry.is_running.load(Ordering::Acquire) {
         data.fill(0.0);
         return;
     }
 
-    // 1. Check for pending parameter updates non-blocking via lock-free triple buffer
-    if let Some(new_params) = param_consumer.read_latest_copy() {
-        engine.set_parameters(new_params);
+    if let Some(new_params) = ctx.param_consumer.read_latest_copy() {
+        ctx.engine.set_parameters(new_params);
     }
 
-    let mode = AudioSourceMode::from(source_mode.load(Ordering::Relaxed));
+    fill_input_block(frames, ctx);
+    run_engine_chunks(frames, ctx);
+    let (max_l, max_r) = interleave_with_mute_and_peaks(data, frames, ctx);
+    push_telemetry(frames, max_l, max_r, ctx);
+}
 
-    // 2. Fetch input samples or generate musical test signal
+fn fill_input_block(frames: usize, ctx: &mut AudioRenderContext<'_>) {
+    let mode = AudioSourceMode::from(ctx.telemetry.source_mode.load(Ordering::Relaxed));
     match mode {
         AudioSourceMode::TestSignal => {
             let pi2 = std::f64::consts::PI * 2.0;
-            let sr = sample_rate as f64;
+            let sr = f64::from(ctx.format.sample_rate);
             for i in 0..frames {
-                let t = *phase / sr;
-                // Warm musical chord: A220 + C#277 + E330 + A440
+                let t = *ctx.phase / sr;
+                // Warm musical chord: A220 + C-sharp277 + E330 + A440
                 let s = 0.14 * (t * 220.00 * pi2).sin()
                     + 0.10 * (t * 277.18 * pi2).sin()
                     + 0.08 * (t * 329.63 * pi2).sin()
                     + 0.06 * (t * 440.00 * pi2).sin();
-
-                let sample_f32 = s as f32;
-                left_in[i] = sample_f32;
-                right_in[i] = sample_f32;
-                *phase = (*phase + 1.0) % (sr * 60.0);
+                let sample = s as f32;
+                ctx.scratch.left_in[i] = sample;
+                ctx.scratch.right_in[i] = sample;
+                *ctx.phase = (*ctx.phase + 1.0) % (sr * 60.0);
             }
         }
         AudioSourceMode::PassThrough => {
-            drift.read_from(audio_consumer, left_in, right_in, frames);
+            ctx.drift.read_from(
+                ctx.audio_consumer,
+                ctx.scratch.left_in,
+                ctx.scratch.right_in,
+                frames,
+            );
         }
     }
+}
 
-    // 3. Always process audio through the engine in blocks so bypass crossfade
-    //    ramps smoothly and biquad delay lines remain warm across rapid toggles.
+fn run_engine_chunks(frames: usize, ctx: &mut AudioRenderContext<'_>) {
+    let block_size = ctx.format.block_size;
     let mut offset = 0;
     while offset < frames {
         let chunk = (frames - offset).min(block_size);
         let in_slices: [&[f32]; 2] = [
-            &left_in[offset..offset + chunk],
-            &right_in[offset..offset + chunk],
+            &ctx.scratch.left_in[offset..offset + chunk],
+            &ctx.scratch.right_in[offset..offset + chunk],
         ];
         let mut out_slices: [&mut [f32]; 2] = [
-            &mut left_out[offset..offset + chunk],
-            &mut right_out[offset..offset + chunk],
+            &mut ctx.scratch.left_out[offset..offset + chunk],
+            &mut ctx.scratch.right_out[offset..offset + chunk],
         ];
-
-        let success = engine.process(&in_slices, &mut out_slices);
-        if !success {
-            // Strict deterministic fallback on processing error
+        if !ctx.engine.process(&in_slices, &mut out_slices) {
             out_slices[0].copy_from_slice(in_slices[0]);
             out_slices[1].copy_from_slice(in_slices[1]);
         }
         offset += chunk;
     }
+}
 
-    // 4. Multi-channel hardware interleaving, smooth 5 ms mute ramp, soft saturation, and zeroing unused channels
-    let target_mute_gain = if is_muted.load(Ordering::Acquire) {
+fn interleave_with_mute_and_peaks(
+    data: &mut [f32],
+    frames: usize,
+    ctx: &mut AudioRenderContext<'_>,
+) -> (f32, f32) {
+    let channels = ctx.format.channels;
+    let target_mute = if ctx.telemetry.is_muted.load(Ordering::Acquire) {
         0.0f32
     } else {
         1.0f32
     };
-    let mute_step = 1.0f32 / (0.005 * sample_rate).max(1.0);
-
+    let mute_step = 1.0f32 / (0.005 * ctx.format.sample_rate).max(1.0);
     let mut max_l = 0.0f32;
     let mut max_r = 0.0f32;
 
     for i in 0..frames {
-        if *mute_gain < target_mute_gain {
-            *mute_gain = (*mute_gain + mute_step).min(target_mute_gain);
-        } else if *mute_gain > target_mute_gain {
-            *mute_gain = (*mute_gain - mute_step).max(target_mute_gain);
+        if *ctx.mute_gain < target_mute {
+            *ctx.mute_gain = (*ctx.mute_gain + mute_step).min(target_mute);
+        } else if *ctx.mute_gain > target_mute {
+            *ctx.mute_gain = (*ctx.mute_gain - mute_step).max(target_mute);
         }
-        let g = *mute_gain;
-        let l = soft_limit(left_out[i]) * g;
-        let r = soft_limit(right_out[i]) * g;
+        let g = *ctx.mute_gain;
+        let l = soft_limit(ctx.scratch.left_out[i]) * g;
+        let r = soft_limit(ctx.scratch.right_out[i]) * g;
         max_l = max_l.max(l.abs());
         max_r = max_r.max(r.abs());
 
         let out_idx = i * channels;
         if channels == 1 {
-            // Mono hardware output: combine Left and Right channels cleanly
             data[out_idx] = (l + r) * 0.5;
         } else {
-            // Main hardware output: Left and Right (e.g. MacBook Pro speakers, headphones)
             data[out_idx] = l;
             data[out_idx + 1] = r;
-
-            // Multi-channel interface: mirror stereo pair to channels 3/4 (headphone 2 / secondary out)
             if channels >= 4 {
                 data[out_idx + 2] = l;
                 data[out_idx + 3] = r;
             } else if channels == 3 {
                 data[out_idx + 2] = 0.0;
             }
-            // Explicitly zero-fill all remaining hardware channels (e.g. 5, 6 on 6-channel interfaces)
             for c in 4..channels {
                 data[out_idx + c] = 0.0;
             }
         }
     }
+    (max_l, max_r)
+}
 
-    // 5. Update lock-free telemetry
-    peak_l.store(max_l.to_bits(), Ordering::Relaxed);
-    peak_r.store(max_r.to_bits(), Ordering::Relaxed);
+fn push_telemetry(frames: usize, max_l: f32, max_r: f32, ctx: &AudioRenderContext<'_>) {
+    ctx.telemetry
+        .peak_l
+        .store(max_l.to_bits(), Ordering::Relaxed);
+    ctx.telemetry
+        .peak_r
+        .store(max_r.to_bits(), Ordering::Relaxed);
 
+    let spectrum_samples = ctx.telemetry.spectrum_samples;
     let spec_len = spectrum_samples.len();
     let capture_count = frames.min(spec_len);
     let keep = spec_len - capture_count;
@@ -201,7 +194,7 @@ pub(super) fn process_output_block(data: &mut [f32], ctx: &mut AudioRenderContex
     }
     for i in 0..capture_count {
         let idx = frames - capture_count + i;
-        let val = (left_out[idx] + right_out[idx]) * 0.5;
+        let val = (ctx.scratch.left_out[idx] + ctx.scratch.right_out[idx]) * 0.5;
         spectrum_samples[keep + i].store(val.to_bits(), Ordering::Relaxed);
     }
 }

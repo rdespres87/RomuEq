@@ -142,173 +142,89 @@ pub fn is_factory_preset(name: &str) -> bool {
     FACTORY_PRESETS.contains(&name)
 }
 
-/// Populates the preset manager with the 16 standard factory presets.
-pub fn populate_factory_presets(preset_manager: &mut PresetManager) {
-    let mut add = |name: &str, configure: fn(&mut EqParameters)| {
-        let mut params = EqParameters {
-            bands: default_8_bands(),
-            ..Default::default()
-        };
-        configure(&mut params);
+/// Table of the 16 built-in factory presets and their 8-band gain curves (dB).
+const FACTORY_PRESET_GAINS: [(&str, [f32; equaform_common::MAX_BANDS]); 16] = [
+    ("Flat", [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+    (
+        "Bass Boost (+6 dB)",
+        [6.0, 3.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    ),
+    (
+        "Electronic / EDM",
+        [5.5, 4.0, 0.0, -2.5, 0.0, 1.5, 0.0, 4.5],
+    ),
+    ("Rock / Metal", [2.0, 4.5, -1.5, -3.0, 0.0, 3.5, 2.5, 2.0]),
+    ("Hip-Hop / R&B", [7.0, 4.5, 1.0, -2.0, 0.0, 1.5, 0.0, 3.0]),
+    ("Jazz / Warmth", [1.5, 2.5, 3.0, 1.5, 0.0, -1.0, -2.0, -2.5]),
+    ("Modern Pop", [4.0, 3.0, 0.0, -2.0, 1.0, 2.5, 3.0, 4.0]),
+    (
+        "Acoustic Clarity",
+        [0.0, -2.0, 0.0, 0.0, 2.5, 3.5, 0.0, 4.0],
+    ),
+    ("Vocal Air", [-4.0, -2.5, 0.0, 0.0, 2.0, 3.5, 0.0, 5.0]),
+    (
+        "Podcast / Voice",
+        [-8.0, -4.0, -2.0, 0.0, 2.5, 4.0, 0.0, 1.5],
+    ),
+    ("Cinema / Dialog", [5.0, 2.0, 0.0, -2.5, 2.0, 3.5, 0.0, 2.0]),
+    ("Gaming / FPS", [-6.0, -3.0, -1.5, 0.0, 3.0, 5.0, 4.0, -2.0]),
+    (
+        "Audiophile (Harman)",
+        [4.5, 2.5, -0.5, 0.0, 0.0, 2.0, 1.0, 1.5],
+    ),
+    (
+        "Night Listening",
+        [-9.0, -5.0, -2.0, 0.0, 2.0, 2.5, -2.0, -4.0],
+    ),
+    ("Loudness", [5.0, 3.0, 0.0, -2.5, 0.0, 0.0, 0.0, 4.0]),
+    (
+        "HS7 Monitor Correction",
+        [0.5, -1.0, 1.5, -3.5, -2.0, 1.5, -2.5, -3.0],
+    ),
+];
 
-        let mut preset = Preset::new(name);
-        preset
-            .parameter_values
-            .set(1, if params.global.bypass { 1.0 } else { 0.0 });
-        preset.parameter_values.set(2, params.global.output_gain_db);
-        preset
-            .parameter_values
-            .set(3, if params.global.auto_gain { 1.0 } else { 0.0 });
-
-        for band_idx in 0..equaform_common::MAX_BANDS {
-            let base = 100u32 + band_idx as u32 * 100;
-            let band = &params.bands[band_idx];
-            preset
-                .parameter_values
-                .set(base, if band.enabled { 1.0 } else { 0.0 });
-            preset
-                .parameter_values
-                .set(base + 1, band.filter_type.to_raw() as f32);
-            preset.parameter_values.set(base + 2, band.frequency_hz);
-            preset.parameter_values.set(base + 3, band.gain_db);
-            preset.parameter_values.set(base + 4, band.q);
-            preset
-                .parameter_values
-                .set(base + 5, band.slope.to_raw() as f32);
-            preset
-                .parameter_values
-                .set(base + 7, params.band_routing(band_idx).to_raw() as f32);
-        }
-
-        preset_manager.remove(name);
-        let _ = preset_manager.add(name.to_string(), preset);
+fn build_factory_preset(name: &str, gains: &[f32; equaform_common::MAX_BANDS]) -> Preset {
+    let mut params = EqParameters {
+        bands: default_8_bands(),
+        ..Default::default()
     };
+    for (band, &gain_db) in params.bands.iter_mut().zip(gains.iter()) {
+        band.gain_db = gain_db;
+    }
 
-    add("Flat", |_| {});
-    add("Bass Boost (+6 dB)", |p| {
-        p.bands[0].gain_db = 6.0;
-        p.bands[1].gain_db = 3.5;
-    });
-    add("Electronic / EDM", |p| {
-        p.bands[0].gain_db = 5.5;
-        p.bands[1].gain_db = 4.0;
-        p.bands[3].gain_db = -2.5;
-        p.bands[5].gain_db = 1.5;
-        p.bands[7].gain_db = 4.5;
-    });
-    add("Rock / Metal", |p| {
-        p.bands[0].gain_db = 2.0;
-        p.bands[1].gain_db = 4.5;
-        p.bands[2].gain_db = -1.5;
-        p.bands[3].gain_db = -3.0;
-        p.bands[5].gain_db = 3.5;
-        p.bands[6].gain_db = 2.5;
-        p.bands[7].gain_db = 2.0;
-    });
-    add("Hip-Hop / R&B", |p| {
-        p.bands[0].gain_db = 7.0;
-        p.bands[1].gain_db = 4.5;
-        p.bands[2].gain_db = 1.0;
-        p.bands[3].gain_db = -2.0;
-        p.bands[5].gain_db = 1.5;
-        p.bands[7].gain_db = 3.0;
-    });
-    add("Jazz / Warmth", |p| {
-        p.bands[0].gain_db = 1.5;
-        p.bands[1].gain_db = 2.5;
-        p.bands[2].gain_db = 3.0;
-        p.bands[3].gain_db = 1.5;
-        p.bands[5].gain_db = -1.0;
-        p.bands[6].gain_db = -2.0;
-        p.bands[7].gain_db = -2.5;
-    });
-    add("Modern Pop", |p| {
-        p.bands[0].gain_db = 4.0;
-        p.bands[1].gain_db = 3.0;
-        p.bands[3].gain_db = -2.0;
-        p.bands[4].gain_db = 1.0;
-        p.bands[5].gain_db = 2.5;
-        p.bands[6].gain_db = 3.0;
-        p.bands[7].gain_db = 4.0;
-    });
-    add("Acoustic Clarity", |p| {
-        p.bands[1].gain_db = -2.0;
-        p.bands[4].gain_db = 2.5;
-        p.bands[5].gain_db = 3.5;
-        p.bands[7].gain_db = 4.0;
-    });
-    add("Vocal Air", |p| {
-        p.bands[0].gain_db = -4.0;
-        p.bands[1].gain_db = -2.5;
-        p.bands[4].gain_db = 2.0;
-        p.bands[5].gain_db = 3.5;
-        p.bands[7].gain_db = 5.0;
-    });
-    add("Podcast / Voice", |p| {
-        p.bands[0].gain_db = -8.0;
-        p.bands[1].gain_db = -4.0;
-        p.bands[2].gain_db = -2.0;
-        p.bands[4].gain_db = 2.5;
-        p.bands[5].gain_db = 4.0;
-        p.bands[7].gain_db = 1.5;
-    });
-    add("Cinema / Dialog", |p| {
-        p.bands[0].gain_db = 5.0;
-        p.bands[1].gain_db = 2.0;
-        p.bands[3].gain_db = -2.5;
-        p.bands[4].gain_db = 2.0;
-        p.bands[5].gain_db = 3.5;
-        p.bands[7].gain_db = 2.0;
-    });
-    add("Gaming / FPS", |p| {
-        p.bands[0].gain_db = -6.0;
-        p.bands[1].gain_db = -3.0;
-        p.bands[2].gain_db = -1.5;
-        p.bands[4].gain_db = 3.0;
-        p.bands[5].gain_db = 5.0;
-        p.bands[6].gain_db = 4.0;
-        p.bands[7].gain_db = -2.0;
-    });
-    add("Audiophile (Harman)", |p| {
-        p.bands[0].gain_db = 4.5;
-        p.bands[1].gain_db = 2.5;
-        p.bands[2].gain_db = -0.5;
-        p.bands[5].gain_db = 2.0;
-        p.bands[6].gain_db = 1.0;
-        p.bands[7].gain_db = 1.5;
-    });
-    add("Night Listening", |p| {
-        p.bands[0].gain_db = -9.0;
-        p.bands[1].gain_db = -5.0;
-        p.bands[2].gain_db = -2.0;
-        p.bands[4].gain_db = 2.0;
-        p.bands[5].gain_db = 2.5;
-        p.bands[6].gain_db = -2.0;
-        p.bands[7].gain_db = -4.0;
-    });
-    add("Loudness", |p| {
-        p.bands[0].gain_db = 5.0;
-        p.bands[1].gain_db = 3.0;
-        p.bands[3].gain_db = -2.5;
-        p.bands[7].gain_db = 4.0;
-    });
-    // HS7 Monitor Correction: compensates measured HS7 response deviations
-    // based on ASR/spinorama data. Compensates low-mid buildup (125 Hz-1 kHz)
-    // and high-frequency dip (6-10 kHz).
-    add("HS7 Monitor Correction", |p| {
-        p.bands[0].gain_db = 0.5; // 32 Hz LowShelf: slight sub-bass
-        p.bands[1].gain_db = -1.0; // 75 Hz: reduce wall-coupling bass
-        p.bands[2].gain_db = 1.5; // 180 Hz: ASR peak correction
-        p.bands[3].gain_db = -3.5; // 420 Hz: ASR dip -4.13 dB @ 896 Hz
-        p.bands[4].gain_db = -2.0; // 1 kHz: low-mid buildup reduction
-        p.bands[5].gain_db = 1.5; // 2.4 kHz: ASR peak @ 1712 Hz
-        p.bands[6].gain_db = -2.5; // 5.6 kHz: ASR dip -3.04 dB @ 3942 Hz
-        p.bands[7].gain_db = -3.0; // 13.5 kHz HighShelf: ASR dip -3.6 dB @ 12184 Hz
-    });
+    let mut preset = Preset::new(name);
+    preset
+        .parameter_values
+        .set(1, if params.global.bypass { 1.0 } else { 0.0 });
+    preset.parameter_values.set(2, params.global.output_gain_db);
+    preset
+        .parameter_values
+        .set(3, if params.global.auto_gain { 1.0 } else { 0.0 });
 
-    // Load any user-saved presets from presets directory
-    let presets_dir = user_config_dir().join("presets");
-    if let Ok(entries) = std::fs::read_dir(&presets_dir) {
+    for band_idx in 0..equaform_common::MAX_BANDS {
+        let base = 100u32 + band_idx as u32 * 100;
+        let band = &params.bands[band_idx];
+        preset
+            .parameter_values
+            .set(base, if band.enabled { 1.0 } else { 0.0 });
+        preset
+            .parameter_values
+            .set(base + 1, band.filter_type.to_raw() as f32);
+        preset.parameter_values.set(base + 2, band.frequency_hz);
+        preset.parameter_values.set(base + 3, band.gain_db);
+        preset.parameter_values.set(base + 4, band.q);
+        preset
+            .parameter_values
+            .set(base + 5, band.slope.to_raw() as f32);
+        preset
+            .parameter_values
+            .set(base + 7, params.band_routing(band_idx).to_raw() as f32);
+    }
+    preset
+}
+
+fn load_req_presets_in_dir(preset_manager: &mut PresetManager, dir: &std::path::Path) {
+    if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) == Some("req") {
@@ -318,26 +234,25 @@ pub fn populate_factory_presets(preset_manager: &mut PresetManager) {
             }
         }
     }
+}
+
+/// Populates the preset manager with the 16 standard factory presets.
+pub fn populate_factory_presets(preset_manager: &mut PresetManager) {
+    for (name, gains) in &FACTORY_PRESET_GAINS {
+        preset_manager.remove(name);
+        let _ = preset_manager.add((*name).to_string(), build_factory_preset(name, gains));
+    }
+
+    let presets_dir = user_config_dir().join("presets");
+    load_req_presets_in_dir(preset_manager, &presets_dir);
 
     #[cfg(target_os = "windows")]
-    {
-        // Also load from %ProgramData%\Equaform\presets if present
-        if let Ok(progdata) = std::env::var("ProgramData") {
-            let common_presets = std::path::PathBuf::from(progdata)
-                .join("Equaform")
-                .join("presets");
-            if common_presets.exists() && common_presets != presets_dir {
-                if let Ok(entries) = std::fs::read_dir(common_presets) {
-                    for entry in entries.flatten() {
-                        let path = entry.path();
-                        if path.extension().and_then(|e| e.to_str()) == Some("req") {
-                            if let Some(p_str) = path.to_str() {
-                                let _ = preset_manager.load_from_file(p_str);
-                            }
-                        }
-                    }
-                }
-            }
+    if let Ok(progdata) = std::env::var("ProgramData") {
+        let common_presets = std::path::PathBuf::from(progdata)
+            .join("Equaform")
+            .join("presets");
+        if common_presets.exists() && common_presets != presets_dir {
+            load_req_presets_in_dir(preset_manager, &common_presets);
         }
     }
 }
@@ -448,5 +363,29 @@ mod tests {
             result,
             vec!["perso", "perso 2", "Flat", "Acoustic Clarity", "Vocal Air"]
         );
+    }
+
+    #[test]
+    fn factory_presets_snapshot_all_16_gain_curves() {
+        let mut manager = PresetManager::new();
+        for (name, gains) in &FACTORY_PRESET_GAINS {
+            let _ = manager.add((*name).to_string(), build_factory_preset(name, gains));
+        }
+        assert_eq!(FACTORY_PRESET_GAINS.len(), 16);
+        for (name, expected_gains) in &FACTORY_PRESET_GAINS {
+            assert!(
+                is_factory_preset(name),
+                "{name} missing from FACTORY_PRESETS"
+            );
+            let preset = manager.get(name).expect("factory preset present");
+            for (band_idx, &expected) in expected_gains.iter().enumerate() {
+                let gain_id = 100u32 + band_idx as u32 * 100 + 3;
+                assert_eq!(
+                    preset.preset.parameter_values.get(gain_id),
+                    Some(expected),
+                    "mismatch for {name} band {band_idx}"
+                );
+            }
+        }
     }
 }
