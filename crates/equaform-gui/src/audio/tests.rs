@@ -356,7 +356,7 @@ fn test_audio_stream_start_diagnostic() {
                 "Audio stream to {out_name:?} started successfully! Active: {}",
                 stream.is_active()
             );
-            std::thread::sleep(std::time::Duration::from_millis(100));
+            assert!(stream.is_active());
             stream.stop().unwrap();
         }
         Err(e) => {
