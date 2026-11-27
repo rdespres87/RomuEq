@@ -121,7 +121,7 @@ pub mod macos_impl {
         register_posix_signal_handlers();
     }
 
-    fn saved_output_device_path() -> std::path::PathBuf {
+    pub(super) fn saved_output_device_path() -> std::path::PathBuf {
         let base = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
         let new_dir = std::path::PathBuf::from(&base).join(".equaform");
         let _ = std::fs::create_dir_all(&new_dir);
@@ -767,5 +767,32 @@ mod tests {
                 is_equaform_driver_available() || is_romueq_driver_available()
             );
         }
+    }
+
+    #[test]
+    fn virtual_device_names_detected_case_insensitively() {
+        for name in ["Equaform", "ROMUEQ", "soundflower", "Zoom", "TEAMS"] {
+            assert!(is_virtual_device_name(name), "expected virtual: {name}");
+        }
+    }
+
+    #[test]
+    fn physical_device_names_not_flagged_as_virtual() {
+        for name in ["MacBook Pro Speakers", "Scarlett 2i2", "AirPods"] {
+            assert!(!is_virtual_device_name(name), "expected physical: {name}");
+        }
+    }
+
+    #[test]
+    fn saved_output_device_path_ends_with_expected_filename() {
+        let p = super::macos_impl::saved_output_device_path();
+        assert_eq!(
+            p.file_name().and_then(|n| n.to_str()),
+            Some("last_output_device.txt")
+        );
+        assert!(
+            p.parent()
+                .is_some_and(|parent| !parent.as_os_str().is_empty())
+        );
     }
 }

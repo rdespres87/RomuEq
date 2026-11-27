@@ -81,3 +81,15 @@ fn main() {
         std::process::exit(1);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn window_metadata_matches_spec() {
+        let app = EquaformApp::new();
+        assert_eq!(app.window_title(), "Equaform-8 — Parametric Equalizer");
+        assert_eq!(app.window_size(), (1180.0, 485.0));
+    }
+}

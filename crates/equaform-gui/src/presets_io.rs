@@ -388,4 +388,49 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn load_req_presets_in_dir_loads_valid_req_and_ignores_other_extensions() {
+        let dir =
+            std::env::temp_dir().join(format!("equaform_presets_io_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp preset dir");
+
+        let valid_bytes = Preset::new("Custom Room").serialize();
+        std::fs::write(dir.join("custom_room.req"), valid_bytes).expect("write valid req");
+        std::fs::write(dir.join("notes.txt"), b"ignored").expect("write txt");
+        std::fs::write(dir.join("corrupt.req"), b"not-valid-eqfr").expect("write corrupt req");
+
+        let mut manager = PresetManager::new();
+        load_req_presets_in_dir(&mut manager, &dir);
+
+        assert!(manager.get("Custom Room").is_some());
+        assert!(manager.get("notes").is_none());
+        assert!(manager.get("corrupt").is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn build_factory_preset_sets_global_and_band_defaults() {
+        let preset = build_factory_preset("Test", &[0.0; equaform_common::MAX_BANDS]);
+        assert_eq!(preset.parameter_values.get(1), Some(0.0));
+        assert_eq!(preset.parameter_values.get(2), Some(0.0));
+        assert_eq!(preset.parameter_values.get(3), Some(0.0));
+        for band_idx in 0..equaform_common::MAX_BANDS {
+            let base = 100u32 + band_idx as u32 * 100;
+            assert_eq!(preset.parameter_values.get(base), Some(1.0));
+        }
+    }
+
+    #[test]
+    fn populate_factory_presets_registers_all_16_factory_presets() {
+        let mut manager = PresetManager::new();
+        populate_factory_presets(&mut manager);
+        for (name, _) in &FACTORY_PRESET_GAINS {
+            assert!(
+                manager.get(name).is_some(),
+                "missing factory preset: {name}"
+            );
+        }
+    }
 }
