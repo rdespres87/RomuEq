@@ -1,14 +1,38 @@
 //! Real-time audio processing, automation ingestion, DSP routing, and click-free transitions.
 
-use super::{CROSSFADE_MS, DELAY_SAMPLES_PER_STAGE, EngineLifecycle, LifecycleState};
+use super::render::{
+    BlockLayout, MonoSoloIo, RampParams, StereoSoloIo, apply_equal_power_crossfade,
+    process_linear_phase_planar, process_minimum_phase_planar, render_mono_solo_audition,
+    render_stereo_solo_audition,
+};
+use super::{CROSSFADE_MS, EngineLifecycle, LifecycleState};
 use equaform_analysis::AnalysisFrame;
 use equaform_common::automation::AutomationValueProvider;
-use equaform_common::{BandParameters, BandRouting, EqParameters, MAX_BANDS, ProcessingMode};
-use equaform_dsp::LinearPhaseConvolver;
+use equaform_common::{BandParameters, MAX_BANDS, ParamId, ProcessingMode};
 use equaform_dsp::coefficients::{BiquadCoefficients, FilterSpecification};
-use equaform_dsp::{
-    lr_to_ms_in_place, ms_to_lr_in_place, process_mono_in_place, process_stereo_planar_in_place,
-};
+
+/// Per-block flags controlling linear-phase kernel synchronization.
+#[derive(Clone, Copy, Debug)]
+struct KernelSyncFlags {
+    is_first_block: bool,
+    mode_changed: bool,
+    coeff_was_dirty: bool,
+    any_automated: bool,
+}
+
+/// Prepared per-block DSP control state computed before rendering.
+#[derive(Clone, Copy, Debug)]
+struct PreparedBlockState {
+    step: f32,
+    target_mode: ProcessingMode,
+    sync_flags: KernelSyncFlags,
+    active_solo_mask: u8,
+    run_solo: bool,
+    run_normal: bool,
+    solo_ramp: RampParams,
+    bypass_ramp: RampParams,
+    output_gain_linear: f32,
+}
 
 impl EngineLifecycle {
     /// Create an automation value provider for the current block.
@@ -18,6 +42,16 @@ impl EngineLifecycle {
         Some(ingestor.value_provider(&batch))
     }
 
+    /// Return current planar block layout for `block_size` samples.
+    #[inline]
+    fn block_layout(&self, block_size: usize) -> BlockLayout {
+        BlockLayout {
+            max_block: self.topology.max_block_size,
+            channels: self.topology.channels,
+            block_size,
+        }
+    }
+
     /// Process a single audio block.
     ///
     /// # Allocation
@@ -25,27 +59,19 @@ impl EngineLifecycle {
     /// **No allocation.** All data is copied to/from the flat pre-allocated buffer.
     /// DSP processing uses pre-allocated delay-line and UPOLS convolver state.
     pub fn process(&mut self, inputs: &[&[f32]], outputs: &mut [&mut [f32]]) -> bool {
-        if self.state != LifecycleState::Ready {
-            return false;
-        }
-
-        if inputs.len() != outputs.len() {
+        if self.state != LifecycleState::Ready || inputs.len() != outputs.len() {
             return false;
         }
 
         let block_size = inputs.first().map(|s| s.len()).unwrap_or(0);
-
         if block_size == 0 || block_size > self.topology.max_block_size {
             return false;
         }
 
         if inputs.iter().any(|s| s.len() != block_size)
             || outputs.iter().any(|s| s.len() != block_size)
+            || inputs.len() != self.topology.channels
         {
-            return false;
-        }
-
-        if inputs.len() != self.topology.channels {
             return false;
         }
 
@@ -85,6 +111,16 @@ impl EngineLifecycle {
             .update(self.eq_params.global.bypass, self.blocks_processed == 0);
     }
 
+    /// Return cached linear output gain for `output_gain_db`, recomputing only on bit changes.
+    #[inline]
+    fn resolve_output_gain_linear(&mut self, output_gain_db: f32) -> f32 {
+        if output_gain_db.to_bits() != self.coeff_cache.last_output_gain_db.to_bits() {
+            self.coeff_cache.last_output_gain_db = output_gain_db;
+            self.coeff_cache.output_gain_linear = 10.0_f32.powf(output_gain_db / 20.0);
+        }
+        self.coeff_cache.output_gain_linear
+    }
+
     /// Apply per-block automation overrides to band coefficients and sync persistent caches.
     ///
     /// Returns `true` if any band parameter changed via automation in this block.
@@ -97,9 +133,9 @@ impl EngineLifecycle {
     ) -> bool {
         let block_length = block_size as u32;
         let gain_min = BandParameters::gain_db_min();
-        let gain_max = BandParameters::gain_db_max();
+        let gain_range = BandParameters::gain_db_max() - gain_min;
         let freq_min: f32 = 20.0;
-        let freq_max: f32 = sample_rate / 2.0;
+        let freq_ratio: f32 = (sample_rate / 2.0) / freq_min;
 
         let mut any_automated = false;
         for (band_idx, coeff_slot) in block_coeffs.iter_mut().enumerate() {
@@ -109,33 +145,18 @@ impl EngineLifecycle {
             }
 
             let mut automated = false;
-            if let Some(automation_value) = provider
-                .last_value_in_block(band_params.gain_param_id(), block_length)
-                .or_else(|| {
-                    provider.value_at_sample(
-                        band_params.gain_param_id(),
-                        block_length.saturating_sub(1),
-                        None,
-                    )
-                })
+            if let Some(automation_value) =
+                last_or_sample(provider, band_params.gain_param_id(), block_length)
             {
-                let gain_range = gain_max - gain_min;
                 band_params.gain_db = gain_min + (automation_value + 1.0) * 0.5 * gain_range;
                 automated = true;
             }
 
-            if let Some(automation_value) = provider
-                .last_value_in_block(band_params.frequency_param_id(), block_length)
-                .or_else(|| {
-                    provider.value_at_sample(
-                        band_params.frequency_param_id(),
-                        block_length.saturating_sub(1),
-                        None,
-                    )
-                })
+            if let Some(automation_value) =
+                last_or_sample(provider, band_params.frequency_param_id(), block_length)
             {
                 let t = automation_value * 0.5 + 0.5;
-                band_params.frequency_hz = freq_min * (freq_max / freq_min).powf(t);
+                band_params.frequency_hz = freq_min * freq_ratio.powf(t);
                 automated = true;
             }
 
@@ -153,17 +174,110 @@ impl EngineLifecycle {
         any_automated
     }
 
+    /// Compute active solo mask, update solo transition state, and return `(active_mask, solo_ramp)`.
+    fn prepare_solo_state(&mut self, is_first_block: bool, step: f32) -> (u8, RampParams) {
+        let solo_mask = (0..MAX_BANDS).fold(0_u8, |mask, band_idx| {
+            if self.eq_params.is_band_solo(band_idx) {
+                mask | (1 << band_idx)
+            } else {
+                mask
+            }
+        });
+        self.solo.update(solo_mask != 0, solo_mask, is_first_block);
+
+        let target = if self.solo.target_solo { 1.0 } else { 0.0 };
+        let start = self.solo.mix;
+        let ramp = RampParams {
+            start,
+            target,
+            step,
+            ramping: (start - target).abs() > f32::EPSILON,
+        };
+        (self.solo.active_mask, ramp)
+    }
+
+    /// Prepare coefficients, solo/bypass/mode ramps, and cached output gain for this block.
+    fn prepare_block_state(
+        &mut self,
+        block_size: usize,
+        sample_rate: f32,
+        automation_provider: &Option<AutomationValueProvider>,
+        block_coeffs: &mut [BiquadCoefficients; MAX_BANDS],
+    ) -> PreparedBlockState {
+        let is_first_block = self.blocks_processed == 0;
+        self.update_bypass_state();
+
+        let crossfade_samples = (CROSSFADE_MS as f32 / 1000.0 * sample_rate) as usize;
+        let step = 1.0_f32 / (crossfade_samples.max(1) as f32);
+
+        let coeff_was_dirty = self.coeff_cache.dirty;
+        if coeff_was_dirty {
+            self.recompute_all_coefficients();
+        }
+
+        *block_coeffs = self.coeff_cache.coeffs;
+        let any_automated = match automation_provider {
+            Some(provider) => {
+                self.apply_block_automation(block_size, sample_rate, provider, block_coeffs)
+            }
+            None => false,
+        };
+
+        let (active_solo_mask, solo_ramp) = self.prepare_solo_state(is_first_block, step);
+        let run_solo = self.solo.target_solo || solo_ramp.ramping;
+        let run_normal = !self.solo.target_solo || solo_ramp.ramping;
+
+        let auto_comp_db = if self.eq_params.global.auto_gain {
+            self.coeff_cache.auto_gain_db * (1.0 - solo_ramp.start)
+        } else {
+            0.0
+        };
+        let output_gain_linear =
+            self.resolve_output_gain_linear(self.eq_params.global.output_gain_db + auto_comp_db);
+
+        let target_mix = if self.bypass.target_bypass { 1.0 } else { 0.0 };
+        let start_mix = self.bypass.mix;
+        let is_ramping = (start_mix - target_mix).abs() > f32::EPSILON;
+        let bypass_ramp = RampParams {
+            start: start_mix,
+            target: target_mix,
+            step,
+            ramping: is_ramping,
+        };
+
+        let target_mode = self.eq_params.global.processing_mode;
+        let force_tail_fade =
+            self.bypass.target_bypass || is_ramping || run_solo || self.topology.channels > 2;
+        let mode_changed =
+            self.mode_transition
+                .update(target_mode, is_first_block, force_tail_fade);
+
+        PreparedBlockState {
+            step,
+            target_mode,
+            sync_flags: KernelSyncFlags {
+                is_first_block,
+                mode_changed,
+                coeff_was_dirty,
+                any_automated,
+            },
+            active_solo_mask,
+            run_solo,
+            run_normal,
+            solo_ramp,
+            bypass_ramp,
+            output_gain_linear,
+        }
+    }
+
     /// Synchronize the linear-phase convolver and dry delay line for mode/parameter updates.
     fn sync_linear_phase_for_block(
         &mut self,
         target_mode: ProcessingMode,
         sample_rate: f32,
-        is_first_block: bool,
-        mode_changed: bool,
-        coeff_was_dirty: bool,
-        any_automated: bool,
+        flags: KernelSyncFlags,
     ) {
-        if is_first_block {
+        if flags.is_first_block {
             if target_mode.is_linear_phase() {
                 self.linear_phase
                     .update_kernel(&self.eq_params, sample_rate, target_mode);
@@ -173,7 +287,7 @@ impl EngineLifecycle {
             return;
         }
 
-        if mode_changed {
+        if flags.mode_changed {
             if self.mode_transition.use_tail_fade {
                 if target_mode.is_linear_phase() {
                     self.linear_phase
@@ -201,7 +315,7 @@ impl EngineLifecycle {
             return;
         }
 
-        if (coeff_was_dirty || any_automated) && target_mode.is_linear_phase() {
+        if (flags.coeff_was_dirty || flags.any_automated) && target_mode.is_linear_phase() {
             self.linear_phase
                 .request_kernel_update(&self.eq_params, sample_rate, target_mode);
         }
@@ -210,36 +324,31 @@ impl EngineLifecycle {
     /// Render the outgoing mode (or smooth tail-fade reference) into `mode_transition.scratch_buffer`.
     fn render_outgoing_mode(
         &mut self,
-        block_size: usize,
+        layout: BlockLayout,
         block_coeffs: &[BiquadCoefficients; MAX_BANDS],
         output_gain_linear: f32,
     ) {
-        let max_block = self.topology.max_block_size;
-        let channels = self.topology.channels;
-
         if self.mode_transition.use_tail_fade {
-            for (ch, &tail) in self.mode_transition.prev_output[..channels]
+            for (ch, &tail) in self.mode_transition.prev_output[..layout.channels]
                 .iter()
                 .enumerate()
             {
-                let offset = ch * max_block;
-                self.mode_transition.scratch_buffer[offset..offset + block_size].fill(tail);
+                let offset = ch * layout.max_block;
+                self.mode_transition.scratch_buffer[offset..offset + layout.block_size].fill(tail);
             }
             return;
         }
 
-        for ch in 0..channels {
-            let offset = ch * max_block;
-            self.mode_transition.scratch_buffer[offset..offset + block_size]
-                .copy_from_slice(&self.buffer[offset..offset + block_size]);
+        for ch in 0..layout.channels {
+            let offset = ch * layout.max_block;
+            self.mode_transition.scratch_buffer[offset..offset + layout.block_size]
+                .copy_from_slice(&self.buffer[offset..offset + layout.block_size]);
         }
 
         if self.mode_transition.previous_mode == ProcessingMode::MinimumPhase {
             process_minimum_phase_planar(
                 &mut self.mode_transition.scratch_buffer,
-                max_block,
-                channels,
-                block_size,
+                layout,
                 block_coeffs,
                 &self.eq_params,
                 &mut self.delay_line,
@@ -249,16 +358,14 @@ impl EngineLifecycle {
                 &mut self.linear_phase,
                 &mut self.mode_transition.scratch_buffer,
                 &self.bypass.dry_buffer,
-                max_block,
-                channels,
-                block_size,
+                layout,
             );
         }
 
         if output_gain_linear != 1.0 {
-            for ch in 0..channels {
-                let offset = ch * max_block;
-                self.mode_transition.scratch_buffer[offset..offset + block_size]
+            for ch in 0..layout.channels {
+                let offset = ch * layout.max_block;
+                self.mode_transition.scratch_buffer[offset..offset + layout.block_size]
                     .iter_mut()
                     .for_each(|s| *s *= output_gain_linear);
             }
@@ -266,121 +373,116 @@ impl EngineLifecycle {
     }
 
     /// Populate `bypass.dry_buffer` with either zero-latency or latency-aligned dry audio.
-    fn populate_dry_buffer(&mut self, block_size: usize, target_mode: ProcessingMode) {
-        let max_block = self.topology.max_block_size;
-        let channels = self.topology.channels;
-
+    fn populate_dry_buffer(&mut self, layout: BlockLayout, target_mode: ProcessingMode) {
         if target_mode.is_linear_phase() {
             let delay = target_mode.latency_samples() as usize;
-            for ch in 0..channels {
-                let offset = ch * max_block;
-                let input = &self.buffer[offset..offset + block_size];
-                let dry = &mut self.bypass.dry_buffer[offset..offset + block_size];
+            for ch in 0..layout.channels {
+                let offset = ch * layout.max_block;
+                let input = &self.buffer[offset..offset + layout.block_size];
+                let dry = &mut self.bypass.dry_buffer[offset..offset + layout.block_size];
                 self.dry_delay_line.process_channel(ch, input, dry, delay);
             }
         } else {
-            for ch in 0..channels {
-                let offset = ch * max_block;
-                self.bypass.dry_buffer[offset..offset + block_size]
-                    .copy_from_slice(&self.buffer[offset..offset + block_size]);
+            for ch in 0..layout.channels {
+                let offset = ch * layout.max_block;
+                self.bypass.dry_buffer[offset..offset + layout.block_size]
+                    .copy_from_slice(&self.buffer[offset..offset + layout.block_size]);
             }
         }
     }
 
     /// Apply Band Solo audition into `self.buffer` from the latency-aligned `bypass.dry_buffer`.
-    fn process_active_solo(
-        &mut self,
-        block_size: usize,
-        active_solo_mask: u8,
-        solo_ramping: bool,
-        solo_start: f32,
-        solo_target: f32,
-        step: f32,
-    ) {
-        let max_block = self.topology.max_block_size;
-        let channels = self.topology.channels;
-
-        if channels == 2 {
-            let (left_buf, right_buf) = self.buffer.split_at_mut(max_block);
-            let left = &mut left_buf[..block_size];
-            let right = &mut right_buf[..block_size];
-
-            let (dry_left_buf, dry_right_buf) = self.bypass.dry_buffer.split_at_mut(max_block);
-            let dry_left = &dry_left_buf[..block_size];
-            let dry_right = &dry_right_buf[..block_size];
-
-            let (scratch_l_buf, scratch_r_buf) = self.solo_scratch.split_at_mut(max_block);
-            let scratch_l = &mut scratch_l_buf[..block_size];
-            let scratch_r = &mut scratch_r_buf[..block_size];
-
-            if solo_ramping {
-                let (solo_l_buf, solo_r_buf) = self.solo.mix_buffer.split_at_mut(max_block);
-                let solo_l = &mut solo_l_buf[..block_size];
-                let solo_r = &mut solo_r_buf[..block_size];
-                render_stereo_solo_audition(
-                    StereoSoloIo {
-                        out_l: solo_l,
-                        out_r: solo_r,
-                        dry_l: dry_left,
-                        dry_r: dry_right,
-                        scratch_l,
-                        scratch_r,
-                    },
-                    active_solo_mask,
-                    &self.coeff_cache.solo_coeffs,
-                    &self.eq_params,
-                    &mut self.solo_delay_line,
-                );
-                apply_equal_power_crossfade(left, solo_l, solo_start, solo_target, step);
-                apply_equal_power_crossfade(right, solo_r, solo_start, solo_target, step);
-            } else {
-                render_stereo_solo_audition(
-                    StereoSoloIo {
-                        out_l: left,
-                        out_r: right,
-                        dry_l: dry_left,
-                        dry_r: dry_right,
-                        scratch_l,
-                        scratch_r,
-                    },
-                    active_solo_mask,
-                    &self.coeff_cache.solo_coeffs,
-                    &self.eq_params,
-                    &mut self.solo_delay_line,
-                );
-            }
-            return;
+    fn process_active_solo(&mut self, layout: BlockLayout, active_solo_mask: u8, ramp: RampParams) {
+        if layout.channels == 2 {
+            self.process_stereo_solo(layout, active_solo_mask, ramp);
+        } else {
+            self.process_mono_solo(layout, active_solo_mask, ramp);
         }
+    }
 
-        for ch_idx in 0..channels {
-            let buffer_offset = ch_idx * max_block;
-            let samples = &mut self.buffer[buffer_offset..buffer_offset + block_size];
-            let dry_samples = &self.bypass.dry_buffer[buffer_offset..buffer_offset + block_size];
-            let scratch = &mut self.solo_scratch[buffer_offset..buffer_offset + block_size];
+    /// Apply stereo Band Solo audition and optional crossfade into `self.buffer`.
+    fn process_stereo_solo(&mut self, layout: BlockLayout, active_solo_mask: u8, ramp: RampParams) {
+        let (left_buf, right_buf) = self.buffer.split_at_mut(layout.max_block);
+        let left = &mut left_buf[..layout.block_size];
+        let right = &mut right_buf[..layout.block_size];
 
-            if solo_ramping {
-                let solo_out = &mut self.solo.mix_buffer[buffer_offset..buffer_offset + block_size];
+        let (dry_left_buf, dry_right_buf) = self.bypass.dry_buffer.split_at_mut(layout.max_block);
+        let dry_l = &dry_left_buf[..layout.block_size];
+        let dry_r = &dry_right_buf[..layout.block_size];
+
+        let (scratch_l_buf, scratch_r_buf) = self.solo_scratch.split_at_mut(layout.max_block);
+        let scratch_l = &mut scratch_l_buf[..layout.block_size];
+        let scratch_r = &mut scratch_r_buf[..layout.block_size];
+
+        if ramp.ramping {
+            let (solo_l_buf, solo_r_buf) = self.solo.mix_buffer.split_at_mut(layout.max_block);
+            let solo_l = &mut solo_l_buf[..layout.block_size];
+            let solo_r = &mut solo_r_buf[..layout.block_size];
+            render_stereo_solo_audition(
+                StereoSoloIo {
+                    out_l: solo_l,
+                    out_r: solo_r,
+                    dry_l,
+                    dry_r,
+                    scratch_l,
+                    scratch_r,
+                },
+                active_solo_mask,
+                &self.coeff_cache.solo_coeffs,
+                &self.eq_params,
+                &mut self.solo_delay_line,
+            );
+            apply_equal_power_crossfade(left, solo_l, ramp);
+            apply_equal_power_crossfade(right, solo_r, ramp);
+        } else {
+            render_stereo_solo_audition(
+                StereoSoloIo {
+                    out_l: left,
+                    out_r: right,
+                    dry_l,
+                    dry_r,
+                    scratch_l,
+                    scratch_r,
+                },
+                active_solo_mask,
+                &self.coeff_cache.solo_coeffs,
+                &self.eq_params,
+                &mut self.solo_delay_line,
+            );
+        }
+    }
+
+    /// Apply mono/multi-channel Band Solo audition and optional crossfade into `self.buffer`.
+    fn process_mono_solo(&mut self, layout: BlockLayout, active_solo_mask: u8, ramp: RampParams) {
+        for ch_idx in 0..layout.channels {
+            let offset = ch_idx * layout.max_block;
+            let samples = &mut self.buffer[offset..offset + layout.block_size];
+            let dry = &self.bypass.dry_buffer[offset..offset + layout.block_size];
+            let scratch = &mut self.solo_scratch[offset..offset + layout.block_size];
+
+            if ramp.ramping {
+                let solo_out = &mut self.solo.mix_buffer[offset..offset + layout.block_size];
                 render_mono_solo_audition(
                     MonoSoloIo {
                         out: solo_out,
-                        dry: dry_samples,
+                        dry,
                         scratch,
                         ch_idx,
-                        channels,
+                        channels: layout.channels,
                     },
                     active_solo_mask,
                     &self.coeff_cache.solo_coeffs,
                     &mut self.solo_delay_line,
                 );
-                apply_equal_power_crossfade(samples, solo_out, solo_start, solo_target, step);
+                apply_equal_power_crossfade(samples, solo_out, ramp);
             } else {
                 render_mono_solo_audition(
                     MonoSoloIo {
                         out: samples,
-                        dry: dry_samples,
+                        dry,
                         scratch,
                         ch_idx,
-                        channels,
+                        channels: layout.channels,
                     },
                     active_solo_mask,
                     &self.coeff_cache.solo_coeffs,
@@ -393,25 +495,21 @@ impl EngineLifecycle {
     /// Apply output gain and bypass crossfade across all active channels.
     fn apply_output_gain_and_bypass(
         &mut self,
-        block_size: usize,
+        layout: BlockLayout,
         output_gain_linear: f32,
-        start_mix: f32,
-        target_mix: f32,
-        step: f32,
-        is_ramping: bool,
+        ramp: RampParams,
     ) {
-        let max_block = self.topology.max_block_size;
-        for ch in 0..self.topology.channels {
-            let offset = ch * max_block;
-            let samples = &mut self.buffer[offset..offset + block_size];
-            let dry_samples = &self.bypass.dry_buffer[offset..offset + block_size];
+        for ch in 0..layout.channels {
+            let offset = ch * layout.max_block;
+            let samples = &mut self.buffer[offset..offset + layout.block_size];
+            let dry_samples = &self.bypass.dry_buffer[offset..offset + layout.block_size];
 
             if output_gain_linear != 1.0 {
                 samples.iter_mut().for_each(|s| *s *= output_gain_linear);
             }
 
-            if is_ramping {
-                apply_equal_power_crossfade(samples, dry_samples, start_mix, target_mix, step);
+            if ramp.ramping {
+                apply_equal_power_crossfade(samples, dry_samples, ramp);
             } else if self.bypass.target_bypass {
                 samples.copy_from_slice(dry_samples);
             }
@@ -425,12 +523,17 @@ impl EngineLifecycle {
         }
 
         let max_block = self.topology.max_block_size;
-        let mode_start_mix = self.mode_transition.mix;
+        let mode_ramp = RampParams {
+            start: self.mode_transition.mix,
+            target: 0.0,
+            step,
+            ramping: true,
+        };
         for ch in 0..self.topology.channels {
             let offset = ch * max_block;
             let active = &mut self.buffer[offset..offset + block_size];
             let outgoing = &self.mode_transition.scratch_buffer[offset..offset + block_size];
-            apply_equal_power_crossfade(active, outgoing, mode_start_mix, 0.0, step);
+            apply_equal_power_crossfade(active, outgoing, mode_ramp);
         }
 
         if self.mode_transition.advance(step, block_size) {
@@ -451,6 +554,68 @@ impl EngineLifecycle {
         }
     }
 
+    /// Render normal EQ, solo audition, output gain, bypass, and mode crossfades for a block.
+    fn render_block_dsp(
+        &mut self,
+        layout: BlockLayout,
+        state: &PreparedBlockState,
+        block_coeffs: &[BiquadCoefficients; MAX_BANDS],
+        sample_rate: f32,
+    ) {
+        self.populate_dry_buffer(layout, state.target_mode);
+
+        if state.run_normal {
+            if state.target_mode.is_linear_phase() {
+                self.mode_transition
+                    .apply_input_fade_in(&mut self.buffer, layout, state.step);
+                process_linear_phase_planar(
+                    &mut self.linear_phase,
+                    &mut self.buffer,
+                    &self.bypass.dry_buffer,
+                    layout,
+                );
+            } else {
+                process_minimum_phase_planar(
+                    &mut self.buffer,
+                    layout,
+                    block_coeffs,
+                    &self.eq_params,
+                    &mut self.delay_line,
+                );
+            }
+        }
+
+        if state.run_solo {
+            self.process_active_solo(layout, state.active_solo_mask, state.solo_ramp);
+        }
+
+        self.apply_output_gain_and_bypass(layout, state.output_gain_linear, state.bypass_ramp);
+        self.apply_mode_crossfade_and_advance(layout.block_size, sample_rate, state.step);
+        self.mode_transition
+            .record_last_rendered(&self.buffer, layout);
+    }
+
+    /// Advance solo and bypass ramp state after rendering a block.
+    fn advance_ramp_states(
+        &mut self,
+        block_size: usize,
+        solo_ramp: RampParams,
+        bypass_ramp: RampParams,
+    ) {
+        if solo_ramp.ramping {
+            self.solo.mix = solo_ramp.next_mix(block_size);
+        }
+        if !self.solo.target_solo && self.solo.mix <= f32::EPSILON {
+            self.solo.mix = 0.0;
+            self.solo.active_mask = 0;
+            self.solo_delay_line.fill(0.0);
+        }
+
+        if bypass_ramp.ramping {
+            self.bypass.mix = bypass_ramp.next_mix(block_size);
+        }
+    }
+
     /// Apply DSP processing to the internal flat buffer in-place.
     ///
     /// # Allocation
@@ -462,479 +627,34 @@ impl EngineLifecycle {
         automation_provider: &Option<AutomationValueProvider>,
     ) {
         let sample_rate = self.topology.sample_rate as f32;
-        let is_first_block = self.blocks_processed == 0;
-        self.update_bypass_state();
-
-        let crossfade_samples = (CROSSFADE_MS as f32 / 1000.0 * sample_rate) as usize;
-        let step = 1.0_f32 / (crossfade_samples.max(1) as f32);
-
-        let coeff_was_dirty = self.coeff_cache.dirty;
-        if coeff_was_dirty {
-            self.recompute_all_coefficients();
-        }
-
-        let mut block_coeffs = self.coeff_cache.coeffs;
-        let any_automated = if let Some(provider) = automation_provider {
-            self.apply_block_automation(block_size, sample_rate, provider, &mut block_coeffs)
-        } else {
-            false
-        };
-
-        let mut solo_mask: u8 = 0;
-        for band_idx in 0..MAX_BANDS {
-            if self.eq_params.is_band_solo(band_idx) {
-                solo_mask |= 1 << band_idx;
-            }
-        }
-        let solo_now = solo_mask != 0;
-        self.solo.update(solo_now, solo_mask, is_first_block);
-
-        let solo_target = if self.solo.target_solo {
-            1.0_f32
-        } else {
-            0.0_f32
-        };
-        let solo_start = self.solo.mix;
-        let solo_ramping = (solo_start - solo_target).abs() > f32::EPSILON;
-        let run_solo = self.solo.target_solo || solo_ramping;
-        let run_normal = !self.solo.target_solo || solo_ramping;
-        let active_solo_mask = self.solo.active_mask;
-
-        let auto_comp_db = if self.eq_params.global.auto_gain {
-            self.coeff_cache.auto_gain_db * (1.0 - solo_start)
-        } else {
-            0.0
-        };
-        let output_gain_db = self.eq_params.global.output_gain_db + auto_comp_db;
-        let output_gain_linear = 10.0_f32.powf(output_gain_db / 20.0);
-
-        let target_mix = if self.bypass.target_bypass {
-            1.0_f32
-        } else {
-            0.0_f32
-        };
-        let start_mix = self.bypass.mix;
-        let is_ramping = (start_mix - target_mix).abs() > f32::EPSILON;
-
-        let target_mode = self.eq_params.global.processing_mode;
-        let force_tail_fade =
-            self.bypass.target_bypass || is_ramping || run_solo || self.topology.channels > 2;
-        let mode_changed =
-            self.mode_transition
-                .update(target_mode, is_first_block, force_tail_fade);
-
-        self.sync_linear_phase_for_block(
-            target_mode,
+        let layout = self.block_layout(block_size);
+        let mut block_coeffs = [BiquadCoefficients::default(); MAX_BANDS];
+        let state = self.prepare_block_state(
+            block_size,
             sample_rate,
-            is_first_block,
-            mode_changed,
-            coeff_was_dirty,
-            any_automated,
+            automation_provider,
+            &mut block_coeffs,
         );
+
+        self.sync_linear_phase_for_block(state.target_mode, sample_rate, state.sync_flags);
 
         if self.mode_transition.is_ramping() {
-            self.render_outgoing_mode(block_size, &block_coeffs, output_gain_linear);
+            self.render_outgoing_mode(layout, &block_coeffs, state.output_gain_linear);
         }
 
-        self.populate_dry_buffer(block_size, target_mode);
-
-        if run_normal {
-            if target_mode.is_linear_phase() {
-                self.mode_transition.apply_input_fade_in(
-                    &mut self.buffer,
-                    self.topology.max_block_size,
-                    self.topology.channels,
-                    block_size,
-                    step,
-                );
-                process_linear_phase_planar(
-                    &mut self.linear_phase,
-                    &mut self.buffer,
-                    &self.bypass.dry_buffer,
-                    self.topology.max_block_size,
-                    self.topology.channels,
-                    block_size,
-                );
-            } else {
-                process_minimum_phase_planar(
-                    &mut self.buffer,
-                    self.topology.max_block_size,
-                    self.topology.channels,
-                    block_size,
-                    &block_coeffs,
-                    &self.eq_params,
-                    &mut self.delay_line,
-                );
-            }
-        }
-
-        if run_solo {
-            self.process_active_solo(
-                block_size,
-                active_solo_mask,
-                solo_ramping,
-                solo_start,
-                solo_target,
-                step,
-            );
-        }
-
-        self.apply_output_gain_and_bypass(
-            block_size,
-            output_gain_linear,
-            start_mix,
-            target_mix,
-            step,
-            is_ramping,
-        );
-
-        self.apply_mode_crossfade_and_advance(block_size, sample_rate, step);
-
-        self.mode_transition.record_last_rendered(
-            &self.buffer,
-            self.topology.max_block_size,
-            self.topology.channels,
-            block_size,
-        );
-
-        if solo_ramping {
-            let delta = step * block_size as f32;
-            self.solo.mix = if solo_start < solo_target {
-                (solo_start + delta).min(solo_target)
-            } else {
-                (solo_start - delta).max(solo_target)
-            };
-        }
-        if !self.solo.target_solo && self.solo.mix <= f32::EPSILON {
-            self.solo.mix = 0.0;
-            self.solo.active_mask = 0;
-            self.solo_delay_line.fill(0.0);
-        }
-
-        if is_ramping {
-            let delta = step * block_size as f32;
-            self.bypass.mix = if start_mix < target_mix {
-                (start_mix + delta).min(target_mix)
-            } else {
-                (start_mix - delta).max(target_mix)
-            };
-        }
+        self.render_block_dsp(layout, &state, &block_coeffs, sample_rate);
+        self.advance_ramp_states(block_size, state.solo_ramp, state.bypass_ramp);
     }
 }
 
-/// Process planar audio in place using the UPOLS linear-phase convolver.
-fn process_linear_phase_planar(
-    convolver: &mut LinearPhaseConvolver,
-    buffer: &mut [f32],
-    dry_buffer: &[f32],
-    max_block: usize,
-    channels: usize,
-    block_size: usize,
-) {
-    if channels == 1 {
-        convolver.process_mono(&mut buffer[..block_size]);
-        return;
-    }
-
-    let (left_buf, right_buf) = buffer.split_at_mut(max_block);
-    convolver.process_stereo(&mut left_buf[..block_size], &mut right_buf[..block_size]);
-
-    for ch in 2..channels {
-        let offset = ch * max_block;
-        buffer[offset..offset + block_size]
-            .copy_from_slice(&dry_buffer[offset..offset + block_size]);
-    }
-}
-
-/// Process planar audio in place using the minimum-phase biquad cascade.
-fn process_minimum_phase_planar(
-    buffer: &mut [f32],
-    max_block: usize,
-    channels: usize,
-    block_size: usize,
-    block_coeffs: &[BiquadCoefficients; MAX_BANDS],
-    eq_params: &EqParameters,
-    delay_line: &mut [f32],
-) {
-    if channels == 2 {
-        let (left_buf, right_buf) = buffer.split_at_mut(max_block);
-        let left = &mut left_buf[..block_size];
-        let right = &mut right_buf[..block_size];
-
-        let mut has_ms_band = false;
-        for (band_idx, coeffs) in block_coeffs.iter().enumerate() {
-            if !eq_params.bands[band_idx].enabled {
-                continue;
-            }
-            let routing = eq_params.band_routing(band_idx);
-            if matches!(routing, BandRouting::Mid | BandRouting::Side) {
-                has_ms_band = true;
-                continue;
-            }
-            let band_delay_offset = band_idx * 2 * DELAY_SAMPLES_PER_STAGE;
-            let (delay_l_slice, delay_r_slice) = delay_line
-                [band_delay_offset..band_delay_offset + 2 * DELAY_SAMPLES_PER_STAGE]
-                .split_at_mut(DELAY_SAMPLES_PER_STAGE);
-            if let (Ok(delay_l), Ok(delay_r)) = (
-                <&mut [f32; 4]>::try_from(delay_l_slice),
-                <&mut [f32; 4]>::try_from(delay_r_slice),
-            ) {
-                match routing {
-                    BandRouting::Stereo => {
-                        process_stereo_planar_in_place(left, right, coeffs, delay_l, delay_r);
-                    }
-                    BandRouting::Left => {
-                        process_mono_in_place(left, coeffs, delay_l);
-                    }
-                    BandRouting::Right => {
-                        process_mono_in_place(right, coeffs, delay_r);
-                    }
-                    BandRouting::Mid | BandRouting::Side => {}
-                }
-            }
-        }
-
-        if has_ms_band {
-            lr_to_ms_in_place(left, right);
-            for (band_idx, coeffs) in block_coeffs.iter().enumerate() {
-                if !eq_params.bands[band_idx].enabled {
-                    continue;
-                }
-                let routing = eq_params.band_routing(band_idx);
-                if !matches!(routing, BandRouting::Mid | BandRouting::Side) {
-                    continue;
-                }
-                let band_delay_offset = band_idx * 2 * DELAY_SAMPLES_PER_STAGE;
-                let (delay_m_slice, delay_s_slice) = delay_line
-                    [band_delay_offset..band_delay_offset + 2 * DELAY_SAMPLES_PER_STAGE]
-                    .split_at_mut(DELAY_SAMPLES_PER_STAGE);
-                if let (Ok(delay_m), Ok(delay_s)) = (
-                    <&mut [f32; 4]>::try_from(delay_m_slice),
-                    <&mut [f32; 4]>::try_from(delay_s_slice),
-                ) {
-                    match routing {
-                        BandRouting::Mid => {
-                            process_mono_in_place(left, coeffs, delay_m);
-                        }
-                        BandRouting::Side => {
-                            process_mono_in_place(right, coeffs, delay_s);
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            ms_to_lr_in_place(left, right);
-        }
-        return;
-    }
-
-    for ch_idx in 0..channels {
-        let buffer_offset = ch_idx * max_block;
-        let samples = &mut buffer[buffer_offset..buffer_offset + block_size];
-        for (band_idx, coeffs) in block_coeffs.iter().enumerate() {
-            if !eq_params.bands[band_idx].enabled {
-                continue;
-            }
-            let delay_offset =
-                band_idx * channels * DELAY_SAMPLES_PER_STAGE + ch_idx * DELAY_SAMPLES_PER_STAGE;
-            let delay_slice = &mut delay_line[delay_offset..delay_offset + DELAY_SAMPLES_PER_STAGE];
-            if let Ok(delay) = <&mut [f32; 4]>::try_from(delay_slice) {
-                process_mono_in_place(samples, coeffs, delay);
-            }
-        }
-    }
-}
-
-/// Borrowed planar slices for stereo Band Solo audition rendering.
-struct StereoSoloIo<'a> {
-    out_l: &'a mut [f32],
-    out_r: &'a mut [f32],
-    dry_l: &'a [f32],
-    dry_r: &'a [f32],
-    scratch_l: &'a mut [f32],
-    scratch_r: &'a mut [f32],
-}
-
-/// Borrowed slices and channel metadata for mono/multi-channel Band Solo rendering.
-struct MonoSoloIo<'a> {
-    out: &'a mut [f32],
-    dry: &'a [f32],
-    scratch: &'a mut [f32],
-    ch_idx: usize,
-    channels: usize,
-}
-
-/// Render parallel stereo Band Solo audition into `io.out_l` / `io.out_r` from dry input.
-fn render_stereo_solo_audition(
-    io: StereoSoloIo<'_>,
-    active_mask: u8,
-    solo_coeffs: &[BiquadCoefficients; MAX_BANDS],
-    eq_params: &EqParameters,
-    solo_delay_line: &mut [f32],
-) {
-    const INV_SQRT_2: f32 = std::f32::consts::FRAC_1_SQRT_2;
-
-    io.out_l.fill(0.0);
-    io.out_r.fill(0.0);
-
-    // Pass 1: accumulate Mid/Side solo bands in M/S domain, then convert to L/R once.
-    let mut has_ms_solo = false;
-    for (band_idx, coeffs) in solo_coeffs.iter().enumerate() {
-        if (active_mask & (1 << band_idx)) == 0 {
-            continue;
-        }
-        let routing = eq_params.band_routing(band_idx);
-        if !matches!(routing, BandRouting::Mid | BandRouting::Side) {
-            continue;
-        }
-        has_ms_solo = true;
-        let band_delay_offset = band_idx * 2 * DELAY_SAMPLES_PER_STAGE;
-        let (delay_l_slice, delay_r_slice) = solo_delay_line
-            [band_delay_offset..band_delay_offset + 2 * DELAY_SAMPLES_PER_STAGE]
-            .split_at_mut(DELAY_SAMPLES_PER_STAGE);
-        if let (Ok(delay_l), Ok(delay_r)) = (
-            <&mut [f32; 4]>::try_from(delay_l_slice),
-            <&mut [f32; 4]>::try_from(delay_r_slice),
-        ) {
-            match routing {
-                BandRouting::Mid => {
-                    for ((dst, &dl), &dr) in io
-                        .scratch_l
-                        .iter_mut()
-                        .zip(io.dry_l.iter())
-                        .zip(io.dry_r.iter())
-                    {
-                        *dst = (dl + dr) * INV_SQRT_2;
-                    }
-                    process_mono_in_place(io.scratch_l, coeffs, delay_l);
-                    for (dst, &src) in io.out_l.iter_mut().zip(io.scratch_l.iter()) {
-                        *dst += src;
-                    }
-                }
-                BandRouting::Side => {
-                    for ((dst, &dl), &dr) in io
-                        .scratch_r
-                        .iter_mut()
-                        .zip(io.dry_l.iter())
-                        .zip(io.dry_r.iter())
-                    {
-                        *dst = (dl - dr) * INV_SQRT_2;
-                    }
-                    process_mono_in_place(io.scratch_r, coeffs, delay_r);
-                    for (dst, &src) in io.out_r.iter_mut().zip(io.scratch_r.iter()) {
-                        *dst += src;
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-    if has_ms_solo {
-        ms_to_lr_in_place(io.out_l, io.out_r);
-    }
-
-    // Pass 2: accumulate Stereo / Left / Right solo bands directly in L/R domain.
-    for (band_idx, coeffs) in solo_coeffs.iter().enumerate() {
-        if (active_mask & (1 << band_idx)) == 0 {
-            continue;
-        }
-        let routing = eq_params.band_routing(band_idx);
-        if matches!(routing, BandRouting::Mid | BandRouting::Side) {
-            continue;
-        }
-        let band_delay_offset = band_idx * 2 * DELAY_SAMPLES_PER_STAGE;
-        let (delay_l_slice, delay_r_slice) = solo_delay_line
-            [band_delay_offset..band_delay_offset + 2 * DELAY_SAMPLES_PER_STAGE]
-            .split_at_mut(DELAY_SAMPLES_PER_STAGE);
-        if let (Ok(delay_l), Ok(delay_r)) = (
-            <&mut [f32; 4]>::try_from(delay_l_slice),
-            <&mut [f32; 4]>::try_from(delay_r_slice),
-        ) {
-            match routing {
-                BandRouting::Stereo => {
-                    io.scratch_l.copy_from_slice(io.dry_l);
-                    io.scratch_r.copy_from_slice(io.dry_r);
-                    process_stereo_planar_in_place(
-                        io.scratch_l,
-                        io.scratch_r,
-                        coeffs,
-                        delay_l,
-                        delay_r,
-                    );
-                    for (dst, &src) in io.out_l.iter_mut().zip(io.scratch_l.iter()) {
-                        *dst += src;
-                    }
-                    for (dst, &src) in io.out_r.iter_mut().zip(io.scratch_r.iter()) {
-                        *dst += src;
-                    }
-                }
-                BandRouting::Left => {
-                    io.scratch_l.copy_from_slice(io.dry_l);
-                    process_mono_in_place(io.scratch_l, coeffs, delay_l);
-                    for (dst, &src) in io.out_l.iter_mut().zip(io.scratch_l.iter()) {
-                        *dst += src;
-                    }
-                }
-                BandRouting::Right => {
-                    io.scratch_r.copy_from_slice(io.dry_r);
-                    process_mono_in_place(io.scratch_r, coeffs, delay_r);
-                    for (dst, &src) in io.out_r.iter_mut().zip(io.scratch_r.iter()) {
-                        *dst += src;
-                    }
-                }
-                BandRouting::Mid | BandRouting::Side => {}
-            }
-        }
-    }
-}
-
-/// Render parallel mono/multi-channel Band Solo audition into `io.out` from `io.dry`.
-fn render_mono_solo_audition(
-    io: MonoSoloIo<'_>,
-    active_mask: u8,
-    solo_coeffs: &[BiquadCoefficients; MAX_BANDS],
-    solo_delay_line: &mut [f32],
-) {
-    io.out.fill(0.0);
-    for (band_idx, coeffs) in solo_coeffs.iter().enumerate() {
-        if (active_mask & (1 << band_idx)) == 0 {
-            continue;
-        }
-        io.scratch.copy_from_slice(io.dry);
-        let delay_offset =
-            band_idx * io.channels * DELAY_SAMPLES_PER_STAGE + io.ch_idx * DELAY_SAMPLES_PER_STAGE;
-        let delay_slice =
-            &mut solo_delay_line[delay_offset..delay_offset + DELAY_SAMPLES_PER_STAGE];
-        if let Ok(delay) = <&mut [f32; 4]>::try_from(delay_slice) {
-            process_mono_in_place(io.scratch, coeffs, delay);
-        }
-        for (dst, &src) in io.out.iter_mut().zip(io.scratch.iter()) {
-            *dst += src;
-        }
-    }
-}
-
-/// Apply continuous equal-power sin/cos crossfade between `samples` (`mix == 0.0`) and
-/// `other_samples` (`mix == 1.0`).
+/// Read the latest automation value for `param_id` in the block or at its final sample.
 #[inline]
-fn apply_equal_power_crossfade(
-    samples: &mut [f32],
-    other_samples: &[f32],
-    start_mix: f32,
-    target_mix: f32,
-    step: f32,
-) {
-    let mut mix = start_mix;
-    for (sample, &other) in samples.iter_mut().zip(other_samples.iter()) {
-        let angle = mix * std::f32::consts::FRAC_PI_2;
-        let primary_gain = angle.cos();
-        let secondary_gain = angle.sin();
-        *sample = *sample * primary_gain + other * secondary_gain;
-
-        if mix < target_mix {
-            mix = (mix + step).min(target_mix);
-        } else if mix > target_mix {
-            mix = (mix - step).max(target_mix);
-        }
-    }
+fn last_or_sample(
+    provider: &AutomationValueProvider,
+    param_id: ParamId,
+    block_length: u32,
+) -> Option<f32> {
+    provider
+        .last_value_in_block(param_id, block_length)
+        .or_else(|| provider.value_at_sample(param_id, block_length.saturating_sub(1), None))
 }

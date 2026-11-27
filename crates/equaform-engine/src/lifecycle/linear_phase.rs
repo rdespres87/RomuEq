@@ -1,5 +1,6 @@
 //! Linear-phase bypass dry delay line and click-free mode transition state.
 
+use super::render::BlockLayout;
 use super::{FLAT_BUFFER_SIZE, LIFECYCLE_MAX_CHANNELS};
 use equaform_common::ProcessingMode;
 
@@ -161,9 +162,7 @@ impl ModeTransitionState {
     pub(super) fn apply_input_fade_in(
         &mut self,
         buffer: &mut [f32],
-        max_block: usize,
-        channels: usize,
-        block_size: usize,
+        layout: BlockLayout,
         step: f32,
     ) {
         if self.input_fade_gain >= 1.0 - f32::EPSILON {
@@ -172,10 +171,10 @@ impl ModeTransitionState {
 
         let start_gain = self.input_fade_gain;
         let mut end_gain = start_gain;
-        for ch in 0..channels {
-            let offset = ch * max_block;
+        for ch in 0..layout.channels {
+            let offset = ch * layout.max_block;
             let mut gain = start_gain;
-            for sample in &mut buffer[offset..offset + block_size] {
+            for sample in &mut buffer[offset..offset + layout.block_size] {
                 *sample *= gain;
                 gain = (gain + step).min(1.0);
             }
@@ -207,20 +206,14 @@ impl ModeTransitionState {
     }
 
     /// Captures the final output sample of each active channel for smooth tail fades.
-    pub(super) fn record_last_rendered(
-        &mut self,
-        buffer: &[f32],
-        max_block: usize,
-        channels: usize,
-        block_size: usize,
-    ) {
-        if block_size == 0 {
+    pub(super) fn record_last_rendered(&mut self, buffer: &[f32], layout: BlockLayout) {
+        if layout.block_size == 0 {
             return;
         }
-        let last_idx = block_size - 1;
-        let ch_count = channels.min(LIFECYCLE_MAX_CHANNELS);
+        let last_idx = layout.block_size - 1;
+        let ch_count = layout.channels.min(LIFECYCLE_MAX_CHANNELS);
         for (ch, slot) in self.last_rendered[..ch_count].iter_mut().enumerate() {
-            if let Some(&sample) = buffer.get(ch * max_block + last_idx) {
+            if let Some(&sample) = buffer.get(ch * layout.max_block + last_idx) {
                 *slot = sample;
             }
         }

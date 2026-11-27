@@ -1985,3 +1985,55 @@ fn test_linear_phase_automation_reset_and_large_block_dry_delay() {
     // Steady state tail (after latency settle) must reflect the +24 dB automated boost
     assert!(solo_test_rms(&out_l[2048..]) > 5.0 * solo_test_rms(&sine[..2048]));
 }
+
+#[test]
+fn test_output_gain_linear_cache_accuracy_and_reuse() {
+    let mut engine = Box::new(EngineLifecycle::new());
+    engine.prepare(48_000.0, 64, 2);
+
+    let in_l = [0.5_f32; 64];
+    let in_r = [0.5_f32; 64];
+    let mut out_l = [0.0_f32; 64];
+    let mut out_r = [0.0_f32; 64];
+
+    let mut params = EqParameters::default();
+    params.global.output_gain_db = 6.0;
+    engine.set_parameters(params);
+
+    assert!(engine.process(&[&in_l, &in_r], &mut [&mut out_l, &mut out_r]));
+    let expected_6db = 10.0_f32.powf(6.0 / 20.0);
+    assert_eq!(
+        engine.coeff_cache.last_output_gain_db.to_bits(),
+        6.0_f32.to_bits()
+    );
+    assert_eq!(
+        engine.coeff_cache.output_gain_linear.to_bits(),
+        expected_6db.to_bits()
+    );
+    assert!((out_l[0] - 0.5 * expected_6db).abs() < 1e-6);
+
+    // Inject a sentinel linear value while keeping the cached dB key intact:
+    // repeated blocks with the same output_gain_db must reuse the cache without recomputing.
+    engine.coeff_cache.output_gain_linear = 0.25;
+    assert!(engine.process(&[&in_l, &in_r], &mut [&mut out_l, &mut out_r]));
+    assert_eq!(
+        engine.coeff_cache.output_gain_linear.to_bits(),
+        0.25_f32.to_bits()
+    );
+    assert!((out_l[0] - 0.125).abs() < 1e-6);
+
+    // Changing output_gain_db invalidates the cache and recomputes exact 10^(db/20).
+    params.global.output_gain_db = -3.0;
+    engine.set_parameters(params);
+    assert!(engine.process(&[&in_l, &in_r], &mut [&mut out_l, &mut out_r]));
+    let expected_neg3db = 10.0_f32.powf(-3.0 / 20.0);
+    assert_eq!(
+        engine.coeff_cache.last_output_gain_db.to_bits(),
+        (-3.0_f32).to_bits()
+    );
+    assert_eq!(
+        engine.coeff_cache.output_gain_linear.to_bits(),
+        expected_neg3db.to_bits()
+    );
+    assert!((out_l[0] - 0.5 * expected_neg3db).abs() < 1e-6);
+}

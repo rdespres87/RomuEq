@@ -181,16 +181,20 @@ impl ConvolverEngine {
                 &self.fdl,
                 self.fdl_head,
                 &mut self.bufs,
-                &mut self.old_block_l,
-                &mut self.old_block_r,
+                StereoOut {
+                    left: &mut self.old_block_l,
+                    right: &mut self.old_block_r,
+                },
             );
             convolve_bank(
                 &self.banks[new_idx],
                 &self.fdl,
                 self.fdl_head,
                 &mut self.bufs,
-                &mut self.out_block_l,
-                &mut self.out_block_r,
+                StereoOut {
+                    left: &mut self.out_block_l,
+                    right: &mut self.out_block_r,
+                },
             );
 
             crossfade_block(&self.old_block_l, &mut self.out_block_l);
@@ -204,8 +208,10 @@ impl ConvolverEngine {
                 &self.fdl,
                 self.fdl_head,
                 &mut self.bufs,
-                &mut self.out_block_l,
-                &mut self.out_block_r,
+                StereoOut {
+                    left: &mut self.out_block_l,
+                    right: &mut self.out_block_r,
+                },
             );
         }
 
@@ -247,13 +253,18 @@ fn crossfade_block(old_block: &[f32], new_block: &mut [f32]) {
     }
 }
 
+/// Mutable stereo output slices for UPOLS bank convolution.
+struct StereoOut<'a> {
+    left: &'a mut [f32],
+    right: &'a mut [f32],
+}
+
 fn convolve_bank(
     bank: &PartitionBank,
     fdl: &[Vec<Complex<f32>>; 2],
     fdl_head: usize,
     bufs: &mut ConvolutionBuffers,
-    out_l: &mut [f32],
-    out_r: &mut [f32],
+    out: StereoOut<'_>,
 ) {
     let zero = Complex::new(0.0, 0.0);
     bufs.acc_l.fill(zero);
@@ -309,11 +320,12 @@ fn convolve_bank(
         .process_with_scratch(&mut bufs.acc_r, &mut bufs.scratch);
 
     let inv_fft = 1.0 / UPOLS_FFT_SIZE as f32;
-    for ((dst_l, src_l), (dst_r, src_r)) in out_l
+    for ((dst_l, src_l), (dst_r, src_r)) in out
+        .left
         .iter_mut()
         .zip(bufs.acc_l[UPOLS_BLOCK_SIZE..UPOLS_FFT_SIZE].iter())
         .zip(
-            out_r
+            out.right
                 .iter_mut()
                 .zip(bufs.acc_r[UPOLS_BLOCK_SIZE..UPOLS_FFT_SIZE].iter()),
         )

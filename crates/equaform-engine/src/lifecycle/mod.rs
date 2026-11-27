@@ -193,12 +193,14 @@ impl SoloTransitionState {
     }
 }
 
-/// Pre-computed biquad coefficients and perceptual auto-gain cache.
+/// Pre-computed biquad coefficients, perceptual auto-gain, and linear output gain cache.
 pub(super) struct CoefficientCache {
     pub(super) coeffs: [BiquadCoefficients; MAX_BANDS],
     pub(super) solo_coeffs: [BiquadCoefficients; MAX_BANDS],
     pub(super) dirty: bool,
     pub(super) auto_gain_db: f32,
+    pub(super) last_output_gain_db: f32,
+    pub(super) output_gain_linear: f32,
 }
 
 impl CoefficientCache {
@@ -208,7 +210,14 @@ impl CoefficientCache {
             solo_coeffs: [BiquadCoefficients::default(); MAX_BANDS],
             dirty: true,
             auto_gain_db: 0.0,
+            last_output_gain_db: f32::NAN,
+            output_gain_linear: 1.0,
         }
+    }
+
+    pub(super) fn reset_output_gain_cache(&mut self) {
+        self.last_output_gain_db = f32::NAN;
+        self.output_gain_linear = 1.0;
     }
 }
 
@@ -287,6 +296,7 @@ pub struct EngineLifecycle {
 mod auto_gain;
 mod linear_phase;
 mod processor;
+mod render;
 
 #[cfg(test)]
 mod tests;
@@ -375,6 +385,7 @@ impl EngineLifecycle {
         self.automation_ingestor = Some(AutomationIngestor::new(InterpolationMode::Linear));
 
         self.recompute_all_coefficients();
+        self.coeff_cache.reset_output_gain_cache();
         let mode = self.eq_params.global.processing_mode;
         self.linear_phase
             .update_kernel(&self.eq_params, sample_rate as f32, mode);
@@ -431,7 +442,6 @@ impl EngineLifecycle {
     ///
     /// The GUI thread calls `consume_all()` on the returned buffer to drain
     /// analysis frames produced by the audio thread.
-    #[allow(dead_code)]
     pub fn analysis_buffer(&mut self) -> &mut AnalysisBuffer {
         &mut self.analysis_buffer
     }
@@ -471,6 +481,7 @@ impl EngineLifecycle {
             self.bypass.reset();
             self.dry_delay_line.reset();
             self.linear_phase.reset();
+            self.coeff_cache.reset_output_gain_cache();
             self.mode_transition
                 .reset(self.eq_params.global.processing_mode);
         }
@@ -497,6 +508,7 @@ impl EngineLifecycle {
         self.bypass.reset();
         self.dry_delay_line.reset();
         self.linear_phase.reset();
+        self.coeff_cache.reset_output_gain_cache();
         self.mode_transition
             .reset(self.eq_params.global.processing_mode);
     }
