@@ -2442,3 +2442,25 @@ fn test_linear_phase_unsolo_has_no_stale_audio_burst() {
         "stale LinearPhase audio burst leaked on un-solo: max_leak={max_leak}"
     );
 }
+
+#[test]
+fn process_in_place_matches_standard_process() {
+    let mut e_std = EngineLifecycle::new();
+    let mut e_ip = EngineLifecycle::new();
+    assert!(e_std.prepare(48000.0, 64, 2));
+    assert!(e_ip.prepare(48000.0, 64, 2));
+
+    let in_l: Vec<f32> = (0..32).map(|i| (i as f32 * 0.1).sin()).collect();
+    let in_r: Vec<f32> = (0..32).map(|i| (i as f32 * 0.2).cos()).collect();
+    let mut out_l = vec![0.0f32; 32];
+    let mut out_r = vec![0.0f32; 32];
+    assert!(e_std.process(&[&in_l, &in_r], &mut [&mut out_l, &mut out_r]));
+
+    let mut ip_l = in_l;
+    let mut ip_r = in_r;
+    assert!(e_ip.process_in_place(&mut [&mut ip_l, &mut ip_r]));
+    assert_eq!(ip_l, out_l);
+    assert_eq!(ip_r, out_r);
+    assert!(!e_ip.process_in_place(&mut [&mut [0.0; 65], &mut [0.0; 65]]));
+    assert!(!e_ip.process_in_place(&mut [&mut [], &mut []]));
+}

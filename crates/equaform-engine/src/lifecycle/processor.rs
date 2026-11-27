@@ -52,6 +52,27 @@ impl EngineLifecycle {
         }
     }
 
+    /// Execute DSP, analysis capture, and block counters on `self.buffer`.
+    #[inline]
+    fn run_internal_block(&mut self, block_size: usize) {
+        let automation_provider = self.create_automation_provider(block_size);
+
+        self.process_dsp(block_size, &automation_provider);
+
+        let frame = AnalysisFrame::compute_planar(
+            &self.buffer,
+            self.topology.max_block_size,
+            self.topology.channels,
+            self.topology.sample_rate,
+            block_size,
+            self.blocks_processed,
+        );
+        self.analysis_buffer.push(frame);
+
+        self.sample_offset += block_size as u64;
+        self.blocks_processed += 1;
+    }
+
     /// Process a single audio block.
     ///
     /// # Allocation
@@ -75,32 +96,51 @@ impl EngineLifecycle {
             return false;
         }
 
-        let automation_provider = self.create_automation_provider(block_size);
-
         for (ch, input_ch) in inputs.iter().enumerate().take(self.topology.channels) {
             let offset = ch * self.topology.max_block_size;
             self.buffer[offset..offset + block_size].copy_from_slice(input_ch);
         }
 
-        self.process_dsp(block_size, &automation_provider);
-
-        let frame = AnalysisFrame::compute_planar(
-            &self.buffer,
-            self.topology.max_block_size,
-            self.topology.channels,
-            self.topology.sample_rate,
-            block_size,
-            self.blocks_processed,
-        );
-        self.analysis_buffer.push(frame);
+        self.run_internal_block(block_size);
 
         for (ch, output_ch) in outputs.iter_mut().enumerate().take(self.topology.channels) {
             let offset = ch * self.topology.max_block_size;
             output_ch.copy_from_slice(&self.buffer[offset..offset + block_size]);
         }
 
-        self.sample_offset += block_size as u64;
-        self.blocks_processed += 1;
+        true
+    }
+
+    /// Process a single audio block in place using caller-provided planar channel slices.
+    ///
+    /// # Allocation
+    ///
+    /// **No allocation.** Uses the pre-allocated internal planar buffer for stride alignment.
+    pub fn process_in_place(&mut self, channels: &mut [&mut [f32]]) -> bool {
+        if self.state != LifecycleState::Ready || channels.len() != self.topology.channels {
+            return false;
+        }
+
+        let block_size = channels.first().map(|s| s.len()).unwrap_or(0);
+        if block_size == 0
+            || block_size > self.topology.max_block_size
+            || channels.iter().any(|s| s.len() != block_size)
+        {
+            return false;
+        }
+
+        for (ch, channel_buf) in channels.iter().enumerate().take(self.topology.channels) {
+            let offset = ch * self.topology.max_block_size;
+            self.buffer[offset..offset + block_size].copy_from_slice(channel_buf);
+        }
+
+        self.run_internal_block(block_size);
+
+        for (ch, channel_buf) in channels.iter_mut().enumerate().take(self.topology.channels) {
+            let offset = ch * self.topology.max_block_size;
+            channel_buf.copy_from_slice(&self.buffer[offset..offset + block_size]);
+        }
+
         true
     }
 
