@@ -32,6 +32,7 @@ struct OutputCallbackState {
     spectrum_samples: Arc<Vec<AtomicU32>>,
     phase: f64,
     mute_gain: f32,
+    has_seen_audio: bool,
     left_in: Vec<f32>,
     right_in: Vec<f32>,
     left_out: Vec<f32>,
@@ -56,6 +57,7 @@ impl OutputCallbackState {
             },
             phase: &mut self.phase,
             mute_gain: &mut self.mute_gain,
+            has_seen_audio: &mut self.has_seen_audio,
             scratch: AudioScratchBuffers {
                 left_in: &mut self.left_in,
                 right_in: &mut self.right_in,
@@ -509,11 +511,8 @@ impl AudioStream {
             peak_r: Arc::clone(&self.peak_r),
             spectrum_samples: Arc::clone(&self.spectrum_samples),
             phase: 0.0,
-            mute_gain: if self.is_muted.load(Ordering::Acquire) {
-                0.0
-            } else {
-                1.0
-            },
+            mute_gain: 0.0,
+            has_seen_audio: false,
             left_in: vec![0.0f32; MAX_SCRATCH_FRAMES],
             right_in: vec![0.0f32; MAX_SCRATCH_FRAMES],
             left_out: vec![0.0f32; MAX_SCRATCH_FRAMES],
@@ -544,6 +543,11 @@ impl AudioStream {
 
     /// Stops audio playback and resets engine buffers.
     pub fn stop(&mut self) -> Result<(), String> {
+        if self.is_active && !self.is_muted.load(Ordering::Acquire) {
+            // Allow the 150 ms audio-thread S-curve fade-out + hardware buffer to flush.
+            self.is_muted.store(true, Ordering::Release);
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
         self.is_running.store(false, Ordering::Release);
         if let Some(ref s) = self._output_stream {
             let _ = s.pause();

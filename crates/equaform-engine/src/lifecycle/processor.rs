@@ -1,9 +1,9 @@
 //! Real-time audio processing, automation ingestion, DSP routing, and click-free transitions.
 
 use super::render::{
-    BlockLayout, MonoSoloIo, RampParams, StereoSoloIo, apply_equal_power_crossfade,
-    process_linear_phase_planar, process_minimum_phase_planar, render_mono_solo_audition,
-    render_stereo_solo_audition,
+    BlockLayout, MinimumPhaseCtx, MonoSoloIo, RampParams, StereoSoloIo,
+    apply_equal_power_crossfade, process_linear_phase_planar, process_minimum_phase_planar,
+    render_mono_solo_audition, render_stereo_solo_audition,
 };
 use super::{CROSSFADE_MS, EngineLifecycle, LifecycleState};
 use equaform_analysis::AnalysisFrame;
@@ -168,7 +168,10 @@ impl EngineLifecycle {
             }
         }
 
-        if any_automated && self.eq_params.global.auto_gain {
+        if any_automated
+            && self.eq_params.global.auto_gain
+            && !self.eq_params.global.processing_mode.is_linear_phase()
+        {
             self.update_auto_gain_db();
         }
         any_automated
@@ -226,6 +229,14 @@ impl EngineLifecycle {
         let (active_solo_mask, solo_ramp) = self.prepare_solo_state(is_first_block, step);
         let run_solo = self.solo.target_solo || solo_ramp.ramping;
         let run_normal = !self.solo.target_solo || solo_ramp.ramping;
+
+        if self.eq_params.global.processing_mode.is_linear_phase()
+            && !is_first_block
+            && self.linear_phase.poll_async_kernel()
+            && self.eq_params.global.auto_gain
+        {
+            self.update_auto_gain_db();
+        }
 
         let auto_comp_db = if self.eq_params.global.auto_gain {
             self.coeff_cache.auto_gain_db * (1.0 - solo_ramp.start)
@@ -329,12 +340,21 @@ impl EngineLifecycle {
         output_gain_linear: f32,
     ) {
         if self.mode_transition.use_tail_fade {
-            for (ch, &tail) in self.mode_transition.prev_output[..layout.channels]
-                .iter()
+            let sr = self.topology.sample_rate.max(1.0) as f32;
+            let decay = (-1.0_f32 / (0.002 * sr)).exp();
+            for (ch, tail) in self.mode_transition.prev_output[..layout.channels]
+                .iter_mut()
                 .enumerate()
             {
                 let offset = ch * layout.max_block;
-                self.mode_transition.scratch_buffer[offset..offset + layout.block_size].fill(tail);
+                let mut s = *tail;
+                for sample in
+                    &mut self.mode_transition.scratch_buffer[offset..offset + layout.block_size]
+                {
+                    s *= decay;
+                    *sample = s;
+                }
+                *tail = s;
             }
             return;
         }
@@ -349,9 +369,14 @@ impl EngineLifecycle {
             process_minimum_phase_planar(
                 &mut self.mode_transition.scratch_buffer,
                 layout,
-                block_coeffs,
-                &self.eq_params,
-                &mut self.delay_line,
+                MinimumPhaseCtx {
+                    block_coeffs,
+                    eq_params: &self.eq_params,
+                    delay_line: &mut self.delay_line,
+                    cache: &mut self.coeff_cache,
+                    sample_rate: self.topology.sample_rate as f32,
+                    is_first_block: self.blocks_processed == 0,
+                },
             );
         } else {
             process_linear_phase_planar(
@@ -431,6 +456,8 @@ impl EngineLifecycle {
                 &self.coeff_cache.solo_coeffs,
                 &self.eq_params,
                 &mut self.solo_delay_line,
+                &mut self.solo.routing_state,
+                self.topology.sample_rate as f32,
             );
             apply_equal_power_crossfade(left, solo_l, ramp);
             apply_equal_power_crossfade(right, solo_r, ramp);
@@ -448,6 +475,8 @@ impl EngineLifecycle {
                 &self.coeff_cache.solo_coeffs,
                 &self.eq_params,
                 &mut self.solo_delay_line,
+                &mut self.solo.routing_state,
+                self.topology.sample_rate as f32,
             );
         }
     }
@@ -492,19 +521,41 @@ impl EngineLifecycle {
         }
     }
 
-    /// Apply output gain and bypass crossfade across all active channels.
+    /// Apply smoothed output gain and bypass crossfade across all active channels.
     fn apply_output_gain_and_bypass(
         &mut self,
         layout: BlockLayout,
         output_gain_linear: f32,
         ramp: RampParams,
     ) {
+        let is_first_block = self.blocks_processed == 0;
+        if is_first_block {
+            self.coeff_cache.current_output_gain_linear = output_gain_linear;
+        }
+        let start_gain = self.coeff_cache.current_output_gain_linear;
+        let is_gain_ramping = (start_gain - output_gain_linear).abs() > 1e-6;
+        let alpha = if is_gain_ramping {
+            let sr = self.topology.sample_rate.max(1.0) as f32;
+            1.0 - (-1.0 / (0.0015 * sr)).exp()
+        } else {
+            self.coeff_cache.current_output_gain_linear = output_gain_linear;
+            0.0
+        };
+        let mut end_gain = start_gain;
+
         for ch in 0..layout.channels {
             let offset = ch * layout.max_block;
             let samples = &mut self.buffer[offset..offset + layout.block_size];
             let dry_samples = &self.bypass.dry_buffer[offset..offset + layout.block_size];
 
-            if output_gain_linear != 1.0 {
+            if is_gain_ramping {
+                let mut g = start_gain;
+                for s in samples.iter_mut() {
+                    g += alpha * (output_gain_linear - g);
+                    *s *= g;
+                }
+                end_gain = g;
+            } else if (output_gain_linear - 1.0).abs() > f32::EPSILON {
                 samples.iter_mut().for_each(|s| *s *= output_gain_linear);
             }
 
@@ -513,6 +564,15 @@ impl EngineLifecycle {
             } else if self.bypass.target_bypass {
                 samples.copy_from_slice(dry_samples);
             }
+        }
+
+        if is_gain_ramping {
+            self.coeff_cache.current_output_gain_linear =
+                if (end_gain - output_gain_linear).abs() <= 1e-6 {
+                    output_gain_linear
+                } else {
+                    end_gain
+                };
         }
     }
 
@@ -523,6 +583,17 @@ impl EngineLifecycle {
         }
 
         let max_block = self.topology.max_block_size;
+        if self.mode_transition.warmup_remaining > 0 {
+            for ch in 0..self.topology.channels {
+                let offset = ch * max_block;
+                self.buffer[offset..offset + block_size].copy_from_slice(
+                    &self.mode_transition.scratch_buffer[offset..offset + block_size],
+                );
+            }
+            let _ = self.mode_transition.advance(step, block_size);
+            return;
+        }
+
         let mode_ramp = RampParams {
             start: self.mode_transition.mix,
             target: 0.0,
@@ -564,7 +635,7 @@ impl EngineLifecycle {
     ) {
         self.populate_dry_buffer(layout, state.target_mode);
 
-        if state.run_normal {
+        if state.run_normal || state.target_mode.is_linear_phase() {
             if state.target_mode.is_linear_phase() {
                 self.mode_transition
                     .apply_input_fade_in(&mut self.buffer, layout, state.step);
@@ -578,9 +649,14 @@ impl EngineLifecycle {
                 process_minimum_phase_planar(
                     &mut self.buffer,
                     layout,
-                    block_coeffs,
-                    &self.eq_params,
-                    &mut self.delay_line,
+                    MinimumPhaseCtx {
+                        block_coeffs,
+                        eq_params: &self.eq_params,
+                        delay_line: &mut self.delay_line,
+                        cache: &mut self.coeff_cache,
+                        sample_rate,
+                        is_first_block: self.blocks_processed == 0,
+                    },
                 );
             }
         }
@@ -608,6 +684,7 @@ impl EngineLifecycle {
         if !self.solo.target_solo && self.solo.mix <= f32::EPSILON {
             self.solo.mix = 0.0;
             self.solo.active_mask = 0;
+            self.solo.routing_state.reset();
             self.solo_delay_line.fill(0.0);
         }
 

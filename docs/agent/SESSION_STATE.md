@@ -1,8 +1,8 @@
 # Equaform-8 (RomuEq) - Session State
 
-**Date:** 2026-11-26
+**Date:** 2026-11-27
 **Version:** v1.3.0 ("Linear-Phase FIR EQ", local) — `v1.1.1` live on GitHub Releases
-**Maturity Audit:** **9.4 / 10** (+0.9 vs 8.5/10 baseline; **0 P0s, 0 P1s**, 0 `allow(clippy::)`, 0 prod files > 1,000 LOC, 0 stale comments)
+**Maturity Audit:** **9.6 / 10** (**0 P0s, 0 P1s, 0 P2s**, 0 `allow(clippy::)`, 0 prod files > 1,000 LOC, 0 stale comments)
 
 ## Release Assets
 
@@ -16,7 +16,7 @@
 
 ## Test & Lint Status
 
-- **530 tests passed**, 0 failed, 2 ignored (hardware diagnostics) + 2 `compile_fail` doctests in `equaform-engine`
+- **565 tests passed**, 0 failed, 2 ignored (hardware diagnostics) + 2 `compile_fail` doctests in `equaform-engine`
 - `cargo clippy --workspace --all-targets -- -D warnings -D clippy::undocumented_unsafe_blocks`: 0 warnings
 - `cargo fmt --all -- --check`: clean
 - `cargo deny check`: PASS (`advisories ok, bans ok, licenses ok, sources ok`)

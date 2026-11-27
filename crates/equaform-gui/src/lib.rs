@@ -121,9 +121,21 @@ impl ParamSnapshot {
         Self { values }
     }
 
+    /// Create an empty snapshot with pre-allocated capacity for reuse across UI frames.
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            values: Vec::with_capacity(capacity),
+        }
+    }
+
     /// Returns all parameter values in the snapshot.
     pub fn values(&self) -> &[ParamValue] {
         &self.values
+    }
+
+    /// Returns a mutable reference to the backing vector for allocation-free reuse.
+    pub fn values_mut(&mut self) -> &mut Vec<ParamValue> {
+        &mut self.values
     }
 
     /// Get the value for a specific parameter, if present.

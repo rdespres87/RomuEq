@@ -152,6 +152,35 @@ impl BypassTransitionState {
     }
 }
 
+/// Per-band solo routing gain/domain state for click-free L/R & M/S solo switching.
+pub(super) struct SoloRoutingState {
+    pub(super) prev_gain_l: [f32; MAX_BANDS],
+    pub(super) prev_gain_r: [f32; MAX_BANDS],
+    pub(super) prev_routing: [equaform_common::BandRouting; MAX_BANDS],
+    pub(super) last_out: [f32; 2],
+    pub(super) initialized: bool,
+}
+
+impl SoloRoutingState {
+    pub(super) fn new() -> Self {
+        Self {
+            prev_gain_l: [0.0; MAX_BANDS],
+            prev_gain_r: [0.0; MAX_BANDS],
+            prev_routing: [equaform_common::BandRouting::Stereo; MAX_BANDS],
+            last_out: [0.0; 2],
+            initialized: false,
+        }
+    }
+
+    pub(super) fn reset(&mut self) {
+        self.prev_gain_l = [0.0; MAX_BANDS];
+        self.prev_gain_r = [0.0; MAX_BANDS];
+        self.prev_routing = [equaform_common::BandRouting::Stereo; MAX_BANDS];
+        self.last_out = [0.0; 2];
+        self.initialized = false;
+    }
+}
+
 /// Click-free Band Solo crossfade state and pre-allocated planar mix buffer.
 ///
 /// Tracks a continuous `mix` scalar in `[0.0, 1.0]` (`0.0` = normal EQ,
@@ -162,6 +191,7 @@ pub(super) struct SoloTransitionState {
     pub(super) mix: f32,
     pub(super) active_mask: u8,
     pub(super) mix_buffer: Box<[f32]>,
+    pub(super) routing_state: SoloRoutingState,
 }
 
 impl SoloTransitionState {
@@ -171,6 +201,7 @@ impl SoloTransitionState {
             mix: 0.0,
             active_mask: 0,
             mix_buffer: vec![0.0; FLAT_BUFFER_SIZE].into_boxed_slice(),
+            routing_state: SoloRoutingState::new(),
         }
     }
 
@@ -179,6 +210,7 @@ impl SoloTransitionState {
         self.mix = 0.0;
         self.active_mask = 0;
         self.mix_buffer.fill(0.0);
+        self.routing_state.reset();
     }
 
     #[inline]
@@ -196,28 +228,43 @@ impl SoloTransitionState {
 /// Pre-computed biquad coefficients, perceptual auto-gain, and linear output gain cache.
 pub(super) struct CoefficientCache {
     pub(super) coeffs: [BiquadCoefficients; MAX_BANDS],
+    pub(super) prev_coeffs_l: [BiquadCoefficients; MAX_BANDS],
+    pub(super) prev_coeffs_r: [BiquadCoefficients; MAX_BANDS],
+    pub(super) prev_enabled: [bool; MAX_BANDS],
+    pub(super) prev_routing: [equaform_common::BandRouting; MAX_BANDS],
     pub(super) solo_coeffs: [BiquadCoefficients; MAX_BANDS],
     pub(super) dirty: bool,
     pub(super) auto_gain_db: f32,
     pub(super) last_output_gain_db: f32,
     pub(super) output_gain_linear: f32,
+    pub(super) current_output_gain_linear: f32,
 }
 
 impl CoefficientCache {
     pub(super) fn new() -> Self {
         Self {
             coeffs: [BiquadCoefficients::default(); MAX_BANDS],
+            prev_coeffs_l: [BiquadCoefficients::default(); MAX_BANDS],
+            prev_coeffs_r: [BiquadCoefficients::default(); MAX_BANDS],
+            prev_enabled: [false; MAX_BANDS],
+            prev_routing: [equaform_common::BandRouting::Stereo; MAX_BANDS],
             solo_coeffs: [BiquadCoefficients::default(); MAX_BANDS],
             dirty: true,
             auto_gain_db: 0.0,
             last_output_gain_db: f32::NAN,
             output_gain_linear: 1.0,
+            current_output_gain_linear: 1.0,
         }
     }
 
     pub(super) fn reset_output_gain_cache(&mut self) {
         self.last_output_gain_db = f32::NAN;
         self.output_gain_linear = 1.0;
+        self.current_output_gain_linear = 1.0;
+        self.prev_coeffs_l = [BiquadCoefficients::default(); MAX_BANDS];
+        self.prev_coeffs_r = [BiquadCoefficients::default(); MAX_BANDS];
+        self.prev_enabled = [false; MAX_BANDS];
+        self.prev_routing = [equaform_common::BandRouting::Stereo; MAX_BANDS];
     }
 }
 
@@ -405,7 +452,9 @@ impl EngineLifecycle {
         }
         self.coeff_cache.dirty = false;
 
-        self.update_auto_gain_db();
+        if !self.eq_params.global.processing_mode.is_linear_phase() || self.blocks_processed == 0 {
+            self.update_auto_gain_db();
+        }
     }
 
     /// Recompute auto-gain compensation in dB for the active parameters and mode.
@@ -432,9 +481,16 @@ impl EngineLifecycle {
     /// **No allocation.** The `EqParameters` struct is `Copy` and stored inline.
     pub fn set_parameters(&mut self, params: EqParameters) {
         if self.eq_params != params {
+            let mode_changed =
+                self.eq_params.global.processing_mode != params.global.processing_mode;
             self.eq_params = params;
             self.coeff_cache.dirty = true;
-            self.update_auto_gain_db();
+            if !params.global.processing_mode.is_linear_phase()
+                || self.blocks_processed == 0
+                || mode_changed
+            {
+                self.update_auto_gain_db();
+            }
         }
     }
 

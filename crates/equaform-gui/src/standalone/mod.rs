@@ -25,6 +25,17 @@ pub fn request_graceful_shutdown() -> bool {
     }
 }
 
+/// Returns `true` once a graceful shutdown (`SIGINT`/`SIGTERM`/`SIGHUP`) has been requested.
+#[inline]
+pub(crate) fn is_shutdown_requested() -> bool {
+    GRACEFUL_SHUTDOWN_REQUESTED.load(Ordering::Acquire)
+}
+
+#[cfg(test)]
+pub(crate) fn clear_shutdown_requested_for_test() {
+    GRACEFUL_SHUTDOWN_REQUESTED.store(false, Ordering::Release);
+}
+
 /// Run the GUI application as a standalone desktop app.
 pub fn run(app: impl GuiApp) -> eframe::Result {
     let (w, h) = app.window_size();

@@ -130,6 +130,139 @@ pub fn process_stereo_planar_in_place(
     delay_r[3] = y2.right();
 }
 
+/// Process a mono buffer in place using a Direct Form I biquad with linear coefficient ramping.
+#[inline]
+pub fn process_mono_in_place_ramped(
+    samples: &mut [f32],
+    start: &BiquadCoefficients,
+    target: &BiquadCoefficients,
+    ramp_samples: usize,
+    delay: &mut [f32; 4],
+) {
+    if samples.is_empty() {
+        return;
+    }
+
+    let steps = ramp_samples.clamp(1, samples.len());
+    let inv = 1.0 / steps as f32;
+
+    let db0 = (target.b0 - start.b0) * inv;
+    let db1 = (target.b1 - start.b1) * inv;
+    let db2 = (target.b2 - start.b2) * inv;
+    let da1 = (target.a1 - start.a1) * inv;
+    let da2 = (target.a2 - start.a2) * inv;
+
+    let mut x1 = delay[0];
+    let mut x2 = delay[1];
+    let mut y1 = delay[2];
+    let mut y2 = delay[3];
+
+    let mut b0 = start.b0;
+    let mut b1 = start.b1;
+    let mut b2 = start.b2;
+    let mut a1 = start.a1;
+    let mut a2 = start.a2;
+
+    let (ramp_slice, tail_slice) = samples.split_at_mut(steps);
+    for sample in ramp_slice {
+        b0 += db0;
+        b1 += db1;
+        b2 += db2;
+        a1 += da1;
+        a2 += da2;
+        let x = *sample;
+        let y = b0 * x + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
+        *sample = y;
+        x2 = x1;
+        x1 = x;
+        y2 = y1;
+        y1 = y;
+    }
+
+    let (b0, b1, b2, a1, a2) = (target.b0, target.b1, target.b2, target.a1, target.a2);
+    for sample in tail_slice {
+        let x = *sample;
+        let y = b0 * x + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
+        *sample = y;
+        x2 = x1;
+        x1 = x;
+        y2 = y1;
+        y1 = y;
+    }
+
+    delay[0] = x1;
+    delay[1] = x2;
+    delay[2] = y1;
+    delay[3] = y2;
+}
+
+/// Process planar stereo buffers in place using a Direct Form I biquad with linear coefficient ramping.
+#[inline]
+pub fn process_stereo_planar_in_place_ramped(
+    left: &mut [f32],
+    right: &mut [f32],
+    start: &BiquadCoefficients,
+    target: &BiquadCoefficients,
+    ramp_samples: usize,
+    delay_l: &mut [f32; 4],
+    delay_r: &mut [f32; 4],
+) {
+    let len = left.len().min(right.len());
+    if len == 0 {
+        return;
+    }
+    let steps = ramp_samples.clamp(1, len);
+    let inv = 1.0 / steps as f32;
+
+    let mut dl = StereoLane::new(delay_l[0], delay_r[0]);
+    let mut dl2 = StereoLane::new(delay_l[1], delay_r[1]);
+    let mut dy = StereoLane::new(delay_l[2], delay_r[2]);
+    let mut dy2 = StereoLane::new(delay_l[3], delay_r[3]);
+
+    for (i, (l, r)) in left[..len]
+        .iter_mut()
+        .zip(right[..len].iter_mut())
+        .enumerate()
+    {
+        let t = if i < steps {
+            (i as f32 + 1.0) * inv
+        } else {
+            1.0
+        };
+
+        let b0 = start.b0 + (target.b0 - start.b0) * t;
+        let b1 = start.b1 + (target.b1 - start.b1) * t;
+        let b2 = start.b2 + (target.b2 - start.b2) * t;
+        let a1 = start.a1 + (target.a1 - start.a1) * t;
+        let a2 = start.a2 + (target.a2 - start.a2) * t;
+
+        let x = StereoLane::new(*l, *r);
+        let y = x
+            .mul_scalar(b0)
+            .add(dl.mul_scalar(b1))
+            .add(dl2.mul_scalar(b2))
+            .sub(dy.mul_scalar(a1))
+            .sub(dy2.mul_scalar(a2));
+
+        *l = y.left();
+        *r = y.right();
+
+        dl2 = dl;
+        dl = x;
+        dy2 = dy;
+        dy = y;
+    }
+
+    delay_l[0] = dl.left();
+    delay_l[1] = dl2.left();
+    delay_l[2] = dy.left();
+    delay_l[3] = dy2.left();
+    delay_r[0] = dl.right();
+    delay_r[1] = dl2.right();
+    delay_r[2] = dy.right();
+    delay_r[3] = dy2.right();
+}
+
 /// Process interleaved stereo input into interleaved output using a Direct Form I biquad.
 ///
 /// Input and output are `[L0, R0, L1, R1, ...]`.

@@ -61,9 +61,14 @@ pub fn block_on_sync<F: std::future::Future>(fut: F) -> F::Output {
     }
 }
 
-/// Converts a lock-free `EqParameters` snapshot into a `ParamSnapshot` for the workspace UI.
-pub fn eq_to_param_snapshot(eq: &EqParameters, auto_gain_comp_db: f32) -> ParamSnapshot {
-    let mut vals = Vec::with_capacity(PARAM_COUNT_USIZE + 1 + MAX_BANDS);
+/// Populates an existing `ParamSnapshot` in place from `EqParameters` without reallocating.
+pub fn fill_param_snapshot(
+    eq: &EqParameters,
+    auto_gain_comp_db: f32,
+    snapshot: &mut ParamSnapshot,
+) {
+    let vals = snapshot.values_mut();
+    vals.clear();
     vals.push(ParamValue {
         param_id: ParamId(global::BYPASS),
         value: if eq.global.bypass { 1.0 } else { 0.0 },
@@ -124,8 +129,13 @@ pub fn eq_to_param_snapshot(eq: &EqParameters, auto_gain_comp_db: f32) -> ParamS
             value: eq.band_routing(i).to_raw() as f32,
         });
     }
+}
 
-    ParamSnapshot::new(vals)
+/// Converts a lock-free `EqParameters` snapshot into a `ParamSnapshot` for the workspace UI.
+pub fn eq_to_param_snapshot(eq: &EqParameters, auto_gain_comp_db: f32) -> ParamSnapshot {
+    let mut snapshot = ParamSnapshot::with_capacity(PARAM_COUNT_USIZE + 1 + MAX_BANDS);
+    fill_param_snapshot(eq, auto_gain_comp_db, &mut snapshot);
+    snapshot
 }
 
 /// Configuration for creating a [`WgpuSurfaceHost`].
@@ -384,6 +394,7 @@ pub struct SharedEditorState {
     preset: PresetUiState,
     spectrum: SpectrumAnalysisState,
     throttle: FrameThrottleState,
+    cached_snapshot: ParamSnapshot,
 }
 
 impl SharedEditorState {
@@ -441,6 +452,7 @@ impl SharedEditorState {
                 silence_frames: 0,
                 idle_transport_frames: 0,
             },
+            cached_snapshot: ParamSnapshot::with_capacity(PARAM_COUNT_USIZE + 1 + MAX_BANDS),
         }
     }
 
@@ -580,7 +592,7 @@ impl SharedEditorState {
         } else {
             0.0
         };
-        let snapshot = eq_to_param_snapshot(&eq, auto_gain_comp_db);
+        fill_param_snapshot(&eq, auto_gain_comp_db, &mut self.cached_snapshot);
 
         let events = std::mem::take(&mut self.pending_events);
         let raw_input = egui::RawInput {
@@ -614,7 +626,7 @@ impl SharedEditorState {
                         env: &env,
                         band_params: &eq.bands,
                         sample_rate,
-                        snapshot: &snapshot,
+                        snapshot: &self.cached_snapshot,
                         analysis: &self.spectrum.snapshot,
                         preset_manager: &self.preset.manager,
                         current_preset: &self.preset.current_preset,

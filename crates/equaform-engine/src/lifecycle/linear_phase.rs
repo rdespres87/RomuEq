@@ -85,6 +85,7 @@ pub(super) struct ModeTransitionState {
     pub(super) mix: f32,
     pub(super) input_fade_gain: f32,
     pub(super) use_tail_fade: bool,
+    pub(super) warmup_remaining: usize,
     pub(super) prev_output: [f32; LIFECYCLE_MAX_CHANNELS],
     pub(super) last_rendered: [f32; LIFECYCLE_MAX_CHANNELS],
     pub(super) scratch_buffer: Box<[f32]>,
@@ -99,6 +100,7 @@ impl ModeTransitionState {
             mix: 0.0,
             input_fade_gain: 1.0,
             use_tail_fade: false,
+            warmup_remaining: 0,
             prev_output: [0.0; LIFECYCLE_MAX_CHANNELS],
             last_rendered: [0.0; LIFECYCLE_MAX_CHANNELS],
             scratch_buffer: vec![0.0_f32; FLAT_BUFFER_SIZE].into_boxed_slice(),
@@ -112,6 +114,7 @@ impl ModeTransitionState {
         self.mix = 0.0;
         self.input_fade_gain = 1.0;
         self.use_tail_fade = false;
+        self.warmup_remaining = 0;
         self.prev_output.fill(0.0);
         self.last_rendered.fill(0.0);
         self.scratch_buffer.fill(0.0);
@@ -146,7 +149,15 @@ impl ModeTransitionState {
             self.previous_mode = self.active_mode;
             self.active_mode = target_mode;
             self.mix = 1.0;
-            self.input_fade_gain = if target_mode.is_linear_phase() {
+            self.warmup_remaining = if !self.use_tail_fade
+                && self.previous_mode == ProcessingMode::MinimumPhase
+                && target_mode.is_linear_phase()
+            {
+                target_mode.latency_samples() as usize
+            } else {
+                0
+            };
+            self.input_fade_gain = if target_mode.is_linear_phase() && self.warmup_remaining == 0 {
                 0.0
             } else {
                 1.0
@@ -196,6 +207,10 @@ impl ModeTransitionState {
     /// Advances the mode crossfade toward `0.0` and returns `true` when finished.
     #[inline]
     pub(super) fn advance(&mut self, step: f32, block_size: usize) -> bool {
+        if self.warmup_remaining > 0 {
+            self.warmup_remaining = self.warmup_remaining.saturating_sub(block_size);
+            return false;
+        }
         self.mix = (self.mix - step * block_size as f32).max(0.0);
         if self.mix <= f32::EPSILON {
             self.mix = 0.0;

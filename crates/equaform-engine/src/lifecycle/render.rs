@@ -5,7 +5,8 @@ use equaform_common::{BandRouting, EqParameters, MAX_BANDS};
 use equaform_dsp::LinearPhaseConvolver;
 use equaform_dsp::coefficients::BiquadCoefficients;
 use equaform_dsp::{
-    lr_to_ms_in_place, ms_to_lr_in_place, process_mono_in_place, process_stereo_planar_in_place,
+    lr_to_ms_in_place, ms_to_lr_in_place, process_mono_in_place, process_mono_in_place_ramped,
+    process_stereo_planar_in_place,
 };
 
 /// Planar buffer dimensions for a single audio block.
@@ -107,62 +108,240 @@ pub(super) fn process_linear_phase_planar(
     }
 }
 
+/// Bit-exact coefficient comparison to detect steady-state bands.
+#[inline]
+fn coeffs_eq(a: &BiquadCoefficients, b: &BiquadCoefficients) -> bool {
+    a.b0.to_bits() == b.b0.to_bits()
+        && a.b1.to_bits() == b.b1.to_bits()
+        && a.b2.to_bits() == b.b2.to_bits()
+        && a.a1.to_bits() == b.a1.to_bits()
+        && a.a2.to_bits() == b.a2.to_bits()
+}
+
+/// Zero a band's delay-line state across all active channels.
+#[inline]
+fn zero_band_delay(delay_line: &mut [f32], band_idx: usize, channels: usize) {
+    let dl_base = band_idx * channels * DELAY_SAMPLES_PER_STAGE;
+    let dl_len = channels * DELAY_SAMPLES_PER_STAGE;
+    if let Some(slice) = delay_line.get_mut(dl_base..dl_base + dl_len) {
+        slice.fill(0.0);
+    }
+}
+
+/// Per-lane start/target biquad coefficients for a single band and block.
+#[derive(Clone, Copy)]
+struct BandStep {
+    start_l: BiquadCoefficients,
+    target_l: BiquadCoefficients,
+    start_r: BiquadCoefficients,
+    target_r: BiquadCoefficients,
+    routing: BandRouting,
+}
+
+/// Resolve per-lane `(left/mid, right/side)` target coefficients for a band's enable and routing state.
+#[inline]
+fn target_pair_for_routing(
+    enabled: bool,
+    coeffs: BiquadCoefficients,
+    routing: BandRouting,
+) -> (BiquadCoefficients, BiquadCoefficients) {
+    let identity = BiquadCoefficients::default();
+    if !enabled {
+        return (identity, identity);
+    }
+    match routing {
+        BandRouting::Stereo => (coeffs, coeffs),
+        BandRouting::Left | BandRouting::Mid => (coeffs, identity),
+        BandRouting::Right | BandRouting::Side => (identity, coeffs),
+    }
+}
+
+/// Process a single channel lane when either `start` or `target` differs from identity.
+#[inline]
+fn process_lane_if_active(
+    samples: &mut [f32],
+    start: &BiquadCoefficients,
+    target: &BiquadCoefficients,
+    ramp_samples: usize,
+    delay: &mut [f32; 4],
+) {
+    let identity = BiquadCoefficients::default();
+    if coeffs_eq(start, &identity) && coeffs_eq(target, &identity) {
+        return;
+    }
+    if coeffs_eq(start, target) {
+        process_mono_in_place(samples, target, delay);
+    } else {
+        process_mono_in_place_ramped(samples, start, target, ramp_samples, delay);
+    }
+}
+
+/// Prepare per-lane `(start, target)` coefficients for one band, converting or flushing
+/// delay lines on routing/enable transitions so stale filter state never leaks into audio.
+#[inline]
+fn prepare_band_step(
+    band_idx: usize,
+    block_coeffs: &[BiquadCoefficients; MAX_BANDS],
+    eq_params: &EqParameters,
+    delay_line: &mut [f32],
+    channels: usize,
+    cache: &mut super::CoefficientCache,
+) -> Option<BandStep> {
+    let enabled = eq_params.bands[band_idx].enabled;
+    let routing = eq_params.band_routing(band_idx);
+    let identity = BiquadCoefficients::default();
+
+    if routing != cache.prev_routing[band_idx] {
+        let was_ms = matches!(
+            cache.prev_routing[band_idx],
+            BandRouting::Mid | BandRouting::Side
+        );
+        let is_ms = matches!(routing, BandRouting::Mid | BandRouting::Side);
+        if channels == 2 && was_ms != is_ms {
+            if let Some((delay_a, delay_b)) = band_delay_pair_mut(delay_line, band_idx) {
+                if is_ms {
+                    lr_to_ms_in_place(delay_a, delay_b);
+                } else {
+                    ms_to_lr_in_place(delay_a, delay_b);
+                }
+            }
+        } else if channels != 2 {
+            zero_band_delay(delay_line, band_idx, channels);
+            cache.prev_coeffs_l[band_idx] = identity;
+            cache.prev_coeffs_r[band_idx] = identity;
+        }
+        cache.prev_routing[band_idx] = routing;
+    }
+
+    if enabled
+        && !cache.prev_enabled[band_idx]
+        && coeffs_eq(&cache.prev_coeffs_l[band_idx], &identity)
+        && coeffs_eq(&cache.prev_coeffs_r[band_idx], &identity)
+    {
+        zero_band_delay(delay_line, band_idx, channels);
+    }
+
+    let (target_l, target_r) = target_pair_for_routing(enabled, block_coeffs[band_idx], routing);
+    let start_l = cache.prev_coeffs_l[band_idx];
+    let start_r = cache.prev_coeffs_r[band_idx];
+
+    if !enabled && coeffs_eq(&start_l, &identity) && coeffs_eq(&start_r, &identity) {
+        cache.prev_enabled[band_idx] = false;
+        cache.prev_coeffs_l[band_idx] = identity;
+        cache.prev_coeffs_r[band_idx] = identity;
+        return None;
+    }
+
+    cache.prev_coeffs_l[band_idx] = target_l;
+    cache.prev_coeffs_r[band_idx] = target_r;
+    cache.prev_enabled[band_idx] = enabled;
+
+    Some(BandStep {
+        start_l,
+        target_l,
+        start_r,
+        target_r,
+        routing,
+    })
+}
+
+/// Borrowed state for minimum-phase planar biquad processing.
+pub(super) struct MinimumPhaseCtx<'a> {
+    pub(super) block_coeffs: &'a [BiquadCoefficients; MAX_BANDS],
+    pub(super) eq_params: &'a EqParameters,
+    pub(super) delay_line: &'a mut [f32],
+    pub(super) cache: &'a mut super::CoefficientCache,
+    pub(super) sample_rate: f32,
+    pub(super) is_first_block: bool,
+}
+
 /// Process planar audio in place using the minimum-phase biquad cascade.
 pub(super) fn process_minimum_phase_planar(
     buffer: &mut [f32],
     layout: BlockLayout,
-    block_coeffs: &[BiquadCoefficients; MAX_BANDS],
-    eq_params: &EqParameters,
-    delay_line: &mut [f32],
+    ctx: MinimumPhaseCtx<'_>,
 ) {
+    let MinimumPhaseCtx {
+        block_coeffs,
+        eq_params,
+        delay_line,
+        cache,
+        sample_rate,
+        is_first_block,
+    } = ctx;
+
+    if is_first_block {
+        for (band_idx, &coeffs) in block_coeffs.iter().enumerate() {
+            let enabled = eq_params.bands[band_idx].enabled;
+            let routing = eq_params.band_routing(band_idx);
+            let (tl, tr) = target_pair_for_routing(enabled, coeffs, routing);
+            cache.prev_enabled[band_idx] = enabled;
+            cache.prev_routing[band_idx] = routing;
+            cache.prev_coeffs_l[band_idx] = tl;
+            cache.prev_coeffs_r[band_idx] = tr;
+        }
+    }
+
+    let ramp_samples = layout
+        .block_size
+        .min((0.005 * sample_rate.max(1.0)).round().max(1.0) as usize);
+
+    let mut band_steps: [Option<BandStep>; MAX_BANDS] = [None; MAX_BANDS];
+    for (band_idx, slot) in band_steps.iter_mut().enumerate() {
+        *slot = prepare_band_step(
+            band_idx,
+            block_coeffs,
+            eq_params,
+            delay_line,
+            layout.channels,
+            cache,
+        );
+    }
+
     if layout.channels == 2 {
         let (left_buf, right_buf) = buffer.split_at_mut(layout.max_block);
         let left = &mut left_buf[..layout.block_size];
         let right = &mut right_buf[..layout.block_size];
-        process_minimum_phase_stereo(left, right, block_coeffs, eq_params, delay_line);
+        process_minimum_phase_stereo(left, right, &band_steps, ramp_samples, delay_line);
         return;
     }
 
-    process_minimum_phase_channels(buffer, layout, block_coeffs, eq_params, delay_line);
+    process_minimum_phase_channels(buffer, layout, &band_steps, ramp_samples, delay_line);
 }
 
 /// Process stereo minimum-phase bands (L/R pass followed by optional M/S pass).
 fn process_minimum_phase_stereo(
     left: &mut [f32],
     right: &mut [f32],
-    block_coeffs: &[BiquadCoefficients; MAX_BANDS],
-    eq_params: &EqParameters,
+    band_steps: &[Option<BandStep>; MAX_BANDS],
+    ramp_samples: usize,
     delay_line: &mut [f32],
 ) {
     let mut has_ms_band = false;
-    for (band_idx, coeffs) in block_coeffs.iter().enumerate() {
-        if !eq_params.bands[band_idx].enabled {
+    for (band_idx, step) in band_steps.iter().enumerate() {
+        let Some(s) = step else {
             continue;
-        }
-        let routing = eq_params.band_routing(band_idx);
-        if matches!(routing, BandRouting::Mid | BandRouting::Side) {
+        };
+        if matches!(s.routing, BandRouting::Mid | BandRouting::Side) {
             has_ms_band = true;
             continue;
         }
         if let Some((delay_l, delay_r)) = band_delay_pair_mut(delay_line, band_idx) {
-            match routing {
-                BandRouting::Stereo => {
-                    process_stereo_planar_in_place(left, right, coeffs, delay_l, delay_r);
-                }
-                BandRouting::Left => {
-                    process_mono_in_place(left, coeffs, delay_l);
-                }
-                BandRouting::Right => {
-                    process_mono_in_place(right, coeffs, delay_r);
-                }
-                BandRouting::Mid | BandRouting::Side => {}
+            if coeffs_eq(&s.start_l, &s.target_l)
+                && coeffs_eq(&s.start_r, &s.target_r)
+                && coeffs_eq(&s.target_l, &s.target_r)
+            {
+                process_stereo_planar_in_place(left, right, &s.target_l, delay_l, delay_r);
+            } else {
+                process_lane_if_active(left, &s.start_l, &s.target_l, ramp_samples, delay_l);
+                process_lane_if_active(right, &s.start_r, &s.target_r, ramp_samples, delay_r);
             }
         }
     }
 
     if has_ms_band {
         lr_to_ms_in_place(left, right);
-        process_minimum_phase_stereo_ms(left, right, block_coeffs, eq_params, delay_line);
+        process_minimum_phase_stereo_ms(left, right, band_steps, ramp_samples, delay_line);
         ms_to_lr_in_place(left, right);
     }
 }
@@ -171,24 +350,20 @@ fn process_minimum_phase_stereo(
 fn process_minimum_phase_stereo_ms(
     mid: &mut [f32],
     side: &mut [f32],
-    block_coeffs: &[BiquadCoefficients; MAX_BANDS],
-    eq_params: &EqParameters,
+    band_steps: &[Option<BandStep>; MAX_BANDS],
+    ramp_samples: usize,
     delay_line: &mut [f32],
 ) {
-    for (band_idx, coeffs) in block_coeffs.iter().enumerate() {
-        if !eq_params.bands[band_idx].enabled {
+    for (band_idx, step) in band_steps.iter().enumerate() {
+        let Some(s) = step else {
             continue;
-        }
-        let routing = eq_params.band_routing(band_idx);
-        if !matches!(routing, BandRouting::Mid | BandRouting::Side) {
+        };
+        if !matches!(s.routing, BandRouting::Mid | BandRouting::Side) {
             continue;
         }
         if let Some((delay_m, delay_s)) = band_delay_pair_mut(delay_line, band_idx) {
-            match routing {
-                BandRouting::Mid => process_mono_in_place(mid, coeffs, delay_m),
-                BandRouting::Side => process_mono_in_place(side, coeffs, delay_s),
-                _ => {}
-            }
+            process_lane_if_active(mid, &s.start_l, &s.target_l, ramp_samples, delay_m);
+            process_lane_if_active(side, &s.start_r, &s.target_r, ramp_samples, delay_s);
         }
     }
 }
@@ -197,24 +372,68 @@ fn process_minimum_phase_stereo_ms(
 fn process_minimum_phase_channels(
     buffer: &mut [f32],
     layout: BlockLayout,
-    block_coeffs: &[BiquadCoefficients; MAX_BANDS],
-    eq_params: &EqParameters,
+    band_steps: &[Option<BandStep>; MAX_BANDS],
+    ramp_samples: usize,
     delay_line: &mut [f32],
 ) {
     for ch_idx in 0..layout.channels {
         let buffer_offset = ch_idx * layout.max_block;
         let samples = &mut buffer[buffer_offset..buffer_offset + layout.block_size];
-        for (band_idx, coeffs) in block_coeffs.iter().enumerate() {
-            if !eq_params.bands[band_idx].enabled {
+        for (band_idx, step) in band_steps.iter().enumerate() {
+            let Some(s) = step else {
                 continue;
-            }
+            };
             let delay_offset = band_idx * layout.channels * DELAY_SAMPLES_PER_STAGE
                 + ch_idx * DELAY_SAMPLES_PER_STAGE;
             let delay_slice = &mut delay_line[delay_offset..delay_offset + DELAY_SAMPLES_PER_STAGE];
             if let Ok(delay) = <&mut [f32; 4]>::try_from(delay_slice) {
-                process_mono_in_place(samples, coeffs, delay);
+                process_lane_if_active(samples, &s.start_l, &s.target_l, ramp_samples, delay);
             }
         }
+    }
+}
+
+/// Target `(left/mid, right/side)` solo audition gains for a band's routing.
+#[inline]
+fn solo_target_gains(routing: BandRouting) -> (f32, f32) {
+    match routing {
+        BandRouting::Stereo => (1.0, 1.0),
+        BandRouting::Left | BandRouting::Mid => (1.0, 0.0),
+        BandRouting::Right | BandRouting::Side => (0.0, 1.0),
+    }
+}
+
+/// Accumulate `src` into `dst` with a per-sample linear gain ramp over `ramp_samples`.
+#[inline]
+fn accumulate_slice_ramped(
+    dst: &mut [f32],
+    src: &[f32],
+    start_gain: f32,
+    target_gain: f32,
+    ramp_samples: usize,
+) {
+    if (start_gain - target_gain).abs() <= f32::EPSILON {
+        if (target_gain - 1.0).abs() <= f32::EPSILON {
+            accumulate_slice(dst, src);
+        } else if target_gain > f32::EPSILON {
+            for (d, &s) in dst.iter_mut().zip(src.iter()) {
+                *d += s * target_gain;
+            }
+        }
+        return;
+    }
+
+    let steps = ramp_samples.clamp(1, dst.len().min(src.len()).max(1));
+    let inv = 1.0 / steps as f32;
+    let delta = (target_gain - start_gain) * inv;
+    let mut gain = start_gain;
+    for (i, (d, &s)) in dst.iter_mut().zip(src.iter()).enumerate() {
+        if i < steps {
+            gain += delta;
+        } else {
+            gain = target_gain;
+        }
+        *d += s * gain;
     }
 }
 
@@ -225,9 +444,47 @@ pub(super) fn render_stereo_solo_audition(
     solo_coeffs: &[BiquadCoefficients; MAX_BANDS],
     eq_params: &EqParameters,
     solo_delay_line: &mut [f32],
+    routing_state: &mut super::SoloRoutingState,
+    sample_rate: f32,
 ) {
     io.out_l.fill(0.0);
     io.out_r.fill(0.0);
+
+    let len = io.out_l.len().min(io.out_r.len());
+    let ramp_samples = len.min((0.005 * sample_rate.max(1.0)).round().max(1.0) as usize);
+
+    if !routing_state.initialized {
+        for band_idx in 0..MAX_BANDS {
+            let routing = eq_params.band_routing(band_idx);
+            let (gl, gr) = solo_target_gains(routing);
+            routing_state.prev_routing[band_idx] = routing;
+            routing_state.prev_gain_l[band_idx] = gl;
+            routing_state.prev_gain_r[band_idx] = gr;
+        }
+        routing_state.initialized = true;
+    }
+
+    let mut domain_switched = false;
+    for band_idx in 0..MAX_BANDS {
+        if (active_mask & (1 << band_idx)) == 0 {
+            continue;
+        }
+        let routing = eq_params.band_routing(band_idx);
+        if routing != routing_state.prev_routing[band_idx] {
+            let was_ms = matches!(
+                routing_state.prev_routing[band_idx],
+                BandRouting::Mid | BandRouting::Side
+            );
+            let is_ms = matches!(routing, BandRouting::Mid | BandRouting::Side);
+            if was_ms != is_ms {
+                zero_band_delay(solo_delay_line, band_idx, 2);
+                routing_state.prev_gain_l[band_idx] = 0.0;
+                routing_state.prev_gain_r[band_idx] = 0.0;
+                domain_switched = true;
+            }
+            routing_state.prev_routing[band_idx] = routing;
+        }
+    }
 
     // Pass 1: accumulate Mid/Side solo bands in M/S domain, then convert to L/R once.
     render_stereo_solo_ms_pass(
@@ -236,6 +493,8 @@ pub(super) fn render_stereo_solo_audition(
         solo_coeffs,
         eq_params,
         solo_delay_line,
+        routing_state,
+        ramp_samples,
     );
 
     // Pass 2: accumulate Stereo / Left / Right solo bands directly in L/R domain.
@@ -245,7 +504,25 @@ pub(super) fn render_stereo_solo_audition(
         solo_coeffs,
         eq_params,
         solo_delay_line,
+        routing_state,
+        ramp_samples,
     );
+
+    if domain_switched {
+        let decay = (-1.0_f32 / (0.002 * sample_rate.max(1.0))).exp();
+        let mut tl = routing_state.last_out[0];
+        let mut tr = routing_state.last_out[1];
+        for (ol, or) in io.out_l.iter_mut().zip(io.out_r.iter_mut()) {
+            tl *= decay;
+            tr *= decay;
+            *ol += tl;
+            *or += tr;
+        }
+    }
+
+    if let (Some(&last_l), Some(&last_r)) = (io.out_l.last(), io.out_r.last()) {
+        routing_state.last_out = [last_l, last_r];
+    }
 }
 
 /// Accumulate Mid/Side solo bands in M/S domain and convert to L/R once.
@@ -255,6 +532,8 @@ fn render_stereo_solo_ms_pass(
     solo_coeffs: &[BiquadCoefficients; MAX_BANDS],
     eq_params: &EqParameters,
     solo_delay_line: &mut [f32],
+    routing_state: &mut super::SoloRoutingState,
+    ramp_samples: usize,
 ) {
     const INV_SQRT_2: f32 = std::f32::consts::FRAC_1_SQRT_2;
 
@@ -268,35 +547,45 @@ fn render_stereo_solo_ms_pass(
             continue;
         }
         has_ms_solo = true;
-        if let Some((delay_l, delay_r)) = band_delay_pair_mut(solo_delay_line, band_idx) {
-            match routing {
-                BandRouting::Mid => {
-                    for ((dst, &dl), &dr) in io
-                        .scratch_l
-                        .iter_mut()
-                        .zip(io.dry_l.iter())
-                        .zip(io.dry_r.iter())
-                    {
-                        *dst = (dl + dr) * INV_SQRT_2;
-                    }
-                    process_mono_in_place(io.scratch_l, coeffs, delay_l);
-                    accumulate_slice(io.out_l, io.scratch_l);
+        let (target_m, target_s) = solo_target_gains(routing);
+        let start_m = routing_state.prev_gain_l[band_idx];
+        let start_s = routing_state.prev_gain_r[band_idx];
+
+        if let Some((delay_m, delay_s)) = band_delay_pair_mut(solo_delay_line, band_idx) {
+            if start_m > f32::EPSILON || target_m > f32::EPSILON {
+                if start_m <= f32::EPSILON {
+                    delay_m.fill(0.0);
                 }
-                BandRouting::Side => {
-                    for ((dst, &dl), &dr) in io
-                        .scratch_r
-                        .iter_mut()
-                        .zip(io.dry_l.iter())
-                        .zip(io.dry_r.iter())
-                    {
-                        *dst = (dl - dr) * INV_SQRT_2;
-                    }
-                    process_mono_in_place(io.scratch_r, coeffs, delay_r);
-                    accumulate_slice(io.out_r, io.scratch_r);
+                for ((dst, &dl), &dr) in io
+                    .scratch_l
+                    .iter_mut()
+                    .zip(io.dry_l.iter())
+                    .zip(io.dry_r.iter())
+                {
+                    *dst = (dl + dr) * INV_SQRT_2;
                 }
-                _ => {}
+                process_mono_in_place(io.scratch_l, coeffs, delay_m);
+                accumulate_slice_ramped(io.out_l, io.scratch_l, start_m, target_m, ramp_samples);
+            }
+            if start_s > f32::EPSILON || target_s > f32::EPSILON {
+                if start_s <= f32::EPSILON {
+                    delay_s.fill(0.0);
+                }
+                for ((dst, &dl), &dr) in io
+                    .scratch_r
+                    .iter_mut()
+                    .zip(io.dry_l.iter())
+                    .zip(io.dry_r.iter())
+                {
+                    *dst = (dl - dr) * INV_SQRT_2;
+                }
+                process_mono_in_place(io.scratch_r, coeffs, delay_s);
+                accumulate_slice_ramped(io.out_r, io.scratch_r, start_s, target_s, ramp_samples);
             }
         }
+
+        routing_state.prev_gain_l[band_idx] = target_m;
+        routing_state.prev_gain_r[band_idx] = target_s;
     }
 
     if has_ms_solo {
@@ -311,6 +600,8 @@ fn render_stereo_solo_lr_pass(
     solo_coeffs: &[BiquadCoefficients; MAX_BANDS],
     eq_params: &EqParameters,
     solo_delay_line: &mut [f32],
+    routing_state: &mut super::SoloRoutingState,
+    ramp_samples: usize,
 ) {
     for (band_idx, coeffs) in solo_coeffs.iter().enumerate() {
         if (active_mask & (1 << band_idx)) == 0 {
@@ -320,34 +611,31 @@ fn render_stereo_solo_lr_pass(
         if matches!(routing, BandRouting::Mid | BandRouting::Side) {
             continue;
         }
+        let (target_l, target_r) = solo_target_gains(routing);
+        let start_l = routing_state.prev_gain_l[band_idx];
+        let start_r = routing_state.prev_gain_r[band_idx];
+
         if let Some((delay_l, delay_r)) = band_delay_pair_mut(solo_delay_line, band_idx) {
-            match routing {
-                BandRouting::Stereo => {
-                    io.scratch_l.copy_from_slice(io.dry_l);
-                    io.scratch_r.copy_from_slice(io.dry_r);
-                    process_stereo_planar_in_place(
-                        io.scratch_l,
-                        io.scratch_r,
-                        coeffs,
-                        delay_l,
-                        delay_r,
-                    );
-                    accumulate_slice(io.out_l, io.scratch_l);
-                    accumulate_slice(io.out_r, io.scratch_r);
+            if start_l > f32::EPSILON || target_l > f32::EPSILON {
+                if start_l <= f32::EPSILON {
+                    delay_l.fill(0.0);
                 }
-                BandRouting::Left => {
-                    io.scratch_l.copy_from_slice(io.dry_l);
-                    process_mono_in_place(io.scratch_l, coeffs, delay_l);
-                    accumulate_slice(io.out_l, io.scratch_l);
+                io.scratch_l.copy_from_slice(io.dry_l);
+                process_mono_in_place(io.scratch_l, coeffs, delay_l);
+                accumulate_slice_ramped(io.out_l, io.scratch_l, start_l, target_l, ramp_samples);
+            }
+            if start_r > f32::EPSILON || target_r > f32::EPSILON {
+                if start_r <= f32::EPSILON {
+                    delay_r.fill(0.0);
                 }
-                BandRouting::Right => {
-                    io.scratch_r.copy_from_slice(io.dry_r);
-                    process_mono_in_place(io.scratch_r, coeffs, delay_r);
-                    accumulate_slice(io.out_r, io.scratch_r);
-                }
-                BandRouting::Mid | BandRouting::Side => {}
+                io.scratch_r.copy_from_slice(io.dry_r);
+                process_mono_in_place(io.scratch_r, coeffs, delay_r);
+                accumulate_slice_ramped(io.out_r, io.scratch_r, start_r, target_r, ramp_samples);
             }
         }
+
+        routing_state.prev_gain_l[band_idx] = target_l;
+        routing_state.prev_gain_r[band_idx] = target_r;
     }
 }
 

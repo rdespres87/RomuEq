@@ -159,17 +159,14 @@ impl ConvolverEngine {
         self.in_fifo[1].pop_slice(&mut self.block_in_r);
 
         let fdl_offset = self.fdl_head * UPOLS_FFT_SIZE;
-        push_channel_fft(
+        let (fdl_l_all, fdl_r_all) = self.fdl.split_at_mut(1);
+        push_stereo_fft(
             &mut self.bufs,
-            &mut self.overlap_in[0],
+            &mut self.overlap_in,
             &self.block_in_l,
-            &mut self.fdl[0][fdl_offset..fdl_offset + UPOLS_FFT_SIZE],
-        );
-        push_channel_fft(
-            &mut self.bufs,
-            &mut self.overlap_in[1],
             &self.block_in_r,
-            &mut self.fdl[1][fdl_offset..fdl_offset + UPOLS_FFT_SIZE],
+            &mut fdl_l_all[0][fdl_offset..fdl_offset + UPOLS_FFT_SIZE],
+            &mut fdl_r_all[0][fdl_offset..fdl_offset + UPOLS_FFT_SIZE],
         );
 
         if self.crossfade_pending {
@@ -221,28 +218,45 @@ impl ConvolverEngine {
     }
 }
 
-fn push_channel_fft(
+const UPOLS_HALF_BINS: usize = UPOLS_FFT_SIZE / 2 + 1;
+
+fn push_stereo_fft(
     bufs: &mut ConvolutionBuffers,
-    overlap: &mut [f32; UPOLS_BLOCK_SIZE],
-    block_in: &[f32],
-    fdl_slot: &mut [Complex<f32>],
+    overlap: &mut [[f32; UPOLS_BLOCK_SIZE]; 2],
+    block_in_l: &[f32],
+    block_in_r: &[f32],
+    fdl_l: &mut [Complex<f32>],
+    fdl_r: &mut [Complex<f32>],
 ) {
-    for (dst, &src) in bufs.fft_time_buf[..UPOLS_BLOCK_SIZE]
+    for (dst, (&ol, &or)) in bufs.fft_time_buf[..UPOLS_BLOCK_SIZE]
         .iter_mut()
-        .zip(overlap.iter())
+        .zip(overlap[0].iter().zip(overlap[1].iter()))
     {
-        *dst = Complex::new(src, 0.0);
+        *dst = Complex::new(ol, or);
     }
-    for (dst, &src) in bufs.fft_time_buf[UPOLS_BLOCK_SIZE..UPOLS_FFT_SIZE]
+    for (dst, (&il, &ir)) in bufs.fft_time_buf[UPOLS_BLOCK_SIZE..UPOLS_FFT_SIZE]
         .iter_mut()
-        .zip(block_in.iter())
+        .zip(block_in_l.iter().zip(block_in_r.iter()))
     {
-        *dst = Complex::new(src, 0.0);
+        *dst = Complex::new(il, ir);
     }
-    overlap.copy_from_slice(block_in);
+    overlap[0].copy_from_slice(block_in_l);
+    overlap[1].copy_from_slice(block_in_r);
+
     bufs.fft_forward
         .process_with_scratch(&mut bufs.fft_time_buf, &mut bufs.scratch);
-    fdl_slot.copy_from_slice(&bufs.fft_time_buf);
+
+    let half = UPOLS_FFT_SIZE / 2;
+    fdl_l[0] = Complex::new(bufs.fft_time_buf[0].re, 0.0);
+    fdl_r[0] = Complex::new(bufs.fft_time_buf[0].im, 0.0);
+    fdl_l[half] = Complex::new(bufs.fft_time_buf[half].re, 0.0);
+    fdl_r[half] = Complex::new(bufs.fft_time_buf[half].im, 0.0);
+    for k in 1..half {
+        let z_k = bufs.fft_time_buf[k];
+        let z_nk = bufs.fft_time_buf[UPOLS_FFT_SIZE - k];
+        fdl_l[k] = Complex::new(0.5 * (z_k.re + z_nk.re), 0.5 * (z_k.im - z_nk.im));
+        fdl_r[k] = Complex::new(0.5 * (z_k.im + z_nk.im), -0.5 * (z_k.re - z_nk.re));
+    }
 }
 
 fn crossfade_block(old_block: &[f32], new_block: &mut [f32]) {
@@ -267,27 +281,26 @@ fn convolve_bank(
     out: StereoOut<'_>,
 ) {
     let zero = Complex::new(0.0, 0.0);
-    bufs.acc_l.fill(zero);
-    bufs.acc_r.fill(zero);
+    bufs.acc_l[..UPOLS_HALF_BINS].fill(zero);
+    bufs.acc_r[..UPOLS_HALF_BINS].fill(zero);
 
     for p in 0..bank.num_partitions {
         let slot = (fdl_head + UPOLS_MAX_PARTITIONS - p) % UPOLS_MAX_PARTITIONS;
         let fdl_off = slot * UPOLS_FFT_SIZE;
         let h_off = p * UPOLS_FFT_SIZE;
 
-        let x_l = &fdl[0][fdl_off..fdl_off + UPOLS_FFT_SIZE];
-        let x_r = &fdl[1][fdl_off..fdl_off + UPOLS_FFT_SIZE];
-        let h_ll = &bank.ll[h_off..h_off + UPOLS_FFT_SIZE];
-        let h_rr = &bank.rr[h_off..h_off + UPOLS_FFT_SIZE];
+        let x_l = &fdl[0][fdl_off..fdl_off + UPOLS_HALF_BINS];
+        let x_r = &fdl[1][fdl_off..fdl_off + UPOLS_HALF_BINS];
+        let h_ll = &bank.ll[h_off..h_off + UPOLS_HALF_BINS];
+        let h_rr = &bank.rr[h_off..h_off + UPOLS_HALF_BINS];
 
         if bank.has_cross_terms {
-            let h_lr = &bank.lr[h_off..h_off + UPOLS_FFT_SIZE];
-            let h_rl = &bank.rl[h_off..h_off + UPOLS_FFT_SIZE];
+            let h_lr = &bank.lr[h_off..h_off + UPOLS_HALF_BINS];
+            let h_rl = &bank.rl[h_off..h_off + UPOLS_HALF_BINS];
 
-            for ((((al, ar), &xl), &xr), ((&ll, &rr), (&lr, &rl))) in bufs
-                .acc_l
+            for ((((al, ar), &xl), &xr), ((&ll, &rr), (&lr, &rl))) in bufs.acc_l[..UPOLS_HALF_BINS]
                 .iter_mut()
-                .zip(bufs.acc_r.iter_mut())
+                .zip(bufs.acc_r[..UPOLS_HALF_BINS].iter_mut())
                 .zip(x_l.iter())
                 .zip(x_r.iter())
                 .zip(
@@ -300,10 +313,9 @@ fn convolve_bank(
                 *ar += xl * rl + xr * rr;
             }
         } else {
-            for ((((al, ar), &xl), &xr), (&ll, &rr)) in bufs
-                .acc_l
+            for ((((al, ar), &xl), &xr), (&ll, &rr)) in bufs.acc_l[..UPOLS_HALF_BINS]
                 .iter_mut()
-                .zip(bufs.acc_r.iter_mut())
+                .zip(bufs.acc_r[..UPOLS_HALF_BINS].iter_mut())
                 .zip(x_l.iter())
                 .zip(x_r.iter())
                 .zip(h_ll.iter().zip(h_rr.iter()))
@@ -314,24 +326,28 @@ fn convolve_bank(
         }
     }
 
+    let half = UPOLS_FFT_SIZE / 2;
+    bufs.fft_time_buf[0] = Complex::new(bufs.acc_l[0].re, bufs.acc_r[0].re);
+    bufs.fft_time_buf[half] = Complex::new(bufs.acc_l[half].re, bufs.acc_r[half].re);
+    for k in 1..half {
+        let al = bufs.acc_l[k];
+        let ar = bufs.acc_r[k];
+        bufs.fft_time_buf[k] = Complex::new(al.re - ar.im, al.im + ar.re);
+        bufs.fft_time_buf[UPOLS_FFT_SIZE - k] = Complex::new(al.re + ar.im, -al.im + ar.re);
+    }
+
     bufs.fft_inverse
-        .process_with_scratch(&mut bufs.acc_l, &mut bufs.scratch);
-    bufs.fft_inverse
-        .process_with_scratch(&mut bufs.acc_r, &mut bufs.scratch);
+        .process_with_scratch(&mut bufs.fft_time_buf, &mut bufs.scratch);
 
     let inv_fft = 1.0 / UPOLS_FFT_SIZE as f32;
-    for ((dst_l, src_l), (dst_r, src_r)) in out
+    for ((dst_l, dst_r), src) in out
         .left
         .iter_mut()
-        .zip(bufs.acc_l[UPOLS_BLOCK_SIZE..UPOLS_FFT_SIZE].iter())
-        .zip(
-            out.right
-                .iter_mut()
-                .zip(bufs.acc_r[UPOLS_BLOCK_SIZE..UPOLS_FFT_SIZE].iter()),
-        )
+        .zip(out.right.iter_mut())
+        .zip(bufs.fft_time_buf[UPOLS_BLOCK_SIZE..UPOLS_FFT_SIZE].iter())
     {
-        *dst_l = src_l.re * inv_fft;
-        *dst_r = src_r.re * inv_fft;
+        *dst_l = src.re * inv_fft;
+        *dst_r = src.im * inv_fft;
     }
 }
 

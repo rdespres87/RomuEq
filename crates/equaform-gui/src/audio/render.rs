@@ -54,6 +54,7 @@ pub struct AudioRenderContext<'a> {
     pub telemetry: AudioTelemetry<'a>,
     pub phase: &'a mut f64,
     pub mute_gain: &'a mut f32,
+    pub has_seen_audio: &'a mut bool,
     pub scratch: AudioScratchBuffers<'a>,
 }
 
@@ -135,24 +136,33 @@ fn interleave_with_mute_and_peaks(
     ctx: &mut AudioRenderContext<'_>,
 ) -> (f32, f32) {
     let channels = ctx.format.channels;
-    let target_mute = if ctx.telemetry.is_muted.load(Ordering::Acquire) {
+    let target_mute = if ctx.telemetry.is_muted.load(Ordering::Acquire)
+        || crate::standalone::is_shutdown_requested()
+    {
         0.0f32
     } else {
         1.0f32
     };
-    let mute_step = 1.0f32 / (0.005 * ctx.format.sample_rate).max(1.0);
+    let mute_step = 1.0f32 / (0.150 * ctx.format.sample_rate).max(1.0);
     let mut max_l = 0.0f32;
     let mut max_r = 0.0f32;
 
     for i in 0..frames {
-        if *ctx.mute_gain < target_mute {
-            *ctx.mute_gain = (*ctx.mute_gain + mute_step).min(target_mute);
-        } else if *ctx.mute_gain > target_mute {
-            *ctx.mute_gain = (*ctx.mute_gain - mute_step).max(target_mute);
+        let raw_l = soft_limit(ctx.scratch.left_out[i]);
+        let raw_r = soft_limit(ctx.scratch.right_out[i]);
+        if !*ctx.has_seen_audio && (raw_l.abs() > 1e-5 || raw_r.abs() > 1e-5) {
+            *ctx.has_seen_audio = true;
         }
-        let g = *ctx.mute_gain;
-        let l = soft_limit(ctx.scratch.left_out[i]) * g;
-        let r = soft_limit(ctx.scratch.right_out[i]) * g;
+        if *ctx.has_seen_audio {
+            if *ctx.mute_gain < target_mute {
+                *ctx.mute_gain = (*ctx.mute_gain + mute_step).min(target_mute);
+            } else if *ctx.mute_gain > target_mute {
+                *ctx.mute_gain = (*ctx.mute_gain - mute_step).max(target_mute);
+            }
+        }
+        let g = 0.5 - 0.5 * (std::f32::consts::PI * *ctx.mute_gain).cos();
+        let l = raw_l * g;
+        let r = raw_r * g;
         max_l = max_l.max(l.abs());
         max_r = max_r.max(r.abs());
 

@@ -2015,6 +2015,7 @@ fn test_output_gain_linear_cache_accuracy_and_reuse() {
     // Inject a sentinel linear value while keeping the cached dB key intact:
     // repeated blocks with the same output_gain_db must reuse the cache without recomputing.
     engine.coeff_cache.output_gain_linear = 0.25;
+    engine.coeff_cache.current_output_gain_linear = 0.25;
     assert!(engine.process(&[&in_l, &in_r], &mut [&mut out_l, &mut out_r]));
     assert_eq!(
         engine.coeff_cache.output_gain_linear.to_bits(),
@@ -2022,10 +2023,13 @@ fn test_output_gain_linear_cache_accuracy_and_reuse() {
     );
     assert!((out_l[0] - 0.125).abs() < 1e-6);
 
-    // Changing output_gain_db invalidates the cache and recomputes exact 10^(db/20).
+    // Changing output_gain_db invalidates the cache, recomputes exact 10^(db/20),
+    // and smoothly converges to the target linear gain without a step click.
     params.global.output_gain_db = -3.0;
     engine.set_parameters(params);
-    assert!(engine.process(&[&in_l, &in_r], &mut [&mut out_l, &mut out_r]));
+    for _ in 0..12 {
+        assert!(engine.process(&[&in_l, &in_r], &mut [&mut out_l, &mut out_r]));
+    }
     let expected_neg3db = 10.0_f32.powf(-3.0 / 20.0);
     assert_eq!(
         engine.coeff_cache.last_output_gain_db.to_bits(),
@@ -2035,5 +2039,406 @@ fn test_output_gain_linear_cache_accuracy_and_reuse() {
         engine.coeff_cache.output_gain_linear.to_bits(),
         expected_neg3db.to_bits()
     );
-    assert!((out_l[0] - 0.5 * expected_neg3db).abs() < 1e-6);
+    assert!((out_l[63] - 0.5 * expected_neg3db).abs() < 1e-4);
+}
+
+#[test]
+fn test_output_gain_step_is_smoothed() {
+    let sr = 48_000.0;
+    let n = 256;
+    let mut engine = Box::new(EngineLifecycle::new());
+    engine.prepare(sr, n, 2);
+    let mut params = EqParameters::default();
+    engine.set_parameters(params);
+
+    let (mut in_l, mut in_r, mut out_l, mut out_r) = (
+        vec![0.0f32; n],
+        vec![0.0f32; n],
+        vec![0.0f32; n],
+        vec![0.0f32; n],
+    );
+    let mut max_step = 0.0f32;
+    let mut prev_last_l = 0.0f32;
+    let mut idx = 0usize;
+
+    for blk in 0..6 {
+        for i in 0..n {
+            let ph = 2.0 * std::f64::consts::PI * 1000.0 * (idx as f64 / sr);
+            in_l[i] = (0.25 * ph.sin()) as f32;
+            in_r[i] = in_l[i];
+            idx += 1;
+        }
+        if blk == 2 {
+            params.global.output_gain_db = 12.0;
+            engine.set_parameters(params);
+        }
+        assert!(engine.process(&[&in_l, &in_r], &mut [&mut out_l, &mut out_r]));
+        if blk >= 2 {
+            max_step = max_step.max((out_l[0] - prev_last_l).abs());
+            for w in out_l.windows(2) {
+                max_step = max_step.max((w[1] - w[0]).abs());
+            }
+        }
+        prev_last_l = out_l[n - 1];
+    }
+
+    let peak = out_l.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+    assert!(
+        max_step < 0.14,
+        "block-boundary step click: max_step={max_step}"
+    );
+    assert!(peak > 0.90, "peak after 4 blocks too low: {peak}");
+}
+
+#[test]
+fn test_band_toggle_and_routing_change_are_click_free() {
+    use equaform_common::BandRouting;
+
+    let sr = 48_000.0;
+    let n = 256;
+    let mut engine = Box::new(EngineLifecycle::new());
+    engine.prepare(sr, n, 2);
+    let mut params = EqParameters::default();
+    params.bands[0].enabled = true;
+    params.bands[0].filter_type = FilterType::Bell;
+    params.bands[0].frequency_hz = 1000.0;
+    params.bands[0].gain_db = 12.0;
+    params.bands[0].q = 4.0;
+    engine.set_parameters(params);
+
+    let (mut in_l, mut in_r, mut out_l, mut out_r) = (
+        vec![0.0f32; n],
+        vec![0.0f32; n],
+        vec![0.0f32; n],
+        vec![0.0f32; n],
+    );
+    let mut max_step = 0.0f32;
+    let mut prev_last_l = 0.0f32;
+    let mut idx = 0usize;
+
+    for blk in 0..10 {
+        for i in 0..n {
+            let ph = 2.0 * std::f64::consts::PI * 1000.0 * (idx as f64 / sr);
+            in_l[i] = (0.3 * ph.sin()) as f32;
+            in_r[i] = in_l[i];
+            idx += 1;
+        }
+        match blk {
+            4 => {
+                params.bands[0].enabled = false;
+                engine.set_parameters(params);
+            }
+            6 => {
+                params.bands[0].enabled = true;
+                engine.set_parameters(params);
+            }
+            8 => {
+                params.set_band_routing(0, BandRouting::Mid);
+                engine.set_parameters(params);
+            }
+            _ => {}
+        }
+        assert!(engine.process(&[&in_l, &in_r], &mut [&mut out_l, &mut out_r]));
+        if blk >= 1 {
+            max_step = max_step.max((out_l[0] - prev_last_l).abs());
+            for w in out_l.windows(2) {
+                max_step = max_step.max((w[1] - w[0]).abs());
+            }
+        }
+        prev_last_l = out_l[n - 1];
+    }
+
+    assert!(
+        max_step < 0.20,
+        "click detected on band toggle/routing: max_step={max_step}"
+    );
+}
+
+#[test]
+fn test_minimum_to_linear_phase_has_no_silence_dip() {
+    use equaform_common::ProcessingMode;
+
+    let sr = 48_000.0;
+    let n = 256;
+    let mut engine = Box::new(EngineLifecycle::new());
+    engine.prepare(sr, n, 2);
+    let mut params = EqParameters::default();
+    params.global.processing_mode = ProcessingMode::MinimumPhase;
+    params.bands[0].enabled = true;
+    params.bands[0].filter_type = FilterType::Bell;
+    params.bands[0].frequency_hz = 1000.0;
+    params.bands[0].gain_db = 3.0;
+    params.bands[0].q = 1.0;
+    engine.set_parameters(params);
+
+    let (mut in_l, mut in_r, mut out_l, mut out_r) = (
+        vec![0.0f32; n],
+        vec![0.0f32; n],
+        vec![0.0f32; n],
+        vec![0.0f32; n],
+    );
+    let mut idx = 0usize;
+    let mut prev_last = 0.0f32;
+
+    for blk in 0..24 {
+        for i in 0..n {
+            let ph = 2.0 * std::f64::consts::PI * 440.0 * (idx as f64 / sr);
+            in_l[i] = (0.5 * ph.sin()) as f32;
+            in_r[i] = in_l[i];
+            idx += 1;
+        }
+        if blk == 4 {
+            params.global.processing_mode = ProcessingMode::LinearPhaseHigh;
+            engine.set_parameters(params);
+        }
+        assert!(engine.process(&[&in_l, &in_r], &mut [&mut out_l, &mut out_r]));
+        if blk >= 4 {
+            let rms = (out_l.iter().map(|s| s * s).sum::<f32>() / n as f32).sqrt();
+            assert!(rms > 0.15, "silence dip at block {blk}: rms={rms}");
+            let mut max_step = (out_l[0] - prev_last).abs();
+            for w in out_l.windows(2) {
+                max_step = max_step.max((w[1] - w[0]).abs());
+            }
+            assert!(max_step < 0.15, "step too large at block {blk}: {max_step}");
+        }
+        prev_last = out_l[n - 1];
+    }
+}
+
+#[test]
+fn test_linear_phase_auto_gain_waits_for_kernel_ready() {
+    use equaform_common::ProcessingMode;
+
+    let mut engine = Box::new(EngineLifecycle::new());
+    engine.prepare(48_000.0, 256, 2);
+    let mut params = EqParameters::default();
+    params.global.processing_mode = ProcessingMode::LinearPhaseLow;
+    params.global.auto_gain = true;
+    params.bands[0].enabled = true;
+    params.bands[0].filter_type = FilterType::Bell;
+    params.bands[0].frequency_hz = 1000.0;
+    params.bands[0].gain_db = 6.0;
+    params.bands[0].q = 1.0;
+    engine.set_parameters(params);
+
+    let in_l = vec![0.5f32; 256];
+    let in_r = vec![0.5f32; 256];
+    let mut out_l = vec![0.0f32; 256];
+    let mut out_r = vec![0.0f32; 256];
+    for _ in 0..4 {
+        assert!(engine.process(&[&in_l, &in_r], &mut [&mut out_l, &mut out_r]));
+    }
+    let initial_auto_gain = engine.coeff_cache.auto_gain_db;
+    params.bands[0].gain_db = 12.0;
+    engine.set_parameters(params);
+    assert!(engine.process(&[&in_l, &in_r], &mut [&mut out_l, &mut out_r]));
+    assert!(
+        (engine.coeff_cache.auto_gain_db - initial_auto_gain).abs() < 1e-6,
+        "auto_gain_db jumped immediately from {initial_auto_gain} to {} before async kernel swap",
+        engine.coeff_cache.auto_gain_db
+    );
+}
+
+#[test]
+fn test_lr_routing_switch_is_click_free() {
+    use equaform_common::BandRouting;
+
+    let sr = 48_000.0;
+    let n = 256;
+    let mut engine = Box::new(EngineLifecycle::new());
+    engine.prepare(sr, n, 2);
+    let mut params = EqParameters::default();
+    params.bands[0].enabled = true;
+    params.bands[0].filter_type = FilterType::Bell;
+    params.bands[0].frequency_hz = 1137.0;
+    params.bands[0].gain_db = 12.0;
+    params.bands[0].q = 4.0;
+    params.set_band_routing(0, BandRouting::Stereo);
+    engine.set_parameters(params);
+
+    let (mut in_l, mut in_r, mut out_l, mut out_r) = (
+        vec![0.0f32; n],
+        vec![0.0f32; n],
+        vec![0.0f32; n],
+        vec![0.0f32; n],
+    );
+    let mut max_step_l = 0.0f32;
+    let mut max_step_r = 0.0f32;
+    let mut prev_last_l = 0.0f32;
+    let mut prev_last_r = 0.0f32;
+    let mut idx = 0usize;
+
+    for blk in 0..12 {
+        for i in 0..n {
+            let ph = 2.0 * std::f64::consts::PI * 1137.0 * (idx as f64 / sr);
+            in_l[i] = (0.3 * ph.sin()) as f32;
+            in_r[i] = (0.3 * ph.sin()) as f32;
+            idx += 1;
+        }
+        match blk {
+            3 => {
+                params.set_band_routing(0, BandRouting::Left);
+                engine.set_parameters(params);
+            }
+            6 => {
+                params.set_band_routing(0, BandRouting::Right);
+                engine.set_parameters(params);
+            }
+            9 => {
+                params.set_band_routing(0, BandRouting::Stereo);
+                engine.set_parameters(params);
+            }
+            _ => {}
+        }
+        assert!(engine.process(&[&in_l, &in_r], &mut [&mut out_l, &mut out_r]));
+        if blk >= 1 {
+            max_step_l = max_step_l.max((out_l[0] - prev_last_l).abs());
+            max_step_r = max_step_r.max((out_r[0] - prev_last_r).abs());
+            for w in out_l.windows(2) {
+                max_step_l = max_step_l.max((w[1] - w[0]).abs());
+            }
+            for w in out_r.windows(2) {
+                max_step_r = max_step_r.max((w[1] - w[0]).abs());
+            }
+        }
+        prev_last_l = out_l[n - 1];
+        prev_last_r = out_r[n - 1];
+    }
+
+    assert!(
+        max_step_l < 0.22 && max_step_r < 0.22,
+        "L/R routing switch click: max_step_l={max_step_l}, max_step_r={max_step_r}"
+    );
+}
+
+#[test]
+fn test_solo_lr_routing_switch_is_click_free() {
+    use equaform_common::BandRouting;
+
+    let sr = 48_000.0;
+    let n = 256;
+    let mut engine = Box::new(EngineLifecycle::new());
+    engine.prepare(sr, n, 2);
+    let mut params = EqParameters::default();
+    params.bands[0].enabled = true;
+    params.bands[0].filter_type = FilterType::Bell;
+    params.bands[0].frequency_hz = 1137.0;
+    params.bands[0].gain_db = 12.0;
+    params.bands[0].q = 4.0;
+    params.set_band_solo(0, true);
+    params.set_band_routing(0, BandRouting::Stereo);
+    engine.set_parameters(params);
+
+    let (mut in_l, mut in_r, mut out_l, mut out_r) = (
+        vec![0.0f32; n],
+        vec![0.0f32; n],
+        vec![0.0f32; n],
+        vec![0.0f32; n],
+    );
+    let mut max_step_l = 0.0f32;
+    let mut max_step_r = 0.0f32;
+    let mut prev_last_l = 0.0f32;
+    let mut prev_last_r = 0.0f32;
+    let mut idx = 0usize;
+
+    for blk in 0..18 {
+        for i in 0..n {
+            let ph = 2.0 * std::f64::consts::PI * 1137.0 * (idx as f64 / sr);
+            in_l[i] = (0.3 * ph.sin()) as f32;
+            in_r[i] = (0.2 * (ph * 1.3).sin()) as f32;
+            idx += 1;
+        }
+        match blk {
+            3 => {
+                params.set_band_routing(0, BandRouting::Left);
+                engine.set_parameters(params);
+            }
+            6 => {
+                params.set_band_routing(0, BandRouting::Right);
+                engine.set_parameters(params);
+            }
+            9 => {
+                params.set_band_routing(0, BandRouting::Mid);
+                engine.set_parameters(params);
+            }
+            12 => {
+                params.set_band_routing(0, BandRouting::Side);
+                engine.set_parameters(params);
+            }
+            15 => {
+                params.set_band_routing(0, BandRouting::Stereo);
+                engine.set_parameters(params);
+            }
+            _ => {}
+        }
+        assert!(engine.process(&[&in_l, &in_r], &mut [&mut out_l, &mut out_r]));
+        if blk >= 1 {
+            max_step_l = max_step_l.max((out_l[0] - prev_last_l).abs());
+            max_step_r = max_step_r.max((out_r[0] - prev_last_r).abs());
+            for w in out_l.windows(2) {
+                max_step_l = max_step_l.max((w[1] - w[0]).abs());
+            }
+            for w in out_r.windows(2) {
+                max_step_r = max_step_r.max((w[1] - w[0]).abs());
+            }
+        }
+        prev_last_l = out_l[n - 1];
+        prev_last_r = out_r[n - 1];
+    }
+
+    assert!(
+        max_step_l < 0.15 && max_step_r < 0.15,
+        "Solo L/R routing switch click: max_step_l={max_step_l}, max_step_r={max_step_r}"
+    );
+}
+
+#[test]
+fn test_linear_phase_unsolo_has_no_stale_audio_burst() {
+    use equaform_common::ProcessingMode;
+
+    let sr = 48_000.0;
+    let n = 256;
+    let mut engine = Box::new(EngineLifecycle::new());
+    engine.prepare(sr, n, 2);
+    let mut params = EqParameters::default();
+    params.global.processing_mode = ProcessingMode::LinearPhaseLow;
+    params.bands[0].enabled = true;
+    params.bands[0].filter_type = FilterType::Bell;
+    params.bands[0].frequency_hz = 1000.0;
+    params.bands[0].gain_db = 6.0;
+    params.bands[0].q = 1.0;
+    engine.set_parameters(params);
+
+    let loud = vec![0.5f32; n];
+    let silent = vec![0.0f32; n];
+    let mut out_l = vec![0.0f32; n];
+    let mut out_r = vec![0.0f32; n];
+
+    // Fill LinearPhaseLow pipeline with loud audio.
+    for _ in 0..8 {
+        assert!(engine.process(&[&loud, &loud], &mut [&mut out_l, &mut out_r]));
+    }
+
+    // Engage Solo and feed silence for 12 blocks (longer than 1024-sample latency).
+    params.set_band_solo(0, true);
+    engine.set_parameters(params);
+    for _ in 0..12 {
+        assert!(engine.process(&[&silent, &silent], &mut [&mut out_l, &mut out_r]));
+    }
+
+    // Disengage Solo while still feeding silence: no stale loud audio should leak out.
+    params.set_band_solo(0, false);
+    engine.set_parameters(params);
+    let mut max_leak = 0.0f32;
+    for _ in 0..6 {
+        assert!(engine.process(&[&silent, &silent], &mut [&mut out_l, &mut out_r]));
+        for &s in &out_l {
+            max_leak = max_leak.max(s.abs());
+        }
+    }
+
+    assert!(
+        max_leak < 1e-3,
+        "stale LinearPhase audio burst leaked on un-solo: max_leak={max_leak}"
+    );
 }

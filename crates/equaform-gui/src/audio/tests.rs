@@ -158,8 +158,13 @@ fn test_drift_controller_underrun_recovery_without_stall() {
 
     // 3. Output callback runs while buffer is starved
     drift.read_from(&consumer, &mut left, &mut right, 512);
-    // It outputs silence for this starvation block
-    assert_eq!(left[0], 0.0);
+    // It decays smoothly toward silence instead of hard-zeroing (no plop).
+    assert!(
+        (left[0] - 0.33).abs() < 0.01 && left[511].abs() < 1e-3,
+        "expected smooth underrun decay, got left[0]={}, left[511]={}",
+        left[0],
+        left[511]
+    );
     // CRITICAL: Controller must REMAIN PRIMED to avoid the 46 ms reprime blackout!
     assert!(
         drift.is_primed(),
@@ -175,7 +180,7 @@ fn test_drift_controller_underrun_recovery_without_stall() {
     // Audio playback resumes immediately without waiting for 4096 frames!
     assert!(drift.is_primed());
     assert!(
-        (left[0] - 0.88).abs() < 1e-4,
+        (left[2] - 0.88).abs() < 1e-4,
         "Playback resumed instantly without stall!"
     );
 }
@@ -377,4 +382,80 @@ fn test_audio_stream_triple_buffer_and_error_counter() {
     // Stream error increment
     stream.stream_errors().fetch_add(1, Ordering::Relaxed);
     assert_eq!(stream.stream_error_count(), 1);
+}
+
+#[test]
+fn test_graceful_shutdown_ramps_audio_to_silence() {
+    use super::render::{
+        AudioRenderContext, AudioScratchBuffers, AudioTelemetry, StreamFormatSpec,
+        process_output_block,
+    };
+    use equaform_common::triple_buffer::create_triple_buffer;
+    use equaform_engine::EngineLifecycle;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32};
+
+    let mut engine = Box::new(EngineLifecycle::new());
+    engine.prepare(48_000.0, 256, 2);
+    let (_param_producer, mut param_consumer) = create_triple_buffer(EqParameters::default());
+    let (_, audio_consumer) = create_audio_ring_buffer(4096);
+    let mut drift = ContinuousPiDriftController::new(1.0);
+    let is_running = Arc::new(AtomicBool::new(true));
+    let is_muted = Arc::new(AtomicBool::new(false));
+    let source_mode = Arc::new(AtomicU8::new(AudioSourceMode::TestSignal as u8));
+    let peak_l = Arc::new(AtomicU32::new(0));
+    let peak_r = Arc::new(AtomicU32::new(0));
+    let spectrum_samples: Vec<AtomicU32> = (0..512).map(|_| AtomicU32::new(0)).collect();
+    let mut phase = 0.0;
+    let mut mute_gain = 1.0f32;
+    let mut has_seen_audio = true;
+    let mut left_in = vec![0.0f32; 512];
+    let mut right_in = vec![0.0f32; 512];
+    let mut left_out = vec![0.0f32; 512];
+    let mut right_out = vec![0.0f32; 512];
+    let mut data = vec![0.0f32; 1024];
+
+    let mut ctx = AudioRenderContext {
+        format: StreamFormatSpec {
+            sample_rate: 48_000.0,
+            block_size: 512,
+            channels: 2,
+        },
+        engine: &mut engine,
+        param_consumer: &mut param_consumer,
+        audio_consumer: &audio_consumer,
+        drift: &mut drift,
+        telemetry: AudioTelemetry {
+            is_running: &is_running,
+            is_muted: &is_muted,
+            source_mode: &source_mode,
+            peak_l: &peak_l,
+            peak_r: &peak_r,
+            spectrum_samples: &spectrum_samples,
+        },
+        phase: &mut phase,
+        mute_gain: &mut mute_gain,
+        has_seen_audio: &mut has_seen_audio,
+        scratch: AudioScratchBuffers {
+            left_in: &mut left_in,
+            right_in: &mut right_in,
+            left_out: &mut left_out,
+            right_out: &mut right_out,
+        },
+    };
+
+    process_output_block(&mut data, &mut ctx);
+    assert!(data.iter().any(|&s| s.abs() > 0.01));
+
+    let _ = crate::standalone::request_graceful_shutdown();
+    process_output_block(&mut data, &mut ctx);
+    // First sample must not hard-cut to zero.
+    assert!(data[0].abs() > 0.001, "hard cut at sample 0: {}", data[0]);
+    for _ in 0..15 {
+        process_output_block(&mut data, &mut ctx);
+    }
+    crate::standalone::clear_shutdown_requested_for_test();
+
+    // After 150 ms (16 blocks of 512 samples @ 48 kHz), final samples must reach exact silence.
+    assert!(data[1022].abs() < 1e-6 && data[1023].abs() < 1e-6);
 }

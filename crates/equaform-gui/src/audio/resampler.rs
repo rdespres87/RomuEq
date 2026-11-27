@@ -172,15 +172,22 @@ impl ContinuousPiDriftController {
                 return false;
             }
         }
-        if available == 0 || (available < count && self.leftover.len == 0) {
+        if available == 0 && self.leftover.len == 0 {
             self.underrun_count += 1;
-            self.resampler.has_samples = false;
-            self.resampler.phase = 0.0;
-            if available == 0 {
-                self.leftover.clear();
+            let mut l = self.resampler.curr_l;
+            let mut r = self.resampler.curr_r;
+            for (dl, dr) in left[..count].iter_mut().zip(right[..count].iter_mut()) {
+                l *= 0.985;
+                r *= 0.985;
+                *dl = l;
+                *dr = r;
             }
-            left[..count].fill(0.0);
-            right[..count].fill(0.0);
+            self.resampler.prev_l = l;
+            self.resampler.prev_r = r;
+            self.resampler.curr_l = l;
+            self.resampler.curr_r = r;
+            self.resampler.has_samples = true;
+            self.resampler.phase = 0.0;
             return false;
         }
         true
