@@ -216,3 +216,47 @@ unsafe extern "C" fn flush<P: Plugin>(
         });
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::{CStr, CString};
+    use std::mem::MaybeUninit;
+
+    #[test]
+    fn test_params_ffi_metadata_and_formatting() {
+        let p: *const clap_plugin = std::ptr::null();
+        // SAFETY: `count`, `get_info`, `value_to_text`, and `text_to_value` ignore `_plugin`.
+        unsafe {
+            assert_eq!(count(p), PARAM_COUNT);
+            assert!(!get_info(p, 0, std::ptr::null_mut()));
+            let mut pi = MaybeUninit::<clap_param_info>::zeroed();
+            assert!(!get_info(p, PARAM_COUNT, pi.as_mut_ptr()));
+            assert!(get_info(p, 0, pi.as_mut_ptr()));
+            assert_eq!((*pi.as_ptr()).id, 1);
+
+            assert!(!value_to_text(p, 102, 1500.0, std::ptr::null_mut(), 16));
+            let mut buf = [0 as c_char; 64];
+            assert!(!value_to_text(p, 102, 1500.0, buf.as_mut_ptr(), 0));
+            assert!(value_to_text(p, 102, 1500.0, buf.as_mut_ptr(), 64));
+            assert_eq!(CStr::from_ptr(buf.as_ptr()).to_bytes(), b"1.50 kHz");
+
+            let mut out_val = 0.0f64;
+            assert!(!text_to_value(p, 102, std::ptr::null(), &mut out_val));
+            let c_ok = CString::new("1.5 kHz").expect("valid CString");
+            assert!(!text_to_value(p, 102, c_ok.as_ptr(), std::ptr::null_mut()));
+            let bad_utf8: [u8; 3] = [0xFF, 0xFE, 0];
+            assert!(!text_to_value(
+                p,
+                102,
+                bad_utf8.as_ptr().cast::<c_char>(),
+                &mut out_val
+            ));
+            assert!(text_to_value(p, 102, c_ok.as_ptr(), &mut out_val));
+            assert!((out_val - 1500.0).abs() < 1e-6);
+
+            let c_bad = CString::new("nope").expect("valid CString");
+            assert!(!text_to_value(p, 102, c_bad.as_ptr(), &mut out_val));
+        }
+    }
+}

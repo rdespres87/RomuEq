@@ -78,3 +78,42 @@ unsafe extern "C" fn get(
 
     true
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::CStr;
+    use std::mem::MaybeUninit;
+
+    #[test]
+    fn test_audio_ports_count_and_get() {
+        let p: *const clap_plugin = std::ptr::null();
+        // SAFETY: `count` ignores the plugin pointer and returns the static port count.
+        unsafe {
+            assert_eq!(count(p, true), 1);
+            assert_eq!(count(p, false), 1);
+            assert!(!get(p, 0, true, std::ptr::null_mut()));
+            assert!(!get(p, 1, true, std::ptr::null_mut()));
+        }
+
+        let mut info = MaybeUninit::<clap_audio_port_info>::zeroed();
+        let ptr = info.as_mut_ptr();
+        // SAFETY: `ptr` points to a valid zeroed `clap_audio_port_info` and index 0 is valid.
+        unsafe {
+            assert!(get(p, 0, true, ptr));
+            let i = &*ptr;
+            assert_eq!((i.id, i.in_place_pair, i.channel_count), (0, 1, 2));
+            assert_eq!(CStr::from_ptr(i.name.as_ptr()).to_bytes(), b"Stereo In");
+        }
+
+        let mut info_out = MaybeUninit::<clap_audio_port_info>::zeroed();
+        let ptr_out = info_out.as_mut_ptr();
+        // SAFETY: `ptr_out` points to a valid zeroed `clap_audio_port_info` and index 0 is valid.
+        unsafe {
+            assert!(get(p, 0, false, ptr_out));
+            let i = &*ptr_out;
+            assert_eq!((i.id, i.in_place_pair, i.channel_count), (1, 0, 2));
+            assert_eq!(CStr::from_ptr(i.name.as_ptr()).to_bytes(), b"Stereo Out");
+        }
+    }
+}

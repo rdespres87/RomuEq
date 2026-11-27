@@ -476,3 +476,49 @@ impl<'a> PluginAudioProcessor<'a, EquaformShared, EquaformMainThread<'a>>
 
     fn stop_processing(&mut self) {}
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::EquaformSharedInner;
+    use equaform_common::ProcessingMode;
+
+    #[test]
+    fn test_process_planar_edge_cases_and_mono_to_stereo() {
+        let shared = Arc::new(EquaformSharedInner::new());
+        let mut proc = EquaformAudioProcessor::new(shared);
+
+        assert!(!proc.process_planar(&[], &mut []));
+
+        let mut out: Vec<f32> = vec![];
+        assert!(proc.process_planar(&[&[]], &mut [&mut out[..]]));
+
+        assert!(proc.prepare(48000.0, 256, 1));
+        let in1: Vec<f32> = vec![0.5; 256];
+        let mut out1: Vec<f32> = vec![0.0; 256];
+        assert!(proc.process_planar(&[&in1], &mut [&mut out1[..]]));
+
+        assert!(proc.prepare(48000.0, 256, 2));
+        let in_mono: Vec<f32> = vec![0.5; 256];
+        let mut out_l: Vec<f32> = vec![0.0; 256];
+        let mut out_r: Vec<f32> = vec![0.0; 256];
+        assert!(proc.process_planar(&[&in_mono], &mut [&mut out_l[..], &mut out_r[..]]));
+    }
+
+    #[test]
+    fn test_host_param_event_latency_and_linear_to_dbfs() {
+        let shared = Arc::new(EquaformSharedInner::new());
+        let proc = EquaformAudioProcessor::new(shared);
+
+        let mut latency_dirty = false;
+        proc.apply_host_param_event(
+            global::PROCESSING_MODE,
+            ProcessingMode::LinearPhaseLow.to_raw() as f64,
+            &mut latency_dirty,
+        );
+        assert!(latency_dirty);
+
+        assert!(linear_to_dbfs(0.0).is_infinite());
+        assert!((linear_to_dbfs(1.0) - 0.0).abs() < 1e-4);
+    }
+}

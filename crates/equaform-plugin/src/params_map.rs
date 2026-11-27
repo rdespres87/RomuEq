@@ -899,4 +899,88 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn test_format_param_value_all_types_and_edge_cases() {
+        assert_eq!(format_param_value(1, 0.0), "On");
+        assert_eq!(format_param_value(1, 1.0), "Bypass");
+        assert_eq!(format_param_value(3, 1.0), "On");
+        assert_eq!(format_param_value(3, 0.0), "Off");
+        assert_eq!(
+            format_param_value(4, 0.0),
+            ProcessingMode::MinimumPhase.display_name()
+        );
+        assert_eq!(
+            format_param_value(4, 1.0),
+            ProcessingMode::LinearPhaseLow.display_name()
+        );
+        assert_eq!(
+            format_param_value(4, 2.0),
+            ProcessingMode::LinearPhaseHigh.display_name()
+        );
+        assert_eq!(
+            format_param_value(4, f64::NAN),
+            ProcessingMode::MinimumPhase.display_name()
+        );
+        assert_eq!(format_param_value(7, 0.0), "Perceptual");
+        assert_eq!(format_param_value(7, 1.0), "Anti-Clip");
+        assert_eq!(format_param_value(2, 1.5), "+1.5 dB");
+        assert_eq!(format_param_value(103, 1.5), "+1.5 dB");
+        assert_eq!(format_param_value(100, 1.0), "On");
+        assert_eq!(format_param_value(100, 0.0), "Off");
+        assert_eq!(format_param_value(101, 0.0), "Bell");
+        assert_eq!(format_param_value(101, 1.0), "Low Shelf");
+        assert_eq!(format_param_value(101, 2.0), "High Shelf");
+        assert_eq!(format_param_value(101, 3.0), "High Pass");
+        assert_eq!(format_param_value(101, 4.0), "Low Pass");
+        assert_eq!(format_param_value(102, 500.0), "500 Hz");
+        assert_eq!(format_param_value(102, 1500.0), "1.50 kHz");
+        assert_eq!(format_param_value(104, 1.0), "Q 1.00");
+        assert_eq!(format_param_value(105, 0.0), "6 dB/o");
+        assert_eq!(format_param_value(105, 1.0), "12 dB/o");
+        assert_eq!(format_param_value(105, 2.0), "18 dB/o");
+        assert_eq!(format_param_value(105, 3.0), "24 dB/o");
+        assert_eq!(format_param_value(107, 0.0), "Stereo");
+        assert_eq!(format_param_value(107, 1.0), "Left");
+        assert_eq!(format_param_value(107, 2.0), "Right");
+        assert_eq!(format_param_value(107, 3.0), "Mid");
+        assert_eq!(format_param_value(107, 4.0), "Side");
+        assert_eq!(format_param_value(999, 0.5), "0.50");
+    }
+
+    #[test]
+    fn test_parse_param_value_all_formats_and_invalid() {
+        assert_eq!(parse_param_value(1, "bypass"), Some(1.0));
+        assert_eq!(parse_param_value(1, "active"), Some(0.0));
+        assert_eq!(parse_param_value(3, "on"), Some(1.0));
+        assert_eq!(parse_param_value(3, "off"), Some(0.0));
+        assert_eq!(parse_param_value(4, "zero"), Some(0.0));
+        assert_eq!(parse_param_value(4, "linear low"), Some(1.0));
+        assert_eq!(parse_param_value(4, "linear high"), Some(2.0));
+        assert_eq!(parse_param_value(4, "1"), Some(1.0));
+        assert_eq!(parse_param_value(4, "invalid"), None);
+        assert_eq!(parse_param_value(101, "peak"), Some(0.0));
+        assert_eq!(parse_param_value(101, "ls"), Some(1.0));
+        assert_eq!(parse_param_value(101, "hs"), Some(2.0));
+        assert_eq!(parse_param_value(101, "hpf"), Some(3.0));
+        assert_eq!(parse_param_value(101, "lpf"), Some(4.0));
+        assert_eq!(parse_param_value(101, "bad"), None);
+        assert_eq!(parse_param_value(105, "6 db/oct"), Some(0.0));
+        assert_eq!(parse_param_value(105, "12"), Some(1.0));
+        assert_eq!(parse_param_value(105, "18 db/o"), Some(2.0));
+        assert_eq!(parse_param_value(105, "24"), Some(3.0));
+        assert_eq!(parse_param_value(105, "bad"), None);
+        assert_eq!(parse_param_value(107, "st"), Some(0.0));
+        assert_eq!(parse_param_value(107, "l"), Some(1.0));
+        assert_eq!(parse_param_value(107, "r"), Some(2.0));
+        assert_eq!(parse_param_value(107, "m"), Some(3.0));
+        assert_eq!(parse_param_value(107, "s"), Some(4.0));
+        assert_eq!(parse_param_value(107, "bad"), None);
+        assert_eq!(parse_param_value(102, "1.5kHz"), Some(1500.0));
+        assert_eq!(parse_param_value(102, "2,5k"), Some(2500.0));
+        assert_eq!(parse_param_value(102, "500 Hz"), Some(500.0));
+        assert_eq!(parse_param_value(104, "Q 2.5"), Some(2.5));
+        assert_eq!(parse_param_value(103, "-3.5 dB"), Some(-3.5));
+        assert_eq!(parse_param_value(2, "abc"), None);
+    }
 }

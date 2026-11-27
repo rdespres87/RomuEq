@@ -880,6 +880,10 @@ mod tests {
     #[test]
     fn test_ui_param_sets_dirty_to_host_and_gestures() {
         let shared = EquaformSharedInner::new();
+        // Band solo is monitor-only: updates solo_mask without dirtying host params.
+        assert!(!shared.set_param_from_ui(106, 1.0, false));
+        assert!(!shared.set_param_from_ui(106, 0.0, false));
+
         assert!(shared.set_param_from_ui(103, 6.5, true));
         let slot = param_id_to_slot(103).unwrap();
         assert_eq!(shared.take_gesture_begin(slot), Some(103));
@@ -891,6 +895,13 @@ mod tests {
         shared.end_active_gestures();
         assert_eq!(shared.take_gesture_end(slot), Some(103));
         assert!(shared.take_dirty_slot(slot).is_none());
+
+        shared.mark_dirty_slot(slot);
+        shared.mark_gesture_begin(slot);
+        shared.mark_gesture_end(slot);
+        assert!(shared.take_dirty_slot(slot).is_some());
+        assert_eq!(shared.take_gesture_begin(slot), Some(103));
+        assert_eq!(shared.take_gesture_end(slot), Some(103));
     }
 
     #[test]
@@ -938,5 +949,248 @@ mod tests {
         assert_eq!(decoded.schema_version, 1);
         assert!((decoded.eq.global.output_gain_db - (-3.5)).abs() < 1e-4);
         assert!((decoded.eq.bands[0].gain_db - 4.25).abs() < 1e-4);
+    }
+
+    unsafe fn with_test_clap_plugin(f: impl FnOnce(*const clap_sys::plugin::clap_plugin)) {
+        use clap_sys::factory::plugin_factory::{CLAP_PLUGIN_FACTORY_ID, clap_plugin_factory};
+        use clap_sys::host::clap_host;
+        use clap_sys::version::CLAP_VERSION;
+
+        // SAFETY: `clap_entry` and stack `clap_host` are valid for the duration of `f`.
+        unsafe {
+            assert!(clap_entry.init.expect("init")(c"equaform".as_ptr()));
+            let factory =
+                clap_entry.get_factory.expect("get_factory")(CLAP_PLUGIN_FACTORY_ID.as_ptr())
+                    as *const clap_plugin_factory;
+            assert!(!factory.is_null());
+            assert_eq!((*factory).get_plugin_count.expect("count")(factory), 1);
+            let desc = (*factory).get_plugin_descriptor.expect("desc")(factory, 0);
+            assert!(!desc.is_null());
+            let host = clap_host {
+                clap_version: CLAP_VERSION,
+                host_data: core::ptr::null_mut(),
+                name: c"TestHost".as_ptr(),
+                vendor: c"Equaform".as_ptr(),
+                url: c"https://example.invalid".as_ptr(),
+                version: c"1.0".as_ptr(),
+                get_extension: None,
+                request_restart: None,
+                request_process: None,
+                request_callback: None,
+            };
+            let plugin = (*factory).create_plugin.expect("create")(factory, &host, (*desc).id);
+            assert!(!plugin.is_null());
+            assert!((*plugin).init.expect("plugin.init")(plugin));
+            f(plugin);
+            (*plugin).destroy.expect("destroy")(plugin);
+            clap_entry.deinit.expect("deinit")();
+        }
+    }
+
+    #[test]
+    fn test_clap_entry_state_params_and_latency_round_trip() {
+        use clap_sys::ext::latency::{CLAP_EXT_LATENCY, clap_plugin_latency};
+        use clap_sys::ext::params::{CLAP_EXT_PARAMS, clap_plugin_params};
+        use clap_sys::ext::state::{CLAP_EXT_STATE, clap_plugin_state};
+        use clap_sys::stream::{clap_istream, clap_ostream};
+        use core::ffi::c_void;
+
+        unsafe extern "C" fn write_cb(s: *const clap_ostream, d: *const c_void, n: u64) -> i64 {
+            // SAFETY: Test stream ctx points to a valid `Vec<u8>`, and `d` has `n` readable bytes.
+            unsafe {
+                let buf = &mut *((*s).ctx as *mut Vec<u8>);
+                buf.extend_from_slice(core::slice::from_raw_parts(d as *const u8, n as usize));
+                n as i64
+            }
+        }
+        unsafe extern "C" fn read_cb(s: *const clap_istream, b: *mut c_void, n: u64) -> i64 {
+            // SAFETY: Test stream ctx points to `(Vec<u8>, usize)` and `b` has `n` writable bytes.
+            unsafe {
+                let (data, pos) = &mut *((*s).ctx as *mut (Vec<u8>, usize));
+                let k = data.len().saturating_sub(*pos).min(n as usize);
+                if k == 0 {
+                    return 0;
+                }
+                core::ptr::copy_nonoverlapping(data[*pos..*pos + k].as_ptr(), b as *mut u8, k);
+                *pos += k;
+                k as i64
+            }
+        }
+
+        // SAFETY: `with_test_clap_plugin` provides an initialized `clap_plugin` for this call.
+        unsafe {
+            with_test_clap_plugin(|plugin| {
+                let latency =
+                    (*plugin).get_extension.expect("ext")(plugin, CLAP_EXT_LATENCY.as_ptr())
+                        as *const clap_plugin_latency;
+                assert_eq!((*latency).get.expect("latency.get")(plugin), 0);
+
+                let params = (*plugin).get_extension.expect("ext")(plugin, CLAP_EXT_PARAMS.as_ptr())
+                    as *const clap_plugin_params;
+                let mut val = 1.0f64;
+                assert!((*params).get_value.expect("get_value")(plugin, 2, &mut val));
+                assert_eq!(val, 0.0);
+
+                let state = (*plugin).get_extension.expect("ext")(plugin, CLAP_EXT_STATE.as_ptr())
+                    as *const clap_plugin_state;
+                let mut buf: Vec<u8> = Vec::new();
+                let ostream = clap_ostream {
+                    ctx: (&raw mut buf).cast::<c_void>(),
+                    write: Some(write_cb),
+                };
+                assert!((*state).save.expect("save")(plugin, &ostream));
+                let mut rctx = (buf, 0usize);
+                let istream = clap_istream {
+                    ctx: (&raw mut rctx).cast::<c_void>(),
+                    read: Some(read_cb),
+                };
+                assert!((*state).load.expect("load")(plugin, &istream));
+
+                let mut bad = (b"not json".to_vec(), 0usize);
+                let bad_stream = clap_istream {
+                    ctx: (&raw mut bad).cast::<c_void>(),
+                    read: Some(read_cb),
+                };
+                assert!(!(*state).load.expect("load")(plugin, &bad_stream));
+
+                // Legacy bare EqParameters JSON & unsupported future schema version
+                let legacy_json =
+                    serde_json::to_vec(&default_eq_parameters()).expect("serialize legacy");
+                let mut legacy = (legacy_json, 0usize);
+                let legacy_stream = clap_istream {
+                    ctx: (&raw mut legacy).cast::<c_void>(),
+                    read: Some(read_cb),
+                };
+                assert!((*state).load.expect("load")(plugin, &legacy_stream));
+
+                let future_env = PluginStateEnvelope {
+                    schema_version: STATE_SCHEMA_VERSION + 1,
+                    eq: default_eq_parameters(),
+                };
+                let mut future = (serde_json::to_vec(&future_env).expect("serialize"), 0usize);
+                let future_stream = clap_istream {
+                    ctx: (&raw mut future).cast::<c_void>(),
+                    read: Some(read_cb),
+                };
+                assert!(!(*state).load.expect("load")(plugin, &future_stream));
+            });
+        }
+    }
+
+    #[test]
+    fn test_clap_entry_audio_process_and_flush() {
+        use clap_sys::audio_buffer::clap_audio_buffer;
+        use clap_sys::events::{
+            CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_PARAM_VALUE, clap_event_header,
+            clap_event_param_value, clap_input_events, clap_output_events,
+        };
+        use clap_sys::ext::params::{CLAP_EXT_PARAMS, clap_plugin_params};
+        use clap_sys::process::{CLAP_PROCESS_CONTINUE, clap_process};
+        use core::ffi::c_void;
+
+        unsafe extern "C" fn ev_size(list: *const clap_input_events) -> u32 {
+            // SAFETY: `list` is valid and `ctx` points to a `clap_event_param_value`.
+            unsafe { u32::from(!(*list).ctx.is_null()) }
+        }
+        unsafe extern "C" fn ev_get(
+            list: *const clap_input_events,
+            index: u32,
+        ) -> *const clap_event_header {
+            // SAFETY: `list` is valid and `ctx` points to `clap_event_param_value`.
+            unsafe {
+                if index == 0 && !(*list).ctx.is_null() {
+                    (*list).ctx.cast::<clap_event_header>()
+                } else {
+                    core::ptr::null()
+                }
+            }
+        }
+        unsafe extern "C" fn ev_push(
+            _list: *const clap_output_events,
+            _event: *const clap_event_header,
+        ) -> bool {
+            true
+        }
+
+        // SAFETY: `with_test_clap_plugin` provides an initialized `clap_plugin` for this call.
+        unsafe {
+            with_test_clap_plugin(|plugin| {
+                assert!((*plugin).activate.expect("activate")(
+                    plugin, 48000.0, 64, 64
+                ));
+                assert!((*plugin).start_processing.expect("start")(plugin));
+
+                let mut in_l = [0.25f32; 64];
+                let mut in_r = [0.25f32; 64];
+                let mut out_l = [0.0f32; 64];
+                let mut out_r = [0.0f32; 64];
+                let mut in_ptrs = [in_l.as_mut_ptr(), in_r.as_mut_ptr()];
+                let mut out_ptrs = [out_l.as_mut_ptr(), out_r.as_mut_ptr()];
+                let in_buf = clap_audio_buffer {
+                    data32: in_ptrs.as_mut_ptr(),
+                    data64: core::ptr::null_mut(),
+                    channel_count: 2,
+                    latency: 0,
+                    constant_mask: 0,
+                };
+                let mut out_buf = clap_audio_buffer {
+                    data32: out_ptrs.as_mut_ptr(),
+                    data64: core::ptr::null_mut(),
+                    channel_count: 2,
+                    latency: 0,
+                    constant_mask: 0,
+                };
+                let mut ev = clap_event_param_value {
+                    header: clap_event_header {
+                        size: core::mem::size_of::<clap_event_param_value>() as u32,
+                        time: 16,
+                        space_id: CLAP_CORE_EVENT_SPACE_ID,
+                        type_: CLAP_EVENT_PARAM_VALUE,
+                        flags: 0,
+                    },
+                    param_id: 2,
+                    cookie: core::ptr::null_mut(),
+                    note_id: -1,
+                    port_index: -1,
+                    channel: -1,
+                    key: -1,
+                    value: 3.0,
+                };
+                let in_events = clap_input_events {
+                    ctx: (&raw mut ev).cast::<c_void>(),
+                    size: Some(ev_size),
+                    get: Some(ev_get),
+                };
+                let out_events = clap_output_events {
+                    ctx: core::ptr::null_mut(),
+                    try_push: Some(ev_push),
+                };
+                let proc_data = clap_process {
+                    steady_time: 0,
+                    frames_count: 64,
+                    transport: core::ptr::null(),
+                    audio_inputs: &in_buf,
+                    audio_outputs: &mut out_buf,
+                    audio_inputs_count: 1,
+                    audio_outputs_count: 1,
+                    in_events: &in_events,
+                    out_events: &out_events,
+                };
+                assert_eq!(
+                    (*plugin).process.expect("process")(plugin, &proc_data),
+                    CLAP_PROCESS_CONTINUE
+                );
+
+                let params = (*plugin).get_extension.expect("ext")(plugin, CLAP_EXT_PARAMS.as_ptr())
+                    as *const clap_plugin_params;
+                (*params).flush.expect("flush")(plugin, &in_events, &out_events);
+                let mut val = 0.0f64;
+                assert!((*params).get_value.expect("get_value")(plugin, 2, &mut val));
+                assert!((val - 3.0).abs() < 1e-4);
+
+                (*plugin).stop_processing.expect("stop")(plugin);
+                (*plugin).deactivate.expect("deactivate")(plugin);
+            });
+        }
     }
 }
