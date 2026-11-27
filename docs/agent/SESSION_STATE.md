@@ -1,7 +1,7 @@
 # Equaform-8 (RomuEq) - Session State
 
 **Date:** 2026-11-27
-**Version:** v1.3.0 ("Linear-Phase FIR EQ", local) — `v1.1.1` live on GitHub Releases
+**Version:** v1.3.0 ("Linear-Phase FIR EQ", tagged locally) — `v1.1.1` live on GitHub Releases
 **Maturity Audit:** **9.6 / 10** (**0 P0s, 0 P1s, 0 P2s**, 0 `allow(clippy::)`, 0 prod files > 1,000 LOC, 0 stale comments)
 
 ## Release Assets

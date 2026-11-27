@@ -38,4 +38,4 @@ Date: 2026-11-27 | Branch: `main` | Workspace: 9-crate Rust
 
 ## Next Logical Actions
 
-1. Commit local P1/P2 remediation changes (Gate A), then optionally push `main` and tag `v1.3.0` (Gate B) to trigger `.github/workflows/release.yml` (macOS DMG + Windows Inno Setup EXE).
+1. Push `main` and tag `v1.3.0` to `origin` (Gate B) to trigger `.github/workflows/release.yml` (macOS DMG + Windows Inno Setup EXE).
