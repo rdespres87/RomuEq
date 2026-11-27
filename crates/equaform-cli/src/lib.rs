@@ -10,6 +10,9 @@ use hound::{WavReader, WavWriter};
 use std::path::PathBuf;
 use std::time::Instant;
 
+pub mod args;
+pub use args::{CliArgs, CliError, Command, PresetCommand, USAGE, dispatch, parse_args, run_cli};
+
 // ---------------------------------------------------------------------------
 // Preset definitions
 // ---------------------------------------------------------------------------
@@ -203,4 +206,63 @@ pub fn process_file(
 
     writer.finalize()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_preset_names() {
+        assert_eq!(
+            list_preset_names(),
+            &["default", "bass_boost", "vocal", "de_ess"]
+        );
+    }
+
+    #[test]
+    fn test_get_preset_exists() {
+        assert!(get_preset("default").is_some());
+        assert!(get_preset("bass_boost").is_some());
+        assert!(get_preset("vocal").is_some());
+        assert!(get_preset("de_ess").is_some());
+    }
+
+    #[test]
+    fn test_get_preset_unknown() {
+        assert!(get_preset("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_default_preset_is_flat() {
+        let params = default_preset();
+        for band in &params.bands {
+            assert!(!band.enabled);
+        }
+    }
+
+    #[test]
+    fn test_bass_boost_preset() {
+        let params = bass_boost_preset();
+        assert!(params.bands[0].enabled);
+        assert!((params.bands[0].frequency_hz - 100.0).abs() < 0.01);
+        assert!((params.bands[0].gain_db - 6.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_vocal_preset() {
+        let params = vocal_preset();
+        assert!(params.bands[0].enabled);
+        assert!((params.bands[0].gain_db - (-3.0)).abs() < 0.01);
+        assert!(params.bands[1].enabled);
+        assert!((params.bands[1].gain_db - 4.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_de_ess_preset() {
+        let params = de_ess_preset();
+        assert!(params.bands[0].enabled);
+        assert!((params.bands[0].frequency_hz - 5000.0).abs() < 0.01);
+        assert!((params.bands[0].gain_db - (-6.0)).abs() < 0.01);
+    }
 }
