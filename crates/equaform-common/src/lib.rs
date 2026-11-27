@@ -69,9 +69,12 @@ pub enum OverflowPolicy {
 const CACHE_LINE: usize = 64;
 
 /// Padding struct to align a field to a cache line.
-#[allow(dead_code)]
 struct CachePadded<T> {
     value: T,
+    #[expect(
+        dead_code,
+        reason = "padding field prevents false sharing across cache lines"
+    )]
     pad: [usize; CACHE_LINE / std::mem::size_of::<usize>() - 1],
 }
 
@@ -704,58 +707,5 @@ mod tests {
                 _ => panic!("unexpected command"),
             }
         }
-    }
-
-    // -----------------------------------------------------------------------
-    // Latency / contention benchmark helpers
-    // -----------------------------------------------------------------------
-
-    #[allow(dead_code)]
-    /// Measure enqueue latency for a single value.
-    ///
-    /// Returns the median latency in nanoseconds over `iterations` enqueues.
-    pub fn measure_enqueue_latency<T>(
-        buf: &mut SpscRingBuffer<T>,
-        value: &T,
-        iterations: usize,
-    ) -> u64
-    where
-        T: Clone,
-    {
-        let mut latencies = Vec::with_capacity(iterations);
-        for _ in 0..iterations {
-            let start = std::time::Instant::now();
-            // Drain first to ensure buffer is not full
-            while buf.dequeue().is_some() {}
-            buf.enqueue(value.clone());
-            let elapsed = start.elapsed();
-            latencies.push(elapsed.as_nanos() as u64);
-        }
-        latencies.sort();
-        latencies[iterations / 2]
-    }
-
-    #[allow(dead_code)]
-    /// Measure dequeue latency for a single value.
-    ///
-    /// Returns the median latency in nanoseconds over `iterations` dequeues.
-    pub fn measure_dequeue_latency<T>(buf: &mut SpscRingBuffer<T>, iterations: usize) -> u64
-    where
-        T: Default + Clone,
-    {
-        // Fill the buffer first
-        for _ in 0..buf.capacity() {
-            buf.enqueue(T::default());
-        }
-
-        let mut latencies = Vec::with_capacity(iterations);
-        for _ in 0..iterations {
-            let start = std::time::Instant::now();
-            buf.dequeue();
-            let elapsed = start.elapsed();
-            latencies.push(elapsed.as_nanos() as u64);
-        }
-        latencies.sort();
-        latencies[iterations / 2]
     }
 }
