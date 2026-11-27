@@ -661,7 +661,10 @@ impl DefaultPluginFactory for EquaformPlugin {
 // ---------------------------------------------------------------------------
 
 #[derive(Copy, Clone)]
-#[allow(dead_code)]
+#[expect(
+    dead_code,
+    reason = "CLAP extension handle exposed across FFI via clack-plugin"
+)]
 pub struct EquaformState(RawExtension<PluginExtensionSide, clap_plugin_state>);
 
 // SAFETY: `CLAP_EXT_STATE` matches `clap_plugin_state` on the plugin side.

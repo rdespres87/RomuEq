@@ -224,6 +224,161 @@ impl<'a> EquaformAudioProcessor<'a> {
             }
         }
     }
+
+    fn discover_block_geometry(audio: &mut Audio) -> Result<(usize, usize), PluginError> {
+        let mut total_frames = 0usize;
+        let mut ch_count = 0usize;
+        for mut port_pair in audio {
+            let Some(channel_pairs) = port_pair.channels()?.into_f32() else {
+                continue;
+            };
+            for channel_pair in channel_pairs {
+                if ch_count >= 2 {
+                    break;
+                }
+                let ch_len = match channel_pair {
+                    ChannelPair::InPlace(buf) => buf.len(),
+                    ChannelPair::InputOutput(input, output) => input.len().min(output.len()),
+                    ChannelPair::InputOnly(buf) => buf.len(),
+                    ChannelPair::OutputOnly(buf) => buf.len(),
+                };
+                total_frames = if ch_count == 0 {
+                    ch_len
+                } else {
+                    total_frames.min(ch_len)
+                };
+                ch_count += 1;
+            }
+            if ch_count > 0 {
+                break;
+            }
+        }
+        Ok((ch_count, total_frames))
+    }
+
+    fn apply_events_until(
+        &mut self,
+        input: &InputEvents,
+        ev_idx: &mut u32,
+        max_time: Option<usize>,
+        latency_dirty: &mut bool,
+    ) {
+        let input_len = input.len();
+        while *ev_idx < input_len {
+            let Some(ev) = input.get(*ev_idx) else {
+                break;
+            };
+            if let Some(max_t) = max_time {
+                if (ev.header().time() as usize) > max_t {
+                    break;
+                }
+            }
+            if let Some(CoreEventSpace::ParamValue(pv)) = ev.as_core_event() {
+                if let Some(id) = pv.param_id() {
+                    self.apply_host_param_event(id.get(), pv.value(), latency_dirty);
+                }
+            }
+            *ev_idx += 1;
+        }
+    }
+
+    fn next_slice_end(
+        input: &InputEvents,
+        ev_idx: u32,
+        offset: usize,
+        total_frames: usize,
+    ) -> usize {
+        let mut next_stop = (offset + MAX_BLOCK_SIZE).min(total_frames);
+        if ev_idx < input.len() {
+            if let Some(ev) = input.get(ev_idx) {
+                let ev_time = ev.header().time() as usize;
+                if ev_time > offset && ev_time < next_stop {
+                    next_stop = ev_time;
+                }
+            }
+        }
+        next_stop
+    }
+
+    fn copy_inputs_to_scratch(
+        &mut self,
+        audio: &mut Audio,
+        ch_count: usize,
+        offset: usize,
+        next_stop: usize,
+    ) -> Result<(), PluginError> {
+        let slice_len = next_stop - offset;
+        let mut copy_ch = 0usize;
+        for mut port_pair in audio {
+            let Some(channel_pairs) = port_pair.channels()?.into_f32() else {
+                continue;
+            };
+            for channel_pair in channel_pairs {
+                if copy_ch >= ch_count {
+                    break;
+                }
+                match channel_pair {
+                    ChannelPair::InPlace(buf) => self.input_scratch[copy_ch][..slice_len]
+                        .copy_from_slice(&buf[offset..next_stop]),
+                    ChannelPair::InputOutput(input, _) => self.input_scratch[copy_ch][..slice_len]
+                        .copy_from_slice(&input[offset..next_stop]),
+                    ChannelPair::InputOnly(buf) => self.input_scratch[copy_ch][..slice_len]
+                        .copy_from_slice(&buf[offset..next_stop]),
+                    ChannelPair::OutputOnly(_) => {
+                        self.input_scratch[copy_ch][..slice_len].fill(0.0)
+                    }
+                }
+                copy_ch += 1;
+            }
+            if copy_ch > 0 {
+                break;
+            }
+        }
+        if ch_count == 1 && self.active_channels.clamp(1, 2) == 2 {
+            let (first, rest) = self.input_scratch.split_at_mut(1);
+            rest[0][..slice_len].copy_from_slice(&first[0][..slice_len]);
+        }
+        Ok(())
+    }
+
+    fn copy_outputs_from_scratch(
+        &self,
+        audio: &mut Audio,
+        ch_count: usize,
+        offset: usize,
+        next_stop: usize,
+    ) -> Result<(), PluginError> {
+        let slice_len = next_stop - offset;
+        let mut write_ch = 0usize;
+        for mut port_pair in audio {
+            let Some(channel_pairs) = port_pair.channels()?.into_f32() else {
+                continue;
+            };
+            for channel_pair in channel_pairs {
+                if write_ch >= ch_count {
+                    break;
+                }
+                let out_slice = &self.output_scratch[write_ch][..slice_len];
+                match channel_pair {
+                    ChannelPair::InPlace(buf) => {
+                        buf[offset..next_stop].copy_from_slice(out_slice);
+                    }
+                    ChannelPair::InputOutput(_, output) => {
+                        output[offset..next_stop].copy_from_slice(out_slice);
+                    }
+                    ChannelPair::InputOnly(_) => {}
+                    ChannelPair::OutputOnly(buf) => {
+                        buf[offset..next_stop].copy_from_slice(out_slice);
+                    }
+                }
+                write_ch += 1;
+            }
+            if write_ch > 0 {
+                break;
+            }
+        }
+        Ok(())
+    }
 }
 
 #[inline]
@@ -263,197 +418,49 @@ impl<'a> PluginAudioProcessor<'a, EquaformShared, EquaformMainThread<'a>>
         mut audio: Audio,
         events: Events,
     ) -> Result<ProcessStatus, PluginError> {
-        // 1. Push any UI-initiated parameter changes + gestures to host automation output.
         self.emit_ui_events_to_host(events.output);
-
-        // 2. Discover channel count and total block frame count from first audio port pair.
-        let mut total_frames = 0usize;
-        let mut ch_count = 0usize;
-        for mut port_pair in &mut audio {
-            let Some(channel_pairs) = port_pair.channels()?.into_f32() else {
-                continue;
-            };
-            for channel_pair in channel_pairs {
-                if ch_count >= 2 {
-                    break;
-                }
-                let ch_len = match channel_pair {
-                    ChannelPair::InPlace(buf) => buf.len(),
-                    ChannelPair::InputOutput(input, output) => input.len().min(output.len()),
-                    ChannelPair::InputOnly(buf) => buf.len(),
-                    ChannelPair::OutputOnly(buf) => buf.len(),
-                };
-                total_frames = if ch_count == 0 {
-                    ch_len
-                } else {
-                    total_frames.min(ch_len)
-                };
-                ch_count += 1;
-            }
-            if ch_count > 0 {
-                break;
-            }
-        }
-
-        let input_len = events.input.len();
+        let (ch_count, total_frames) = Self::discover_block_geometry(&mut audio)?;
         let mut ev_idx = 0u32;
         let mut latency_dirty = false;
 
         if ch_count == 0 || total_frames == 0 {
-            while ev_idx < input_len {
-                if let Some(ev) = events.input.get(ev_idx) {
-                    if let Some(CoreEventSpace::ParamValue(pv)) = ev.as_core_event() {
-                        if let Some(id) = pv.param_id() {
-                            self.apply_host_param_event(id.get(), pv.value(), &mut latency_dirty);
-                        }
-                    }
-                }
-                ev_idx += 1;
-            }
+            self.apply_events_until(events.input, &mut ev_idx, None, &mut latency_dirty);
             self.sync_params_from_shared();
             self.notify_latency_callback_if_needed(latency_dirty);
             return Ok(ProcessStatus::Continue);
         }
 
-        // 3. Process full block in sub-slices split on CLAP input event timestamps
-        //    and bounded by MAX_BLOCK_SIZE (handles arbitrarily large buffers + sample-accurate automation).
         let target_ch = self.active_channels.clamp(1, 2);
         let mut offset = 0usize;
         let mut max_l = 0.0f32;
         let mut max_r = 0.0f32;
 
         while offset < total_frames {
-            // Apply all input events due at or before `offset`.
-            while ev_idx < input_len {
-                let Some(ev) = events.input.get(ev_idx) else {
-                    break;
-                };
-                if (ev.header().time() as usize) > offset {
-                    break;
-                }
-                if let Some(CoreEventSpace::ParamValue(pv)) = ev.as_core_event() {
-                    if let Some(id) = pv.param_id() {
-                        self.apply_host_param_event(id.get(), pv.value(), &mut latency_dirty);
-                    }
-                }
-                ev_idx += 1;
-            }
+            self.apply_events_until(events.input, &mut ev_idx, Some(offset), &mut latency_dirty);
             self.sync_params_from_shared();
-
-            // Determine next slice boundary: either next event timestamp or MAX_BLOCK_SIZE chunk end.
-            let mut next_stop = (offset + MAX_BLOCK_SIZE).min(total_frames);
-            if ev_idx < input_len {
-                if let Some(ev) = events.input.get(ev_idx) {
-                    let ev_time = ev.header().time() as usize;
-                    if ev_time > offset && ev_time < next_stop {
-                        next_stop = ev_time;
-                    }
-                }
-            }
-
+            let next_stop = Self::next_slice_end(events.input, ev_idx, offset, total_frames);
             let slice_len = next_stop - offset;
             if slice_len == 0 {
                 break;
             }
-
-            // Copy inputs for [offset..next_stop] into pre-allocated scratch buffers.
-            let mut copy_ch = 0usize;
-            for mut port_pair in &mut audio {
-                let Some(channel_pairs) = port_pair.channels()?.into_f32() else {
-                    continue;
-                };
-                for channel_pair in channel_pairs {
-                    if copy_ch >= ch_count {
-                        break;
-                    }
-                    match channel_pair {
-                        ChannelPair::InPlace(buf) => {
-                            self.input_scratch[copy_ch][..slice_len]
-                                .copy_from_slice(&buf[offset..next_stop]);
-                        }
-                        ChannelPair::InputOutput(input, _) => {
-                            self.input_scratch[copy_ch][..slice_len]
-                                .copy_from_slice(&input[offset..next_stop]);
-                        }
-                        ChannelPair::InputOnly(buf) => {
-                            self.input_scratch[copy_ch][..slice_len]
-                                .copy_from_slice(&buf[offset..next_stop]);
-                        }
-                        ChannelPair::OutputOnly(_) => {
-                            self.input_scratch[copy_ch][..slice_len].fill(0.0);
-                        }
-                    }
-                    copy_ch += 1;
-                }
-                if copy_ch > 0 {
-                    break;
-                }
-            }
-
-            if ch_count == 1 && target_ch == 2 {
-                let (first, rest) = self.input_scratch.split_at_mut(1);
-                rest[0][..slice_len].copy_from_slice(&first[0][..slice_len]);
-            }
-
+            self.copy_inputs_to_scratch(&mut audio, ch_count, offset, next_stop)?;
             if !self.run_engine_chunk(slice_len) {
                 self.notify_latency_callback_if_needed(latency_dirty);
                 return Ok(ProcessStatus::Continue);
             }
-
-            // Copy outputs back for [offset..next_stop].
-            let mut write_ch = 0usize;
-            for mut port_pair in &mut audio {
-                let Some(channel_pairs) = port_pair.channels()?.into_f32() else {
-                    continue;
-                };
-                for channel_pair in channel_pairs {
-                    if write_ch >= ch_count {
-                        break;
-                    }
-                    let out_slice = &self.output_scratch[write_ch][..slice_len];
-                    match channel_pair {
-                        ChannelPair::InPlace(buf) => {
-                            buf[offset..next_stop].copy_from_slice(out_slice);
-                        }
-                        ChannelPair::InputOutput(_, output) => {
-                            output[offset..next_stop].copy_from_slice(out_slice);
-                        }
-                        ChannelPair::InputOnly(_) => {}
-                        ChannelPair::OutputOnly(buf) => {
-                            buf[offset..next_stop].copy_from_slice(out_slice);
-                        }
-                    }
-                    write_ch += 1;
-                }
-                if write_ch > 0 {
-                    break;
-                }
-            }
-
+            self.copy_outputs_from_scratch(&mut audio, ch_count, offset, next_stop)?;
             self.push_telemetry_chunk(slice_len, target_ch, &mut max_l, &mut max_r);
             offset = next_stop;
         }
 
-        // Apply any trailing events stamped at >= total_frames.
-        while ev_idx < input_len {
-            if let Some(ev) = events.input.get(ev_idx) {
-                if let Some(CoreEventSpace::ParamValue(pv)) = ev.as_core_event() {
-                    if let Some(id) = pv.param_id() {
-                        self.apply_host_param_event(id.get(), pv.value(), &mut latency_dirty);
-                    }
-                }
-            }
-            ev_idx += 1;
-        }
+        self.apply_events_until(events.input, &mut ev_idx, None, &mut latency_dirty);
         self.sync_params_from_shared();
         self.notify_latency_callback_if_needed(latency_dirty);
-
         self.shared.set_telemetry(
             linear_to_dbfs(max_l),
             linear_to_dbfs(max_r),
             self.engine.auto_gain_compensation_db(),
         );
-
         Ok(ProcessStatus::Continue)
     }
 

@@ -346,6 +346,31 @@ impl WgpuSurfaceHost {
     }
 }
 
+/// Preset management UI state for the plugin editor.
+pub struct PresetUiState {
+    pub manager: PresetManager,
+    pub current_preset: String,
+    pub status_message: Option<String>,
+}
+
+/// Real-time spectrum & meter analysis state for the plugin editor.
+pub struct SpectrumAnalysisState {
+    pub processor: SpectrumProcessor,
+    pub frame_num: u64,
+    pub last_sr: f32,
+    pub fft_ring: VecDeque<f32>,
+    pub snapshot: AnalysisSnapshot,
+    pub sample_buffer: Vec<f32>,
+}
+
+/// Adaptive frame-rate throttling and dormancy counters for the plugin editor.
+pub struct FrameThrottleState {
+    pub frame_counter: u32,
+    pub was_in_zero_fps: bool,
+    pub silence_frames: u32,
+    pub idle_transport_frames: u32,
+}
+
 /// Platform-independent, GPU-free editor state shared by Cocoa and Win32 backends.
 pub struct SharedEditorState {
     shared: Arc<EquaformSharedInner>,
@@ -356,19 +381,9 @@ pub struct SharedEditorState {
     pub pending_events: Vec<egui::Event>,
     pub modifiers: egui::Modifiers,
     pub ui_state: WorkspaceUiState,
-    preset_manager: PresetManager,
-    current_preset: String,
-    status_message: Option<String>,
-    spectrum_processor: SpectrumProcessor,
-    spectrum_frame_num: u64,
-    last_spectrum_sr: f32,
-    fft_ring: VecDeque<f32>,
-    analysis: AnalysisSnapshot,
-    fft_sample_buffer: Vec<f32>,
-    frame_counter: u32,
-    was_in_zero_fps: bool,
-    silence_frames: u32,
-    idle_transport_frames: u32,
+    preset: PresetUiState,
+    spectrum: SpectrumAnalysisState,
+    throttle: FrameThrottleState,
 }
 
 impl SharedEditorState {
@@ -407,26 +422,32 @@ impl SharedEditorState {
                 language: equaform_gui::Language::load_saved(),
                 ..Default::default()
             },
-            preset_manager,
-            current_preset: String::new(),
-            status_message: None,
-            spectrum_processor,
-            spectrum_frame_num: 0,
-            last_spectrum_sr: sr,
-            fft_ring: VecDeque::with_capacity(FFT_SIZE * 2),
-            analysis,
-            fft_sample_buffer: Vec::with_capacity(FFT_SIZE),
-            frame_counter: 0,
-            was_in_zero_fps: false,
-            silence_frames: 0,
-            idle_transport_frames: 0,
+            preset: PresetUiState {
+                manager: preset_manager,
+                current_preset: String::new(),
+                status_message: None,
+            },
+            spectrum: SpectrumAnalysisState {
+                processor: spectrum_processor,
+                frame_num: 0,
+                last_sr: sr,
+                fft_ring: VecDeque::with_capacity(FFT_SIZE * 2),
+                snapshot: analysis,
+                sample_buffer: Vec::with_capacity(FFT_SIZE),
+            },
+            throttle: FrameThrottleState {
+                frame_counter: 0,
+                was_in_zero_fps: false,
+                silence_frames: 0,
+                idle_transport_frames: 0,
+            },
         }
     }
 
     /// Marks the editor as having entered 0 FPS dormancy so the ring buffer resyncs on wake-up.
     #[inline]
     pub fn mark_zero_fps(&mut self) {
-        self.was_in_zero_fps = true;
+        self.throttle.was_in_zero_fps = true;
     }
 
     #[inline]
@@ -438,13 +459,13 @@ impl SharedEditorState {
     /// Returns `true` if the current tick should be skipped.
     pub fn should_skip_frame(&mut self, is_active: bool) -> bool {
         let has_pending_events = !self.pending_events.is_empty();
-        self.frame_counter = self.frame_counter.wrapping_add(1);
+        self.throttle.frame_counter = self.throttle.frame_counter.wrapping_add(1);
 
         if has_pending_events {
-            self.frame_counter = 0; // Force immediate frame
+            self.throttle.frame_counter = 0; // Force immediate frame
             false
         } else {
-            !is_active && (self.frame_counter % 4 != 0)
+            !is_active && (self.throttle.frame_counter % 4 != 0)
         }
     }
 
@@ -452,22 +473,22 @@ impl SharedEditorState {
     /// Returns `(sample_rate, peak_levels_db)`.
     pub fn collect_audio_and_spectrum(&mut self) -> (f32, (f32, f32)) {
         let consumer = self.shared.ring_consumer();
-        if self.was_in_zero_fps || consumer.available_read() >= (consumer.capacity() / 2) {
+        if self.throttle.was_in_zero_fps || consumer.available_read() >= (consumer.capacity() / 2) {
             consumer.clear();
-            self.fft_ring.clear();
-            self.was_in_zero_fps = false;
+            self.spectrum.fft_ring.clear();
+            self.throttle.was_in_zero_fps = false;
         }
 
         let sample_rate = self.shared.sample_rate().max(8000.0);
-        if (sample_rate - self.last_spectrum_sr).abs() > 1.0 {
-            self.spectrum_processor.reconfigure(SpectrumConfig {
+        if (sample_rate - self.spectrum.last_sr).abs() > 1.0 {
+            self.spectrum.processor.reconfigure(SpectrumConfig {
                 fft_size: FFT_SIZE,
                 smoothing_factor: 0.4,
                 window_type: equaform_analysis::WindowType::Hann,
                 log_bin_mode: equaform_analysis::LogBinMode::None,
                 min_db: -120.0,
             });
-            self.last_spectrum_sr = sample_rate;
+            self.spectrum.last_sr = sample_rate;
         }
 
         let mut tmp_l = [0.0f32; 512];
@@ -480,54 +501,58 @@ impl SharedEditorState {
             }
             popped_any = true;
             for (&l, &r) in tmp_l[..n].iter().zip(&tmp_r[..n]) {
-                self.fft_ring.push_back(0.5 * (l + r));
-                if self.fft_ring.len() > FFT_SIZE {
-                    self.fft_ring.pop_front();
+                self.spectrum.fft_ring.push_back(0.5 * (l + r));
+                if self.spectrum.fft_ring.len() > FFT_SIZE {
+                    self.spectrum.fft_ring.pop_front();
                 }
             }
         }
 
         if !popped_any {
-            self.idle_transport_frames = self.idle_transport_frames.saturating_add(1);
-            if self.idle_transport_frames > 4 {
+            self.throttle.idle_transport_frames =
+                self.throttle.idle_transport_frames.saturating_add(1);
+            if self.throttle.idle_transport_frames > 4 {
                 // Host playback is paused or stopped: decay ring samples towards silence
-                for s in self.fft_ring.iter_mut() {
+                for s in self.spectrum.fft_ring.iter_mut() {
                     *s *= 0.85;
                 }
             }
         } else {
-            self.idle_transport_frames = 0;
+            self.throttle.idle_transport_frames = 0;
         }
 
         let peak_levels_db = self.shared.peak_levels_db();
-        self.analysis.peak[0] = peak_levels_db.0;
-        self.analysis.peak[1] = peak_levels_db.1;
-        self.analysis.rms[0] = peak_levels_db.0;
-        self.analysis.rms[1] = peak_levels_db.1;
+        self.spectrum.snapshot.peak[0] = peak_levels_db.0;
+        self.spectrum.snapshot.peak[1] = peak_levels_db.1;
+        self.spectrum.snapshot.rms[0] = peak_levels_db.0;
+        self.spectrum.snapshot.rms[1] = peak_levels_db.1;
 
         let max_peak = peak_levels_db.0.max(peak_levels_db.1);
         let is_audio_silent = max_peak <= -90.0;
-        let is_idle = (self.idle_transport_frames >= 15) || is_audio_silent;
+        let is_idle = (self.throttle.idle_transport_frames >= 15) || is_audio_silent;
 
         if is_idle {
-            self.silence_frames = self.silence_frames.saturating_add(1);
+            self.throttle.silence_frames = self.throttle.silence_frames.saturating_add(1);
         } else if max_peak > -84.0 {
-            self.silence_frames = 0;
+            self.throttle.silence_frames = 0;
         }
 
-        if self.fft_ring.len() >= FFT_SIZE && self.silence_frames < 15 {
-            self.fft_sample_buffer.clear();
-            self.fft_sample_buffer.extend(self.fft_ring.iter().copied());
-            self.spectrum_frame_num += 1;
-            let frame = self.spectrum_processor.process_ref(
-                &self.fft_sample_buffer,
+        if self.spectrum.fft_ring.len() >= FFT_SIZE && self.throttle.silence_frames < 15 {
+            self.spectrum.sample_buffer.clear();
+            self.spectrum
+                .sample_buffer
+                .extend(self.spectrum.fft_ring.iter().copied());
+            self.spectrum.frame_num += 1;
+            let frame = self.spectrum.processor.process_ref(
+                &self.spectrum.sample_buffer,
                 sample_rate as f64,
-                self.spectrum_frame_num,
+                self.spectrum.frame_num,
             );
             // Subtract unnormalized DFT gain 20*log10(N/2) (~54.18 dB for N=1024) so 1.0 full-scale = 0 dBFS
             let dft_norm_db = 20.0 * ((frame.fft_size as f64) * 0.5).log10();
-            self.analysis.spectrum_data.clear();
-            self.analysis
+            self.spectrum.snapshot.spectrum_data.clear();
+            self.spectrum
+                .snapshot
                 .spectrum_data
                 .extend((0..frame.num_bins).map(|b| {
                     [
@@ -536,7 +561,7 @@ impl SharedEditorState {
                     ]
                 }));
         } else {
-            self.analysis.spectrum_data.clear();
+            self.spectrum.snapshot.spectrum_data.clear();
         }
 
         (sample_rate, peak_levels_db)
@@ -590,10 +615,10 @@ impl SharedEditorState {
                         band_params: &eq.bands,
                         sample_rate,
                         snapshot: &snapshot,
-                        analysis: &self.analysis,
-                        preset_manager: &self.preset_manager,
-                        current_preset: &self.current_preset,
-                        status_message: self.status_message.as_deref(),
+                        analysis: &self.spectrum.snapshot,
+                        preset_manager: &self.preset.manager,
+                        current_preset: &self.preset.current_preset,
+                        status_message: self.preset.status_message.as_deref(),
                     };
                     let (b, a) = render_workspace(ui, &mut self.ui_state, &ws_ctx);
                     out_batch = b;
@@ -656,7 +681,7 @@ impl SharedEditorState {
     }
 
     pub fn apply_preset(&mut self, name: &str) -> bool {
-        let Some(named) = self.preset_manager.get(name) else {
+        let Some(named) = self.preset.manager.get(name) else {
             return false;
         };
         let mut eq = self.shared.read_eq_parameters();
@@ -664,8 +689,8 @@ impl SharedEditorState {
             let _ = apply_param_to_eq(&mut eq, id, val as f64);
         }
         self.shared.write_eq_parameters_from_ui(&eq);
-        self.current_preset = name.to_string();
-        self.status_message = Some(format!("Preset '{name}' applied"));
+        self.preset.current_preset = name.to_string();
+        self.preset.status_message = Some(format!("Preset '{name}' applied"));
         true
     }
 
@@ -678,28 +703,28 @@ impl SharedEditorState {
                 state.set(id, val as f32);
             }
         }
-        match self.preset_manager.create_from_state(name, &state) {
+        match self.preset.manager.create_from_state(name, &state) {
             Ok(()) => {
-                if let Err(err) = persist_preset_to_disk(&mut self.preset_manager, name) {
-                    self.status_message = Some(format!("Save error: {err}"));
+                if let Err(err) = persist_preset_to_disk(&mut self.preset.manager, name) {
+                    self.preset.status_message = Some(format!("Save error: {err}"));
                 } else {
-                    self.current_preset = name.to_string();
-                    self.status_message = Some(format!("Preset '{name}' saved"));
+                    self.preset.current_preset = name.to_string();
+                    self.preset.status_message = Some(format!("Preset '{name}' saved"));
                 }
             }
             Err(err) => {
-                self.status_message = Some(format!("Error: {err}"));
+                self.preset.status_message = Some(format!("Error: {err}"));
             }
         }
     }
 
     pub fn delete_preset(&mut self, name: &str) {
-        self.preset_manager.remove(name);
+        self.preset.manager.remove(name);
         remove_preset_from_disk(name);
-        if self.current_preset == name {
-            self.current_preset.clear();
+        if self.preset.current_preset == name {
+            self.preset.current_preset.clear();
         }
-        self.status_message = Some(format!("Preset '{name}' deleted"));
+        self.preset.status_message = Some(format!("Preset '{name}' deleted"));
     }
 
     pub fn request_host_flush(&self) {
@@ -738,22 +763,22 @@ impl SharedEditorState {
 
     #[cfg(test)]
     pub fn current_preset(&self) -> &str {
-        &self.current_preset
+        &self.preset.current_preset
     }
 
     #[cfg(test)]
     pub fn status_message(&self) -> Option<&str> {
-        self.status_message.as_deref()
+        self.preset.status_message.as_deref()
     }
 
     #[cfg(test)]
     pub fn analysis(&self) -> &AnalysisSnapshot {
-        &self.analysis
+        &self.spectrum.snapshot
     }
 
     #[cfg(test)]
     pub fn preset_manager(&self) -> &PresetManager {
-        &self.preset_manager
+        &self.preset.manager
     }
 }
 
@@ -814,7 +839,7 @@ mod tests {
         }
 
         // Inactive window runs at 15 FPS (1 out of every 4 frames rendered)
-        state.frame_counter = 0;
+        state.throttle.frame_counter = 0;
         assert!(state.should_skip_frame(false)); // counter = 1 -> skip
         assert!(state.should_skip_frame(false)); // counter = 2 -> skip
         assert!(state.should_skip_frame(false)); // counter = 3 -> skip
@@ -825,7 +850,7 @@ mod tests {
             .pending_events
             .push(egui::Event::PointerMoved(egui::pos2(10.0, 20.0)));
         assert!(!state.should_skip_frame(false));
-        assert_eq!(state.frame_counter, 0);
+        assert_eq!(state.throttle.frame_counter, 0);
     }
 
     #[test]
@@ -865,7 +890,7 @@ mod tests {
         let (sr, peaks) = state.collect_audio_and_spectrum();
         assert!((sr - 48000.0).abs() < 1e-3);
         assert_eq!(peaks, (-120.0, -120.0));
-        assert!(!state.was_in_zero_fps);
+        assert!(!state.throttle.was_in_zero_fps);
         assert!(state.analysis().spectrum_data.is_empty());
     }
 

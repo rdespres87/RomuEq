@@ -19,7 +19,10 @@ use crate::params_map::{PARAM_COUNT, format_param_value, get_param_meta, parse_p
 // It is queried and automated by host DAWs through the CLAP C ABI via `clack-plugin`.
 // The Rust compiler flags it as unused in internal code paths because it is accessed exclusively across FFI boundaries.
 #[derive(Copy, Clone)]
-#[allow(dead_code)]
+#[expect(
+    dead_code,
+    reason = "CLAP extension handle exposed across FFI via clack-plugin"
+)]
 pub struct EquaformParams(RawExtension<PluginExtensionSide, clap_plugin_params>);
 
 // SAFETY: `CLAP_EXT_PARAMS` matches `clap_plugin_params` on the plugin side.

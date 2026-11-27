@@ -251,221 +251,220 @@ pub fn normalize_param_value(id: clap_id, val: f64) -> f32 {
     }
 }
 
+const GLOBAL_PARAM_SPECS: [(clap_id, &str, &str, f64, f64, clap_param_info_flags); 5] = [
+    (
+        1,
+        "Bypass",
+        "Master",
+        0.0,
+        1.0,
+        CLAP_PARAM_IS_STEPPED | CLAP_PARAM_IS_BYPASS | CLAP_PARAM_IS_AUTOMATABLE,
+    ),
+    (
+        2,
+        "Master Gain",
+        "Master",
+        -24.0,
+        24.0,
+        CLAP_PARAM_IS_AUTOMATABLE,
+    ),
+    (
+        3,
+        "Auto Gain",
+        "Master",
+        0.0,
+        1.0,
+        CLAP_PARAM_IS_STEPPED | CLAP_PARAM_IS_AUTOMATABLE,
+    ),
+    (
+        7,
+        "Auto Gain Mode",
+        "Master",
+        0.0,
+        1.0,
+        CLAP_PARAM_IS_STEPPED | CLAP_PARAM_IS_ENUM | CLAP_PARAM_IS_AUTOMATABLE,
+    ),
+    (
+        4,
+        "Processing Mode",
+        "Global",
+        0.0,
+        2.0,
+        CLAP_PARAM_IS_AUTOMATABLE | CLAP_PARAM_IS_STEPPED,
+    ),
+];
+
+const BAND_FIELD_SPECS: [(clap_id, f64, f64, clap_param_info_flags); 7] = [
+    (
+        0,
+        0.0,
+        1.0,
+        CLAP_PARAM_IS_STEPPED | CLAP_PARAM_IS_AUTOMATABLE,
+    ),
+    (
+        1,
+        0.0,
+        4.0,
+        CLAP_PARAM_IS_STEPPED | CLAP_PARAM_IS_ENUM | CLAP_PARAM_IS_AUTOMATABLE,
+    ),
+    (2, 20.0, 20000.0, CLAP_PARAM_IS_AUTOMATABLE),
+    (3, -24.0, 24.0, CLAP_PARAM_IS_AUTOMATABLE),
+    (4, 0.1, 20.0, CLAP_PARAM_IS_AUTOMATABLE),
+    (
+        5,
+        0.0,
+        3.0,
+        CLAP_PARAM_IS_STEPPED | CLAP_PARAM_IS_ENUM | CLAP_PARAM_IS_AUTOMATABLE,
+    ),
+    (
+        7,
+        0.0,
+        4.0,
+        CLAP_PARAM_IS_STEPPED | CLAP_PARAM_IS_ENUM | CLAP_PARAM_IS_AUTOMATABLE,
+    ),
+];
+
+const BAND_PARAM_NAMES: [[&str; 7]; 8] = [
+    [
+        "Band 1 Active",
+        "Band 1 Type",
+        "Band 1 Frequency",
+        "Band 1 Gain",
+        "Band 1 Q Factor",
+        "Band 1 Slope",
+        "Band 1 Routing",
+    ],
+    [
+        "Band 2 Active",
+        "Band 2 Type",
+        "Band 2 Frequency",
+        "Band 2 Gain",
+        "Band 2 Q Factor",
+        "Band 2 Slope",
+        "Band 2 Routing",
+    ],
+    [
+        "Band 3 Active",
+        "Band 3 Type",
+        "Band 3 Frequency",
+        "Band 3 Gain",
+        "Band 3 Q Factor",
+        "Band 3 Slope",
+        "Band 3 Routing",
+    ],
+    [
+        "Band 4 Active",
+        "Band 4 Type",
+        "Band 4 Frequency",
+        "Band 4 Gain",
+        "Band 4 Q Factor",
+        "Band 4 Slope",
+        "Band 4 Routing",
+    ],
+    [
+        "Band 5 Active",
+        "Band 5 Type",
+        "Band 5 Frequency",
+        "Band 5 Gain",
+        "Band 5 Q Factor",
+        "Band 5 Slope",
+        "Band 5 Routing",
+    ],
+    [
+        "Band 6 Active",
+        "Band 6 Type",
+        "Band 6 Frequency",
+        "Band 6 Gain",
+        "Band 6 Q Factor",
+        "Band 6 Slope",
+        "Band 6 Routing",
+    ],
+    [
+        "Band 7 Active",
+        "Band 7 Type",
+        "Band 7 Frequency",
+        "Band 7 Gain",
+        "Band 7 Q Factor",
+        "Band 7 Slope",
+        "Band 7 Routing",
+    ],
+    [
+        "Band 8 Active",
+        "Band 8 Type",
+        "Band 8 Frequency",
+        "Band 8 Gain",
+        "Band 8 Q Factor",
+        "Band 8 Slope",
+        "Band 8 Routing",
+    ],
+];
+
+const BAND_DEFAULT_FREQS: [f64; 8] = [32.0, 75.0, 180.0, 420.0, 1000.0, 2400.0, 5600.0, 13500.0];
+
+fn global_default(index: usize) -> f64 {
+    match index {
+        3 => AutoGainMode::Perceptual.to_raw() as f64,
+        4 => ProcessingMode::MinimumPhase.to_raw() as f64,
+        _ => 0.0,
+    }
+}
+
+fn band_default(band_idx: usize, field_idx: usize) -> f64 {
+    match field_idx {
+        0 => 1.0,
+        1 => match band_idx {
+            0 => FilterType::LowShelf.to_raw() as f64,
+            7 => FilterType::HighShelf.to_raw() as f64,
+            _ => FilterType::Bell.to_raw() as f64,
+        },
+        2 => BAND_DEFAULT_FREQS[band_idx],
+        4 => {
+            if band_idx == 0 || band_idx == 7 {
+                0.707
+            } else {
+                1.0
+            }
+        }
+        5 => Slope::Db12.to_raw() as f64,
+        6 => BandRouting::Stereo.to_raw() as f64,
+        _ => 0.0,
+    }
+}
+
+/// Returns CLAP metadata for a parameter index (`0..PARAM_COUNT`).
 pub fn get_param_meta(index: u32) -> Option<ParamMeta> {
-    if index == 0 {
+    if index < 5 {
+        let idx = index as usize;
+        let (id, name, module, min_value, max_value, flags) = GLOBAL_PARAM_SPECS[idx];
         return Some(ParamMeta {
-            id: 1,
-            name: "Bypass",
-            module: "Master",
-            min_value: 0.0,
-            max_value: 1.0,
-            default_value: 0.0,
-            flags: CLAP_PARAM_IS_STEPPED | CLAP_PARAM_IS_BYPASS | CLAP_PARAM_IS_AUTOMATABLE,
-        });
-    }
-    if index == 1 {
-        return Some(ParamMeta {
-            id: 2,
-            name: "Master Gain",
-            module: "Master",
-            min_value: -24.0,
-            max_value: 24.0,
-            default_value: 0.0,
-            flags: CLAP_PARAM_IS_AUTOMATABLE,
-        });
-    }
-    if index == 2 {
-        return Some(ParamMeta {
-            id: 3,
-            name: "Auto Gain",
-            module: "Master",
-            min_value: 0.0,
-            max_value: 1.0,
-            default_value: 0.0,
-            flags: CLAP_PARAM_IS_STEPPED | CLAP_PARAM_IS_AUTOMATABLE,
-        });
-    }
-    if index == 3 {
-        return Some(ParamMeta {
-            id: 7,
-            name: "Auto Gain Mode",
-            module: "Master",
-            min_value: 0.0,
-            max_value: 1.0,
-            default_value: AutoGainMode::Perceptual.to_raw() as f64,
-            flags: CLAP_PARAM_IS_STEPPED | CLAP_PARAM_IS_ENUM | CLAP_PARAM_IS_AUTOMATABLE,
-        });
-    }
-    if index == 4 {
-        return Some(ParamMeta {
-            id: 4,
-            name: "Processing Mode",
-            module: "Global",
-            min_value: 0.0,
-            max_value: 2.0,
-            default_value: ProcessingMode::MinimumPhase.to_raw() as f64,
-            flags: CLAP_PARAM_IS_AUTOMATABLE | CLAP_PARAM_IS_STEPPED,
+            id,
+            name,
+            module,
+            min_value,
+            max_value,
+            default_value: global_default(idx),
+            flags,
         });
     }
 
     let band_param_idx = index - 5;
     let band_idx = (band_param_idx / 7) as usize;
-    let field_idx = band_param_idx % 7;
-
+    let field_idx = (band_param_idx % 7) as usize;
     if band_idx >= MAX_BANDS {
         return None;
     }
 
     let base_id = 100 + (band_idx as clap_id * 100);
-
-    match field_idx {
-        0 => Some(ParamMeta {
-            id: base_id,
-            name: match band_idx {
-                0 => "Band 1 Active",
-                1 => "Band 2 Active",
-                2 => "Band 3 Active",
-                3 => "Band 4 Active",
-                4 => "Band 5 Active",
-                5 => "Band 6 Active",
-                6 => "Band 7 Active",
-                _ => "Band 8 Active",
-            },
-            module: "Bands",
-            min_value: 0.0,
-            max_value: 1.0,
-            default_value: 1.0,
-            flags: CLAP_PARAM_IS_STEPPED | CLAP_PARAM_IS_AUTOMATABLE,
-        }),
-        1 => Some(ParamMeta {
-            id: base_id + 1,
-            name: match band_idx {
-                0 => "Band 1 Type",
-                1 => "Band 2 Type",
-                2 => "Band 3 Type",
-                3 => "Band 4 Type",
-                4 => "Band 5 Type",
-                5 => "Band 6 Type",
-                6 => "Band 7 Type",
-                _ => "Band 8 Type",
-            },
-            module: "Bands",
-            min_value: 0.0,
-            max_value: 4.0,
-            default_value: if band_idx == 0 {
-                FilterType::LowShelf.to_raw() as f64
-            } else if band_idx == 7 {
-                FilterType::HighShelf.to_raw() as f64
-            } else {
-                FilterType::Bell.to_raw() as f64
-            },
-            flags: CLAP_PARAM_IS_STEPPED | CLAP_PARAM_IS_ENUM | CLAP_PARAM_IS_AUTOMATABLE,
-        }),
-        2 => Some(ParamMeta {
-            id: base_id + 2,
-            name: match band_idx {
-                0 => "Band 1 Frequency",
-                1 => "Band 2 Frequency",
-                2 => "Band 3 Frequency",
-                3 => "Band 4 Frequency",
-                4 => "Band 5 Frequency",
-                5 => "Band 6 Frequency",
-                6 => "Band 7 Frequency",
-                _ => "Band 8 Frequency",
-            },
-            module: "Bands",
-            min_value: 20.0,
-            max_value: 20000.0,
-            default_value: match band_idx {
-                0 => 32.0,
-                1 => 75.0,
-                2 => 180.0,
-                3 => 420.0,
-                4 => 1000.0,
-                5 => 2400.0,
-                6 => 5600.0,
-                _ => 13500.0,
-            },
-            flags: CLAP_PARAM_IS_AUTOMATABLE,
-        }),
-        3 => Some(ParamMeta {
-            id: base_id + 3,
-            name: match band_idx {
-                0 => "Band 1 Gain",
-                1 => "Band 2 Gain",
-                2 => "Band 3 Gain",
-                3 => "Band 4 Gain",
-                4 => "Band 5 Gain",
-                5 => "Band 6 Gain",
-                6 => "Band 7 Gain",
-                _ => "Band 8 Gain",
-            },
-            module: "Bands",
-            min_value: -24.0,
-            max_value: 24.0,
-            default_value: 0.0,
-            flags: CLAP_PARAM_IS_AUTOMATABLE,
-        }),
-        4 => Some(ParamMeta {
-            id: base_id + 4,
-            name: match band_idx {
-                0 => "Band 1 Q Factor",
-                1 => "Band 2 Q Factor",
-                2 => "Band 3 Q Factor",
-                3 => "Band 4 Q Factor",
-                4 => "Band 5 Q Factor",
-                5 => "Band 6 Q Factor",
-                6 => "Band 7 Q Factor",
-                _ => "Band 8 Q Factor",
-            },
-            module: "Bands",
-            min_value: 0.1,
-            max_value: 20.0,
-            default_value: if band_idx == 0 || band_idx == 7 {
-                0.707
-            } else {
-                1.0
-            },
-            flags: CLAP_PARAM_IS_AUTOMATABLE,
-        }),
-        5 => Some(ParamMeta {
-            id: base_id + 5,
-            name: match band_idx {
-                0 => "Band 1 Slope",
-                1 => "Band 2 Slope",
-                2 => "Band 3 Slope",
-                3 => "Band 4 Slope",
-                4 => "Band 5 Slope",
-                5 => "Band 6 Slope",
-                6 => "Band 7 Slope",
-                _ => "Band 8 Slope",
-            },
-            module: "Bands",
-            min_value: 0.0,
-            max_value: 3.0,
-            default_value: Slope::Db12.to_raw() as f64,
-            flags: CLAP_PARAM_IS_STEPPED | CLAP_PARAM_IS_ENUM | CLAP_PARAM_IS_AUTOMATABLE,
-        }),
-        6 => Some(ParamMeta {
-            id: base_id + 7,
-            name: match band_idx {
-                0 => "Band 1 Routing",
-                1 => "Band 2 Routing",
-                2 => "Band 3 Routing",
-                3 => "Band 4 Routing",
-                4 => "Band 5 Routing",
-                5 => "Band 6 Routing",
-                6 => "Band 7 Routing",
-                _ => "Band 8 Routing",
-            },
-            module: "Bands",
-            min_value: 0.0,
-            max_value: 4.0,
-            default_value: BandRouting::Stereo.to_raw() as f64,
-            flags: CLAP_PARAM_IS_STEPPED | CLAP_PARAM_IS_ENUM | CLAP_PARAM_IS_AUTOMATABLE,
-        }),
-        _ => None,
-    }
+    let (id_offset, min_value, max_value, flags) = BAND_FIELD_SPECS[field_idx];
+    Some(ParamMeta {
+        id: base_id + id_offset,
+        name: BAND_PARAM_NAMES[band_idx][field_idx],
+        module: "Bands",
+        min_value,
+        max_value,
+        default_value: band_default(band_idx, field_idx),
+        flags,
+    })
 }
 
 /// Formats a CLAP parameter value into a human-readable display string for DAW automation lanes.
@@ -741,5 +740,163 @@ mod tests {
         assert_eq!(normalize_param_value(4, 99.0), 2.0);
         assert_eq!(normalize_param_value(4, 1.4), 1.0);
         assert_eq!(normalize_param_value(4, 1.6), 2.0);
+    }
+
+    #[test]
+    fn test_all_61_param_metadata_snapshot() {
+        let globals: [(clap_id, &str, &str, f64, f64, f64, clap_param_info_flags); 5] = [
+            (
+                1,
+                "Bypass",
+                "Master",
+                0.0,
+                1.0,
+                0.0,
+                CLAP_PARAM_IS_STEPPED | CLAP_PARAM_IS_BYPASS | CLAP_PARAM_IS_AUTOMATABLE,
+            ),
+            (
+                2,
+                "Master Gain",
+                "Master",
+                -24.0,
+                24.0,
+                0.0,
+                CLAP_PARAM_IS_AUTOMATABLE,
+            ),
+            (
+                3,
+                "Auto Gain",
+                "Master",
+                0.0,
+                1.0,
+                0.0,
+                CLAP_PARAM_IS_STEPPED | CLAP_PARAM_IS_AUTOMATABLE,
+            ),
+            (
+                7,
+                "Auto Gain Mode",
+                "Master",
+                0.0,
+                1.0,
+                AutoGainMode::Perceptual.to_raw() as f64,
+                CLAP_PARAM_IS_STEPPED | CLAP_PARAM_IS_ENUM | CLAP_PARAM_IS_AUTOMATABLE,
+            ),
+            (
+                4,
+                "Processing Mode",
+                "Global",
+                0.0,
+                2.0,
+                ProcessingMode::MinimumPhase.to_raw() as f64,
+                CLAP_PARAM_IS_AUTOMATABLE | CLAP_PARAM_IS_STEPPED,
+            ),
+        ];
+        for (idx, exp) in globals.iter().enumerate() {
+            let m = get_param_meta(idx as u32).expect("global param meta");
+            assert_eq!(
+                (
+                    m.id,
+                    m.name,
+                    m.module,
+                    m.min_value,
+                    m.max_value,
+                    m.default_value,
+                    m.flags
+                ),
+                *exp
+            );
+        }
+
+        let freqs = [32.0, 75.0, 180.0, 420.0, 1000.0, 2400.0, 5600.0, 13500.0];
+        for (b, &freq) in freqs.iter().enumerate() {
+            let base_id = 100 + (b as clap_id * 100);
+            let band_type = match b {
+                0 => FilterType::LowShelf,
+                7 => FilterType::HighShelf,
+                _ => FilterType::Bell,
+            };
+            let q_default = if b == 0 || b == 7 { 0.707 } else { 1.0 };
+            let expected = [
+                (
+                    base_id,
+                    format!("Band {} Active", b + 1),
+                    "Bands",
+                    0.0,
+                    1.0,
+                    1.0,
+                    CLAP_PARAM_IS_STEPPED | CLAP_PARAM_IS_AUTOMATABLE,
+                ),
+                (
+                    base_id + 1,
+                    format!("Band {} Type", b + 1),
+                    "Bands",
+                    0.0,
+                    4.0,
+                    band_type.to_raw() as f64,
+                    CLAP_PARAM_IS_STEPPED | CLAP_PARAM_IS_ENUM | CLAP_PARAM_IS_AUTOMATABLE,
+                ),
+                (
+                    base_id + 2,
+                    format!("Band {} Frequency", b + 1),
+                    "Bands",
+                    20.0,
+                    20000.0,
+                    freq,
+                    CLAP_PARAM_IS_AUTOMATABLE,
+                ),
+                (
+                    base_id + 3,
+                    format!("Band {} Gain", b + 1),
+                    "Bands",
+                    -24.0,
+                    24.0,
+                    0.0,
+                    CLAP_PARAM_IS_AUTOMATABLE,
+                ),
+                (
+                    base_id + 4,
+                    format!("Band {} Q Factor", b + 1),
+                    "Bands",
+                    0.1,
+                    20.0,
+                    q_default,
+                    CLAP_PARAM_IS_AUTOMATABLE,
+                ),
+                (
+                    base_id + 5,
+                    format!("Band {} Slope", b + 1),
+                    "Bands",
+                    0.0,
+                    3.0,
+                    Slope::Db12.to_raw() as f64,
+                    CLAP_PARAM_IS_STEPPED | CLAP_PARAM_IS_ENUM | CLAP_PARAM_IS_AUTOMATABLE,
+                ),
+                (
+                    base_id + 7,
+                    format!("Band {} Routing", b + 1),
+                    "Bands",
+                    0.0,
+                    4.0,
+                    BandRouting::Stereo.to_raw() as f64,
+                    CLAP_PARAM_IS_STEPPED | CLAP_PARAM_IS_ENUM | CLAP_PARAM_IS_AUTOMATABLE,
+                ),
+            ];
+            for (offset, exp) in expected.iter().enumerate() {
+                let idx = 5 + b * 7 + offset;
+                let m = get_param_meta(idx as u32).expect("band param meta");
+                assert_eq!(
+                    (
+                        m.id,
+                        m.name,
+                        m.module,
+                        m.min_value,
+                        m.max_value,
+                        m.default_value,
+                        m.flags
+                    ),
+                    (exp.0, exp.1.as_str(), exp.2, exp.3, exp.4, exp.5, exp.6)
+                );
+            }
+        }
     }
 }

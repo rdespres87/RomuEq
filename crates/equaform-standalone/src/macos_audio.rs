@@ -417,7 +417,13 @@ pub mod macos_impl {
     }
 
     /// Check whether the legacy RomuEq native driver bundle is present on the filesystem.
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Legacy RomuEq HAL driver detection helper used in tests"
+        )
+    )]
     pub fn is_romueq_driver_installed_on_disk() -> bool {
         let plist_path = "/Library/Audio/Plug-Ins/HAL/RomuEq.driver/Contents/Info.plist";
         if let Ok(content) = std::fs::read_to_string(plist_path) {
@@ -433,7 +439,6 @@ pub mod macos_impl {
     }
 
     /// Check if the native Equaform CoreAudio HAL driver (`EquaformDriver_Create`) is installed and recognized by CoreAudio.
-    #[allow(dead_code)]
     pub fn is_equaform_driver_available() -> bool {
         let is_native_bundle =
             std::fs::read("/Library/Audio/Plug-Ins/HAL/Equaform.driver/Contents/Info.plist")
@@ -447,7 +452,13 @@ pub mod macos_impl {
         is_native_bundle && find_device_by_name("Equaform-8").is_some()
     }
 
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Legacy RomuEq HAL driver detection helper used in tests"
+        )
+    )]
     pub fn is_romueq_driver_available() -> bool {
         is_equaform_driver_available() || {
             let is_native_bundle =
@@ -639,7 +650,10 @@ pub mod macos_impl {
         }
 
         /// Prepare and immediately intercept system audio if Equaform-8 is available.
-        #[allow(dead_code)]
+        #[expect(
+            dead_code,
+            reason = "Standalone HAL routing convenience helper kept for diagnostics"
+        )]
         pub fn activate() -> Self {
             let mut guard = Self::prepare();
             guard.activate_routing();

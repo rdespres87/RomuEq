@@ -59,6 +59,15 @@ mod windows {
         });
     }
 
+    struct Win32RuntimeConfig {
+        hwnd: HWND,
+        shared: Arc<EquaformSharedInner>,
+        host: Option<*const clap_host>,
+        scale_factor: f32,
+        physical_width: u32,
+        physical_height: u32,
+    }
+
     struct Win32EditorRuntime {
         hwnd: HWND,
         state: SharedEditorState,
@@ -67,39 +76,32 @@ mod windows {
     }
 
     impl Win32EditorRuntime {
-        fn new(
-            hwnd: HWND,
-            shared: Arc<EquaformSharedInner>,
-            host: Option<*const clap_host>,
-            scale_factor: f32,
-            physical_width: u32,
-            physical_height: u32,
-        ) -> Option<Self> {
-            let non_zero_hwnd = NonZeroIsize::new(hwnd as isize)?;
+        fn new(config: Win32RuntimeConfig) -> Option<Self> {
+            let non_zero_hwnd = NonZeroIsize::new(config.hwnd as isize)?;
             let raw_window = RawWindowHandle::Win32(Win32WindowHandle::new(non_zero_hwnd));
             let raw_display = RawDisplayHandle::Windows(WindowsDisplayHandle::new());
 
-            // SAFETY: `hwnd` is a valid Win32 child window owned by `Win32Editor`, which destroys
-            // it and clears `GWLP_USERDATA` in `destroy()` before dropping `Win32EditorRuntime`.
+            // SAFETY: `config.hwnd` is a valid Win32 child window owned by `Win32Editor`, which
+            // destroys it and clears `GWLP_USERDATA` in `destroy()` before dropping `Win32EditorRuntime`.
             let wgpu = unsafe {
                 WgpuSurfaceHost::new(WgpuSurfaceConfig {
                     backends: wgpu::Backends::PRIMARY,
                     raw_display_handle: raw_display,
                     raw_window_handle: raw_window,
-                    width_px: physical_width,
-                    height_px: physical_height,
-                    pixels_per_point: scale_factor,
+                    width_px: config.physical_width,
+                    height_px: config.physical_height,
+                    pixels_per_point: config.scale_factor,
                     allow_fallback_adapter: true,
                     device_label: "Equaform Win32 Device",
                 })
             }
             .ok()?;
 
-            let state = SharedEditorState::new(shared, host, "CLAP / VST3");
-            state.egui_ctx.set_pixels_per_point(scale_factor);
+            let state = SharedEditorState::new(config.shared, config.host, "CLAP / VST3");
+            state.egui_ctx.set_pixels_per_point(config.scale_factor);
 
             Some(Self {
-                hwnd,
+                hwnd: config.hwnd,
                 state,
                 wgpu,
                 mouse_in_window: false,
@@ -254,6 +256,141 @@ mod windows {
 
     const WM_MOUSELEAVE_MSG: u32 = 0x02A3;
 
+    fn handle_paint(runtime: &mut Win32EditorRuntime, hwnd: HWND) -> LRESULT {
+        // SAFETY: `ps` is a POD `PAINTSTRUCT` initialized by `BeginPaint` and paired with `EndPaint`.
+        unsafe {
+            let mut ps = std::mem::zeroed();
+            BeginPaint(hwnd, &mut ps);
+            runtime.render_frame();
+            EndPaint(hwnd, &ps);
+        }
+        0
+    }
+
+    fn handle_timer(runtime: &mut Win32EditorRuntime, hwnd: HWND) -> LRESULT {
+        // SAFETY: `hwnd` is a valid Win32 window handle; `root_hwnd` is checked non-null before `IsIconic`.
+        let root_hwnd = unsafe { GetAncestor(hwnd, GA_ROOT) };
+        // SAFETY: `hwnd` is a valid Win32 window handle.
+        let is_visible = unsafe { IsWindowVisible(hwnd) != 0 };
+        let is_iconic = if !root_hwnd.is_null() {
+            // SAFETY: `root_hwnd` was checked non-null above.
+            unsafe { IsIconic(root_hwnd) != 0 }
+        } else {
+            false
+        };
+
+        if !is_visible || is_iconic {
+            runtime.state.mark_zero_fps();
+            return 0;
+        }
+
+        // SAFETY: `GetForegroundWindow` takes no arguments and returns a handle or null.
+        let fg_hwnd = unsafe { GetForegroundWindow() };
+        let is_focused = fg_hwnd == root_hwnd || fg_hwnd == hwnd;
+        let is_active = is_focused || runtime.mouse_in_window || runtime.state.has_pending_events();
+
+        if runtime.state.should_skip_frame(is_active) {
+            return 0;
+        }
+
+        runtime.render_frame();
+        0
+    }
+
+    fn handle_mouse_button(
+        runtime: &mut Win32EditorRuntime,
+        hwnd: HWND,
+        button: egui::PointerButton,
+        pressed: bool,
+        capture: bool,
+    ) -> LRESULT {
+        if capture {
+            if pressed {
+                // SAFETY: `hwnd` is a valid Win32 window handle on the UI thread.
+                unsafe {
+                    SetFocus(hwnd);
+                    SetCapture(hwnd);
+                }
+            } else {
+                // SAFETY: Releases mouse capture acquired on button press on the UI thread.
+                unsafe {
+                    ReleaseCapture();
+                }
+            }
+        }
+        runtime.on_mouse_button(button, pressed);
+        0
+    }
+
+    fn handle_mouse_message(
+        runtime: &mut Win32EditorRuntime,
+        hwnd: HWND,
+        msg: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> LRESULT {
+        match msg {
+            WM_MOUSEMOVE => {
+                let x = (lparam & 0xFFFF) as i16 as f32;
+                let y = ((lparam >> 16) & 0xFFFF) as i16 as f32;
+                runtime.on_mouse_move(x, y);
+                0
+            }
+            WM_MOUSELEAVE_MSG => {
+                runtime.on_mouse_leave();
+                0
+            }
+            WM_LBUTTONDOWN => {
+                handle_mouse_button(runtime, hwnd, egui::PointerButton::Primary, true, true)
+            }
+            WM_LBUTTONUP => {
+                handle_mouse_button(runtime, hwnd, egui::PointerButton::Primary, false, true)
+            }
+            WM_RBUTTONDOWN => {
+                handle_mouse_button(runtime, hwnd, egui::PointerButton::Secondary, true, true)
+            }
+            WM_RBUTTONUP => {
+                handle_mouse_button(runtime, hwnd, egui::PointerButton::Secondary, false, true)
+            }
+            WM_MBUTTONDOWN => {
+                handle_mouse_button(runtime, hwnd, egui::PointerButton::Middle, true, false)
+            }
+            WM_MBUTTONUP => {
+                handle_mouse_button(runtime, hwnd, egui::PointerButton::Middle, false, false)
+            }
+            WM_MOUSEWHEEL => {
+                let delta = ((wparam >> 16) & 0xFFFF) as i16 as f32;
+                runtime.on_mouse_wheel(delta);
+                0
+            }
+            _ => 0,
+        }
+    }
+
+    fn handle_key_message(runtime: &mut Win32EditorRuntime, msg: u32, wparam: WPARAM) -> LRESULT {
+        match msg {
+            WM_KEYDOWN => runtime.on_key(wparam as u32, true),
+            WM_KEYUP => runtime.on_key(wparam as u32, false),
+            WM_CHAR => {
+                if let Some(c) = char::from_u32(wparam as u32) {
+                    runtime.on_char(c);
+                }
+            }
+            _ => {}
+        }
+        0
+    }
+
+    fn handle_destroy(hwnd: HWND) -> LRESULT {
+        // SAFETY: `hwnd` is being destroyed on the UI thread; stopping the timer and clearing
+        // `GWLP_USERDATA` prevents any subsequent message from dereferencing `runtime`.
+        unsafe {
+            KillTimer(hwnd, TIMER_ID);
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+        }
+        0
+    }
+
     unsafe extern "system" fn win32_wndproc(
         hwnd: HWND,
         msg: u32,
@@ -272,137 +409,23 @@ mod windows {
         let runtime = unsafe { &mut *ptr };
 
         match msg {
-            WM_PAINT => {
-                // SAFETY: `ps` is a POD `PAINTSTRUCT` initialized by `BeginPaint` and paired with `EndPaint`.
-                unsafe {
-                    let mut ps = std::mem::zeroed();
-                    BeginPaint(hwnd, &mut ps);
-                    runtime.render_frame();
-                    EndPaint(hwnd, &ps);
-                }
-                0
-            }
-            WM_TIMER => {
-                // SAFETY: `hwnd` is a valid Win32 window handle; `root_hwnd` is checked non-null before `IsIconic`.
-                let root_hwnd = unsafe { GetAncestor(hwnd, GA_ROOT) };
-                // SAFETY: `hwnd` is a valid Win32 window handle.
-                let is_visible = unsafe { IsWindowVisible(hwnd) != 0 };
-                let is_iconic = if !root_hwnd.is_null() {
-                    // SAFETY: `root_hwnd` was checked non-null above.
-                    unsafe { IsIconic(root_hwnd) != 0 }
-                } else {
-                    false
-                };
-
-                if !is_visible || is_iconic {
-                    runtime.state.mark_zero_fps();
-                    return 0; // 0 FPS
-                }
-
-                // SAFETY: `GetForegroundWindow` takes no arguments and returns a handle or null.
-                let fg_hwnd = unsafe { GetForegroundWindow() };
-                let is_focused = fg_hwnd == root_hwnd || fg_hwnd == hwnd;
-                let is_active =
-                    is_focused || runtime.mouse_in_window || runtime.state.has_pending_events();
-
-                if runtime.state.should_skip_frame(is_active) {
-                    return 0; // 15 FPS: drop 3 out of 4 frames in background
-                }
-
-                runtime.render_frame();
-                0
-            }
+            WM_PAINT => handle_paint(runtime, hwnd),
+            WM_TIMER => handle_timer(runtime, hwnd),
             WM_ERASEBKGND => 1,
             WM_SIZE => {
-                let width = (lparam & 0xFFFF) as u32;
-                let height = ((lparam >> 16) & 0xFFFF) as u32;
-                runtime.resize(width, height);
+                runtime.resize((lparam & 0xFFFF) as u32, ((lparam >> 16) & 0xFFFF) as u32);
                 0
             }
             WM_DPICHANGED => {
                 runtime.update_dpi();
                 0
             }
-            WM_MOUSEMOVE => {
-                let x = (lparam & 0xFFFF) as i16 as f32;
-                let y = ((lparam >> 16) & 0xFFFF) as i16 as f32;
-                runtime.on_mouse_move(x, y);
-                0
+            WM_MOUSEMOVE | WM_MOUSELEAVE_MSG | WM_LBUTTONDOWN | WM_LBUTTONUP | WM_RBUTTONDOWN
+            | WM_RBUTTONUP | WM_MBUTTONDOWN | WM_MBUTTONUP | WM_MOUSEWHEEL => {
+                handle_mouse_message(runtime, hwnd, msg, wparam, lparam)
             }
-            WM_MOUSELEAVE_MSG => {
-                runtime.on_mouse_leave();
-                0
-            }
-            WM_LBUTTONDOWN => {
-                // SAFETY: `hwnd` is a valid Win32 window handle on the UI thread.
-                unsafe {
-                    SetFocus(hwnd);
-                    SetCapture(hwnd);
-                }
-                runtime.on_mouse_button(egui::PointerButton::Primary, true);
-                0
-            }
-            WM_LBUTTONUP => {
-                // SAFETY: Releases mouse capture acquired on `WM_LBUTTONDOWN` on the UI thread.
-                unsafe {
-                    ReleaseCapture();
-                }
-                runtime.on_mouse_button(egui::PointerButton::Primary, false);
-                0
-            }
-            WM_RBUTTONDOWN => {
-                // SAFETY: `hwnd` is a valid Win32 window handle on the UI thread.
-                unsafe {
-                    SetFocus(hwnd);
-                    SetCapture(hwnd);
-                }
-                runtime.on_mouse_button(egui::PointerButton::Secondary, true);
-                0
-            }
-            WM_RBUTTONUP => {
-                // SAFETY: Releases mouse capture acquired on `WM_RBUTTONDOWN` on the UI thread.
-                unsafe {
-                    ReleaseCapture();
-                }
-                runtime.on_mouse_button(egui::PointerButton::Secondary, false);
-                0
-            }
-            WM_MBUTTONDOWN => {
-                runtime.on_mouse_button(egui::PointerButton::Middle, true);
-                0
-            }
-            WM_MBUTTONUP => {
-                runtime.on_mouse_button(egui::PointerButton::Middle, false);
-                0
-            }
-            WM_MOUSEWHEEL => {
-                let delta = ((wparam >> 16) & 0xFFFF) as i16 as f32;
-                runtime.on_mouse_wheel(delta);
-                0
-            }
-            WM_KEYDOWN => {
-                runtime.on_key(wparam as u32, true);
-                0
-            }
-            WM_KEYUP => {
-                runtime.on_key(wparam as u32, false);
-                0
-            }
-            WM_CHAR => {
-                if let Some(c) = char::from_u32(wparam as u32) {
-                    runtime.on_char(c);
-                }
-                0
-            }
-            WM_DESTROY => {
-                // SAFETY: `hwnd` is being destroyed on the UI thread; stopping the timer and clearing
-                // `GWLP_USERDATA` prevents any subsequent message from dereferencing `runtime`.
-                unsafe {
-                    KillTimer(hwnd, TIMER_ID);
-                    SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
-                }
-                0
-            }
+            WM_KEYDOWN | WM_KEYUP | WM_CHAR => handle_key_message(runtime, msg, wparam),
+            WM_DESTROY => handle_destroy(hwnd),
             // SAFETY: Standard Win32 default message dispatch for unhandled messages.
             _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
         }
@@ -483,14 +506,14 @@ mod windows {
                     return false;
                 }
 
-                let runtime = Win32EditorRuntime::new(
-                    child_hwnd,
-                    Arc::clone(&self.shared),
-                    self.host,
-                    scale,
-                    width as u32,
-                    height as u32,
-                );
+                let runtime = Win32EditorRuntime::new(Win32RuntimeConfig {
+                    hwnd: child_hwnd,
+                    shared: Arc::clone(&self.shared),
+                    host: self.host,
+                    scale_factor: scale,
+                    physical_width: width as u32,
+                    physical_height: height as u32,
+                });
 
                 if let Some(rt) = runtime {
                     let mut boxed = Box::new(rt);

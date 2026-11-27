@@ -16,7 +16,10 @@ use clap_sys::plugin::clap_plugin;
 // It is queried by host DAWs through the CLAP C ABI via `clack-plugin`.
 // The Rust compiler flags it as unused in internal code paths because it is accessed exclusively across FFI boundaries.
 #[derive(Copy, Clone)]
-#[allow(dead_code)]
+#[expect(
+    dead_code,
+    reason = "CLAP extension handle exposed across FFI via clack-plugin"
+)]
 pub struct EquaformLatency(RawExtension<PluginExtensionSide, clap_plugin_latency>);
 
 // SAFETY: `CLAP_EXT_LATENCY` matches `clap_plugin_latency` on the plugin side.
