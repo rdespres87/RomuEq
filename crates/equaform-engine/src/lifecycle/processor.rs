@@ -443,6 +443,12 @@ impl EngineLifecycle {
             let (solo_l_buf, solo_r_buf) = self.solo.mix_buffer.split_at_mut(layout.max_block);
             let solo_l = &mut solo_l_buf[..layout.block_size];
             let solo_r = &mut solo_r_buf[..layout.block_size];
+            let solo_config = super::render::SoloPassConfig {
+                active_mask: active_solo_mask,
+                solo_coeffs: &self.coeff_cache.solo_coeffs,
+                eq_params: &self.eq_params,
+                sample_rate: self.topology.sample_rate as f32,
+            };
             render_stereo_solo_audition(
                 StereoSoloIo {
                     out_l: solo_l,
@@ -452,16 +458,19 @@ impl EngineLifecycle {
                     scratch_l,
                     scratch_r,
                 },
-                active_solo_mask,
-                &self.coeff_cache.solo_coeffs,
-                &self.eq_params,
+                solo_config,
                 &mut self.solo_delay_line,
                 &mut self.solo.routing_state,
-                self.topology.sample_rate as f32,
             );
             apply_equal_power_crossfade(left, solo_l, ramp);
             apply_equal_power_crossfade(right, solo_r, ramp);
         } else {
+            let solo_config = super::render::SoloPassConfig {
+                active_mask: active_solo_mask,
+                solo_coeffs: &self.coeff_cache.solo_coeffs,
+                eq_params: &self.eq_params,
+                sample_rate: self.topology.sample_rate as f32,
+            };
             render_stereo_solo_audition(
                 StereoSoloIo {
                     out_l: left,
@@ -471,12 +480,9 @@ impl EngineLifecycle {
                     scratch_l,
                     scratch_r,
                 },
-                active_solo_mask,
-                &self.coeff_cache.solo_coeffs,
-                &self.eq_params,
+                solo_config,
                 &mut self.solo_delay_line,
                 &mut self.solo.routing_state,
-                self.topology.sample_rate as f32,
             );
         }
     }

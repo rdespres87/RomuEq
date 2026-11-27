@@ -437,25 +437,31 @@ fn accumulate_slice_ramped(
     }
 }
 
+/// Shared read-only configuration for stereo solo audition passes.
+#[derive(Clone, Copy)]
+pub(super) struct SoloPassConfig<'a> {
+    pub active_mask: u8,
+    pub solo_coeffs: &'a [BiquadCoefficients; MAX_BANDS],
+    pub eq_params: &'a EqParameters,
+    pub sample_rate: f32,
+}
+
 /// Render parallel stereo Band Solo audition into `io.out_l` / `io.out_r` from dry input.
 pub(super) fn render_stereo_solo_audition(
     mut io: StereoSoloIo<'_>,
-    active_mask: u8,
-    solo_coeffs: &[BiquadCoefficients; MAX_BANDS],
-    eq_params: &EqParameters,
+    config: SoloPassConfig<'_>,
     solo_delay_line: &mut [f32],
     routing_state: &mut super::SoloRoutingState,
-    sample_rate: f32,
 ) {
     io.out_l.fill(0.0);
     io.out_r.fill(0.0);
 
     let len = io.out_l.len().min(io.out_r.len());
-    let ramp_samples = len.min((0.005 * sample_rate.max(1.0)).round().max(1.0) as usize);
+    let ramp_samples = len.min((0.005 * config.sample_rate.max(1.0)).round().max(1.0) as usize);
 
     if !routing_state.initialized {
         for band_idx in 0..MAX_BANDS {
-            let routing = eq_params.band_routing(band_idx);
+            let routing = config.eq_params.band_routing(band_idx);
             let (gl, gr) = solo_target_gains(routing);
             routing_state.prev_routing[band_idx] = routing;
             routing_state.prev_gain_l[band_idx] = gl;
@@ -466,10 +472,10 @@ pub(super) fn render_stereo_solo_audition(
 
     let mut domain_switched = false;
     for band_idx in 0..MAX_BANDS {
-        if (active_mask & (1 << band_idx)) == 0 {
+        if (config.active_mask & (1 << band_idx)) == 0 {
             continue;
         }
-        let routing = eq_params.band_routing(band_idx);
+        let routing = config.eq_params.band_routing(band_idx);
         if routing != routing_state.prev_routing[band_idx] {
             let was_ms = matches!(
                 routing_state.prev_routing[band_idx],
@@ -489,9 +495,7 @@ pub(super) fn render_stereo_solo_audition(
     // Pass 1: accumulate Mid/Side solo bands in M/S domain, then convert to L/R once.
     render_stereo_solo_ms_pass(
         &mut io,
-        active_mask,
-        solo_coeffs,
-        eq_params,
+        config,
         solo_delay_line,
         routing_state,
         ramp_samples,
@@ -500,16 +504,14 @@ pub(super) fn render_stereo_solo_audition(
     // Pass 2: accumulate Stereo / Left / Right solo bands directly in L/R domain.
     render_stereo_solo_lr_pass(
         &mut io,
-        active_mask,
-        solo_coeffs,
-        eq_params,
+        config,
         solo_delay_line,
         routing_state,
         ramp_samples,
     );
 
     if domain_switched {
-        let decay = (-1.0_f32 / (0.002 * sample_rate.max(1.0))).exp();
+        let decay = (-1.0_f32 / (0.002 * config.sample_rate.max(1.0))).exp();
         let mut tl = routing_state.last_out[0];
         let mut tr = routing_state.last_out[1];
         for (ol, or) in io.out_l.iter_mut().zip(io.out_r.iter_mut()) {
@@ -528,9 +530,7 @@ pub(super) fn render_stereo_solo_audition(
 /// Accumulate Mid/Side solo bands in M/S domain and convert to L/R once.
 fn render_stereo_solo_ms_pass(
     io: &mut StereoSoloIo<'_>,
-    active_mask: u8,
-    solo_coeffs: &[BiquadCoefficients; MAX_BANDS],
-    eq_params: &EqParameters,
+    config: SoloPassConfig<'_>,
     solo_delay_line: &mut [f32],
     routing_state: &mut super::SoloRoutingState,
     ramp_samples: usize,
@@ -538,11 +538,11 @@ fn render_stereo_solo_ms_pass(
     const INV_SQRT_2: f32 = std::f32::consts::FRAC_1_SQRT_2;
 
     let mut has_ms_solo = false;
-    for (band_idx, coeffs) in solo_coeffs.iter().enumerate() {
-        if (active_mask & (1 << band_idx)) == 0 {
+    for (band_idx, coeffs) in config.solo_coeffs.iter().enumerate() {
+        if (config.active_mask & (1 << band_idx)) == 0 {
             continue;
         }
-        let routing = eq_params.band_routing(band_idx);
+        let routing = config.eq_params.band_routing(band_idx);
         if !matches!(routing, BandRouting::Mid | BandRouting::Side) {
             continue;
         }
@@ -596,18 +596,16 @@ fn render_stereo_solo_ms_pass(
 /// Accumulate Stereo, Left, and Right solo bands directly in L/R domain.
 fn render_stereo_solo_lr_pass(
     io: &mut StereoSoloIo<'_>,
-    active_mask: u8,
-    solo_coeffs: &[BiquadCoefficients; MAX_BANDS],
-    eq_params: &EqParameters,
+    config: SoloPassConfig<'_>,
     solo_delay_line: &mut [f32],
     routing_state: &mut super::SoloRoutingState,
     ramp_samples: usize,
 ) {
-    for (band_idx, coeffs) in solo_coeffs.iter().enumerate() {
-        if (active_mask & (1 << band_idx)) == 0 {
+    for (band_idx, coeffs) in config.solo_coeffs.iter().enumerate() {
+        if (config.active_mask & (1 << band_idx)) == 0 {
             continue;
         }
-        let routing = eq_params.band_routing(band_idx);
+        let routing = config.eq_params.band_routing(band_idx);
         if matches!(routing, BandRouting::Mid | BandRouting::Side) {
             continue;
         }

@@ -196,14 +196,20 @@ pub fn process_mono_in_place_ramped(
     delay[3] = y2;
 }
 
+/// Linearly ramped biquad coefficient transition parameters.
+#[derive(Debug, Clone, Copy)]
+pub struct RampedBiquadCoeffs {
+    pub start: BiquadCoefficients,
+    pub target: BiquadCoefficients,
+    pub ramp_samples: usize,
+}
+
 /// Process planar stereo buffers in place using a Direct Form I biquad with linear coefficient ramping.
 #[inline]
 pub fn process_stereo_planar_in_place_ramped(
     left: &mut [f32],
     right: &mut [f32],
-    start: &BiquadCoefficients,
-    target: &BiquadCoefficients,
-    ramp_samples: usize,
+    ramp: RampedBiquadCoeffs,
     delay_l: &mut [f32; 4],
     delay_r: &mut [f32; 4],
 ) {
@@ -211,8 +217,10 @@ pub fn process_stereo_planar_in_place_ramped(
     if len == 0 {
         return;
     }
-    let steps = ramp_samples.clamp(1, len);
+    let steps = ramp.ramp_samples.clamp(1, len);
     let inv = 1.0 / steps as f32;
+    let start = &ramp.start;
+    let target = &ramp.target;
 
     let mut dl = StereoLane::new(delay_l[0], delay_r[0]);
     let mut dl2 = StereoLane::new(delay_l[1], delay_r[1]);

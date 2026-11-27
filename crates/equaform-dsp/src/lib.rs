@@ -43,7 +43,7 @@ pub use linear_phase::{
     LINEAR_HIGH_FFT_SIZE, LINEAR_LOW_FFT_SIZE, LinearPhaseConvolver, UPOLS_BLOCK_SIZE,
 };
 pub use simd::{
-    lr_to_ms_in_place, ms_to_lr_in_place, process_mono_in_place, process_mono_in_place_ramped,
-    process_stereo_interleaved, process_stereo_planar_in_place,
+    RampedBiquadCoeffs, lr_to_ms_in_place, ms_to_lr_in_place, process_mono_in_place,
+    process_mono_in_place_ramped, process_stereo_interleaved, process_stereo_planar_in_place,
     process_stereo_planar_in_place_ramped,
 };

@@ -3,6 +3,15 @@
 use super::MAX_SCRATCH_FRAMES;
 use equaform_common::audio_ring::AudioRingConsumer;
 
+/// Parameters for [`DriftCompensatingReader::interpolate_block`].
+#[derive(Clone, Copy)]
+struct InterpolateBlockParams {
+    count: usize,
+    step: f64,
+    scratch_idx: usize,
+    popped: usize,
+}
+
 /// Fractional-phase stereo linear interpolation state for [`ContinuousPiDriftController`].
 #[derive(Clone, Copy, Debug, Default)]
 struct ResamplerState {
@@ -150,7 +159,16 @@ impl ContinuousPiDriftController {
             right[..count].fill(0.0);
             return;
         };
-        let consumed = self.interpolate_block(left, right, count, step, scratch_idx, popped);
+        let consumed = self.interpolate_block(
+            left,
+            right,
+            InterpolateBlockParams {
+                count,
+                step,
+                scratch_idx,
+                popped,
+            },
+        );
         self.save_leftover(consumed, popped);
     }
 
@@ -264,23 +282,21 @@ impl ContinuousPiDriftController {
         &mut self,
         left: &mut [f32],
         right: &mut [f32],
-        count: usize,
-        step: f64,
-        mut scratch_idx: usize,
-        popped: usize,
+        params: InterpolateBlockParams,
     ) -> usize {
-        for i in 0..count {
+        let mut scratch_idx = params.scratch_idx;
+        for i in 0..params.count {
             let frac = self.resampler.phase as f32;
             left[i] =
                 self.resampler.prev_l + frac * (self.resampler.curr_l - self.resampler.prev_l);
             right[i] =
                 self.resampler.prev_r + frac * (self.resampler.curr_r - self.resampler.prev_r);
-            self.resampler.phase += step;
+            self.resampler.phase += params.step;
             while self.resampler.phase >= 1.0 {
                 self.resampler.phase -= 1.0;
                 self.resampler.prev_l = self.resampler.curr_l;
                 self.resampler.prev_r = self.resampler.curr_r;
-                if scratch_idx < popped {
+                if scratch_idx < params.popped {
                     self.resampler.curr_l = self.scratch_l[scratch_idx];
                     self.resampler.curr_r = self.scratch_r[scratch_idx];
                     scratch_idx += 1;
