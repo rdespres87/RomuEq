@@ -13,7 +13,7 @@ equaform-analysis = { path = "../equaform-analysis" }
 equaform-gui = { path = "../equaform-gui", default-features = false }
 clack-plugin = "0.1"
 clack-common = "0.1"
-clap-sys = "0.5"
+clap-sys = "0.6"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 egui = "0.31"
